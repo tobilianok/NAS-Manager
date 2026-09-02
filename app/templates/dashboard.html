@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>NAS Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.3/htmx.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.14.1/cdn.min.js" defer></script>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
+    main { padding: 2rem; max-width: 1000px; margin: 0 auto; }
+    h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; margin-top: 2rem; }
+    table { width: 100%; border-collapse: collapse; margin-top: .5rem; }
+    th, td { text-align: left; padding: .6rem .8rem; border-bottom: 1px solid #334155; font-size: .9rem; }
+    th { color: #94a3b8; font-weight: 500; }
+    .badge { padding: .15rem .5rem; border-radius: 999px; font-size: .75rem; font-weight: 600; }
+    .badge-protected { background: #7f1d1d; color: #fecaca; }
+    .badge-pool { background: #164e63; color: #a5f3fc; }
+    .badge-available { background: #14532d; color: #bbf7d0; }
+    a.logout { color: #94a3b8; font-size: .85rem; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>NAS Manager</strong>
+    <div>
+      <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
+      <a class="logout" href="/logout">Deconnexion</a>
+    </div>
+  </header>
+  <main>
+    <p style="color:#94a3b8;">
+      Phase 0/1 en cours de construction : detection des disques operationnelle.
+      Le tableau de bord (CPU/RAM, pools ZFS, SMART, partages, Docker) arrive dans les phases suivantes.
+    </p>
+
+    <h2>Disques detectes</h2>
+    <table>
+      <thead>
+        <tr><th>Peripherique</th><th>Modele</th><th>Taille</th><th>Type</th><th>Statut</th><th>Detail</th></tr>
+      </thead>
+      <tbody>
+        {% for d in disks %}
+        <tr>
+          <td>{{ d.path }}</td>
+          <td>{{ d.model or '-' }}</td>
+          <td>{{ (d.size_bytes / (1000**3)) | round(1) }} GB</td>
+          <td>{{ 'HDD' if d.rota else 'SSD/NVMe' }}</td>
+          <td>
+            {% if d.status == 'system_protected' %}
+              <span class="badge badge-protected">Protege (systeme)</span>
+            {% elif d.status == 'in_pool' %}
+              <span class="badge badge-pool">Deja en pool</span>
+            {% else %}
+              <span class="badge badge-available">Disponible</span>
+            {% endif %}
+          </td>
+          <td style="color:#94a3b8; font-size:.8rem;">{{ d.detail }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </main>
+</body>
+</html>

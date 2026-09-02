@@ -1,0 +1,19 @@
+[Unit]
+Description=NAS Manager - interface web de gestion NAS
+After=network-online.target zfs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Root est requis : zpool/parted/smartctl/systemctl/docker/samba nécessitent
+# des privilèges administrateur. Ne jamais faire tourner ce service sous un
+# utilisateur non privilégié tant que ces opérations passent par subprocess.
+User=root
+WorkingDirectory=/opt/nas-manager
+EnvironmentFile=/opt/nas-manager/.env
+ExecStart=/opt/nas-manager/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
