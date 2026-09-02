@@ -26,14 +26,15 @@
   <header>
     <strong>NAS Manager</strong>
     <div>
+      <a class="logout" href="/pools" style="margin-right:1.5rem;">Pools ZFS</a>
       <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
       <a class="logout" href="/logout">Deconnexion</a>
     </div>
   </header>
   <main>
     <p style="color:#94a3b8;">
-      Phase 0/1 en cours de construction : detection des disques operationnelle.
-      Le tableau de bord (CPU/RAM, pools ZFS, SMART, partages, Docker) arrive dans les phases suivantes.
+      Phase 2 en cours : gestion des pools ZFS operationnelle (voir "Pools ZFS" ci-dessus).
+      Le reste du tableau de bord (CPU/RAM, SMART, partages, Docker) arrive dans les phases suivantes.
     </p>
 
     {% if warning %}

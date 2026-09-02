@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Nouveau pool ZFS - NAS Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.14.1/cdn.min.js" defer></script>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
+    header a { color: #94a3b8; text-decoration: none; font-size: .85rem; margin-left: 1rem; }
+    main { padding: 2rem; max-width: 900px; margin: 0 auto; }
+    h1 { font-size: 1.3rem; margin-bottom: .3rem; }
+    .subtitle { color: #94a3b8; font-size: .9rem; margin-bottom: 2rem; }
+    section { background: #1e293b; border-radius: 10px; padding: 1.5rem; margin-bottom: 1.5rem; }
+    section h2 { font-size: .95rem; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; margin: 0 0 1rem; }
+    label.field-label { display: block; font-size: .85rem; color: #94a3b8; margin-bottom: .3rem; }
+    input[type=text] { width: 100%; padding: .6rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; box-sizing: border-box; font-size: .95rem; }
+
+    .vdev-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .7rem; }
+    .vdev-option { border: 2px solid #334155; border-radius: 8px; padding: .8rem; cursor: pointer; }
+    .vdev-option.selected { border-color: #2563eb; background: #1e3a8a33; }
+    .vdev-option .name { font-weight: 600; font-size: .9rem; }
+    .vdev-option .req { font-size: .78rem; color: #94a3b8; margin-top: .2rem; }
+    .vdev-option .req.ok { color: #86efac; }
+    .vdev-option .req.bad { color: #fca5a5; }
+
+    table.disks { width: 100%; border-collapse: collapse; }
+    table.disks th, table.disks td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid #334155; font-size: .85rem; }
+    table.disks th { color: #94a3b8; font-weight: 500; }
+    select.role { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: .3rem .4rem; }
+
+    .info-panel { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem; margin-top: .8rem; font-size: .85rem; color: #cbd5e1; line-height: 1.5; }
+    .info-panel .warn-strong { color: #fca5a5; font-weight: 600; }
+    details summary { cursor: pointer; font-size: .85rem; color: #93c5fd; margin-bottom: .5rem; }
+
+    .messages { margin-top: 1rem; }
+    .msg { padding: .6rem .8rem; border-radius: 6px; margin-bottom: .5rem; font-size: .85rem; }
+    .msg-error { background: #7f1d1d; color: #fecaca; }
+    .msg-warning { background: #78350f; color: #fde68a; }
+
+    code.cmd { display: block; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: .7rem; font-size: .8rem; color: #93c5fd; overflow-x: auto; white-space: pre; }
+
+    .confirm-box { border: 2px solid #7f1d1d; border-radius: 10px; padding: 1.2rem; background: #7f1d1d22; }
+    .confirm-box p { font-size: .9rem; margin: 0 0 1rem; }
+    button.submit { padding: .8rem 1.5rem; border: none; border-radius: 6px; background: #dc2626; color: white; font-weight: 600; cursor: pointer; font-size: .95rem; }
+    button.submit:disabled { background: #475569; cursor: not-allowed; }
+    button.submit:hover:not(:disabled) { background: #b91c1c; }
+  </style>
+</head>
+<body x-data="poolForm()">
+  <header>
+    <strong><a href="/pools" style="color:#e2e8f0; text-decoration:none;">← Pools</a></strong>
+    <div>
+      <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
+      <a href="/logout">Deconnexion</a>
+    </div>
+  </header>
+  <main>
+    <h1>Creer un nouveau pool ZFS</h1>
+    <p class="subtitle">Chaque disque n'a qu'un role a la fois. Les explications s'affichent au fur et a mesure de tes choix.</p>
+
+    <form method="post" action="/pools" @submit="return canSubmit">
+      <section>
+        <h2>1. Nom du pool</h2>
+        <label class="field-label" for="name">Nom</label>
+        <input type="text" id="name" name="name" x-model="name" @input="refreshPlan()" placeholder="ex: tank, stockage, backup..." required>
+      </section>
+
+      <section>
+        <h2>2. Type de redondance</h2>
+        <div class="vdev-options">
+          <template x-for="[key, label] in Object.entries(vdevLabels)" :key="key">
+            <div class="vdev-option" :class="{selected: vdevType === key}" @click="vdevType = key; refreshPlan()">
+              <div class="name" x-text="label"></div>
+              <div class="req" :class="mainCount() >= vdevMin[key] ? 'ok' : 'bad'">
+                min. <span x-text="vdevMin[key]"></span> disque(s) — <span x-text="mainCount()"></span> selectionne(s)
+              </div>
+            </div>
+          </template>
+        </div>
+        <div class="info-panel">
+          <strong>Mirror (RAID1)</strong> : chaque disque est une copie identique des autres. Simple, tolerant aux pannes, mais tu ne recuperes que la capacite d'UN disque (les autres sont des copies). <br><br>
+          <strong>RAIDZ1</strong> : tolere 1 panne de disque simultanee, capacite utile = (N-1) disques. Ne pas utiliser avec des disques de plus de ~4-6 To (le temps de reconstruction tres long augmente le risque d'une 2e panne pendant la reparation). <br><br>
+          <strong>RAIDZ2</strong> : tolere 2 pannes simultanees, capacite utile = (N-2) disques. Bon compromis pour des disques de grande capacite. <br><br>
+          <strong>RAIDZ3</strong> : tolere 3 pannes simultanees, capacite utile = (N-3) disques. Pour les configurations avec beaucoup de disques ou une tolerance aux pannes maximale.
+        </div>
+      </section>
+
+      <section>
+        <h2>3. Disques</h2>
+        <table class="disks">
+          <thead><tr><th>Peripherique</th><th>Modele</th><th>Taille</th><th>Type</th><th>Role dans ce pool</th></tr></thead>
+          <tbody>
+            <template x-for="disk in availableDisks" :key="disk.path">
+              <tr>
+                <td x-text="disk.path"></td>
+                <td x-text="disk.model || '-'"></td>
+                <td x-text="formatSize(disk.size_bytes)"></td>
+                <td x-text="disk.rota ? 'HDD' : 'SSD/NVMe'"></td>
+                <td>
+                  <select class="role" x-model="roles[disk.path]" @change="refreshPlan()">
+                    <option value="">— Aucun —</option>
+                    <option value="main">Pool principal</option>
+                    <option value="special">Special VDEV (metadonnees)</option>
+                    <option value="log">Log / SLOG</option>
+                    <option value="cache">Cache / L2ARC</option>
+                  </select>
+                </td>
+              </tr>
+            </template>
+            <tr x-show="availableDisks.length === 0">
+              <td colspan="5" style="color:#94a3b8;">Aucun disque disponible pour l'instant.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>4. Caches optionnels — a lire avant de choisir</h2>
+
+        <details>
+          <summary>L2ARC (Level 2 Adaptive Replacement Cache) — a quoi ca sert ?</summary>
+          <div class="info-panel">
+            Etend le cache de LECTURE en RAM (l'ARC) sur un SSD/NVMe. Utile si tes donnees "chaudes"
+            (souvent relues) depassent la RAM disponible et que tu as beaucoup de lectures aleatoires
+            repetees (bases de donnees, VMs, partage frequente par plusieurs utilisateurs).<br><br>
+            <span class="warn-strong">Peu ou pas utile</span> si : tu as deja beaucoup de RAM libre,
+            ton usage est surtout du stockage de fichiers volumineux lus une seule fois (videos, sauvegardes),
+            ou de l'ecriture pure.<br><br>
+            Pas de risque en cas de panne du disque L2ARC : c'est juste un cache, ZFS retombe sur le disque
+            normal. Consomme un peu de RAM pour ses metadonnees (~1-3% de sa propre taille).
+            Pas besoin de redondance.
+          </div>
+        </details>
+
+        <details>
+          <summary>ZIL / SLOG (Separate Log) — a quoi ca sert ?</summary>
+          <div class="info-panel">
+            Accelere <span class="warn-strong">uniquement</span> les ecritures SYNCHRONES : NFS avec sync
+            active, bases de donnees, VMs/iSCSI. N'a AUCUN effet sur un simple partage SMB ou une copie de
+            fichiers classique (ecritures asynchrones).<br><br>
+            Demande un disque rapide et a faible latence (SSD/NVMe de qualite, idealement avec protection
+            contre coupure de courant). <br><br>
+            <span class="warn-strong">Risque sans mirror</span> : si ce disque tombe en panne PENDANT un
+            crash systeme, les toutes dernieres ecritures synchrones non confirmees peuvent etre perdues
+            (le reste du pool n'est pas affecte). Mirror recommande en production.
+          </div>
+        </details>
+
+        <details>
+          <summary>Special VDEV (metadonnees / petits fichiers) — a quoi ca sert ?</summary>
+          <div class="info-panel">
+            Stocke les metadonnees du pool (et en option les petits fichiers) sur un support rapide :
+            accelere enormement le listage de dossiers, la recherche, les acces a de nombreux petits fichiers.<br><br>
+            <span class="warn-strong">ATTENTION CRITIQUE</span> : contrairement au L2ARC, ce n'est PAS un
+            cache — c'est une extension permanente et indispensable du stockage. La perte du Special VDEV
+            (s'il n'est pas au moins aussi redondant que le pool principal) entraine la PERTE DE TOUT LE POOL,
+            y compris tes donnees sur les autres disques. Doit imperativement etre mirrore.
+          </div>
+        </details>
+      </section>
+
+      <section x-show="planResult.warnings.length || planResult.errors.length || name">
+        <h2>Verification en direct</h2>
+        <div class="messages">
+          <template x-for="err in planResult.errors" :key="err">
+            <div class="msg msg-error" x-text="err"></div>
+          </template>
+          <template x-for="warn in planResult.warnings" :key="warn">
+            <div class="msg msg-warning" x-text="warn"></div>
+          </template>
+        </div>
+        <label class="field-label">Commande qui sera executee</label>
+        <code class="cmd" x-text="planResult.command_preview"></code>
+      </section>
+
+      <section class="confirm-box" x-show="planResult.can_create">
+        <p>
+          <strong>Cette action va formater le(s) disque(s) selectionne(s) et est en principe irreversible.</strong>
+          Pour confirmer, retape le nom du pool ci-dessous.
+        </p>
+        <label class="field-label" for="confirm_name">Confirmation du nom</label>
+        <input type="text" id="confirm_name" name="confirm_name" x-model="confirmName" placeholder="retape le nom exact du pool" style="margin-bottom:1rem;">
+        <br>
+        <button type="submit" class="submit" :disabled="!canSubmit">Creer le pool</button>
+      </section>
+
+      <input type="hidden" name="vdev_type" :value="vdevType">
+      <input type="hidden" name="main_disks" :value="disksByRole('main').join(',')">
+      <input type="hidden" name="special_disks" :value="disksByRole('special').join(',')">
+      <input type="hidden" name="log_disks" :value="disksByRole('log').join(',')">
+      <input type="hidden" name="cache_disks" :value="disksByRole('cache').join(',')">
+    </form>
+  </main>
+
+  <script>
+    function poolForm() {
+      return {
+        availableDisks: {{ available_disks | tojson }},
+        vdevMin: {{ vdev_min | tojson }},
+        vdevLabels: {{ vdev_labels | tojson }},
+        name: '',
+        confirmName: '',
+        vdevType: 'mirror',
+        roles: {},
+        planResult: { errors: [], warnings: [], command_preview: '', can_create: false },
+        refreshTimer: null,
+
+        disksByRole(role) {
+          return Object.entries(this.roles).filter(([_, r]) => r === role).map(([path]) => path);
+        },
+        mainCount() {
+          return this.disksByRole('main').length;
+        },
+        formatSize(bytes) {
+          const gb = bytes / (1000 ** 3);
+          return gb >= 1000 ? (gb / 1000).toFixed(1) + ' TB' : gb.toFixed(1) + ' GB';
+        },
+        get canSubmit() {
+          return this.planResult.can_create && this.confirmName.trim() === this.name.trim() && this.name.trim().length > 0;
+        },
+        refreshPlan() {
+          clearTimeout(this.refreshTimer);
+          this.refreshTimer = setTimeout(() => this._doRefresh(), 250);
+        },
+        async _doRefresh() {
+          try {
+            const res = await fetch('/api/zfs/plan', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name: this.name,
+                vdev_type: this.vdevType,
+                main_disks: this.disksByRole('main'),
+                special_disks: this.disksByRole('special'),
+                log_disks: this.disksByRole('log'),
+                cache_disks: this.disksByRole('cache'),
+              }),
+            });
+            this.planResult = await res.json();
+          } catch (e) {
+            this.planResult = { errors: ['Impossible de contacter le serveur pour la validation.'], warnings: [], command_preview: '', can_create: false };
+          }
+        },
+      };
+    }
+  </script>
+</body>
+</html>

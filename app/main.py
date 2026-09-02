@@ -4,12 +4,12 @@ import os
 from dataclasses import asdict
 
 from fastapi import FastAPI, Request, Form, Depends, HTTPException
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import auth, disks
+from app import auth, disks, zfs
 
 BASE_DIR = os.path.dirname(__file__)
 
@@ -79,3 +79,113 @@ def dashboard(request: Request, username: str = Depends(require_login)):
 @app.get("/api/disks")
 def api_disks(username: str = Depends(require_login)):
     return [asdict(d) for d in disks.list_disks()]
+
+
+# ---------------------------------------------------------------------------
+# Pools ZFS
+# ---------------------------------------------------------------------------
+
+@app.get("/pools", response_class=HTMLResponse)
+def pools_list(request: Request, username: str = Depends(require_login)):
+    pool_list = zfs.list_pools()
+    return templates.TemplateResponse(
+        "pools.html",
+        {"request": request, "username": username, "pools": pool_list},
+    )
+
+
+@app.get("/pools/new", response_class=HTMLResponse)
+def pool_new_form(request: Request, username: str = Depends(require_login)):
+    available = disks.get_available_disks()
+    return templates.TemplateResponse(
+        "pool_new.html",
+        {
+            "request": request,
+            "username": username,
+            "available_disks": [asdict(d) for d in available],
+            "vdev_min": zfs.VDEV_MIN_DISKS,
+            "vdev_labels": zfs.VDEV_LABELS,
+        },
+    )
+
+
+def _parse_disk_list(raw: str) -> list[str]:
+    """Le formulaire envoie les disques choisis sous forme de chaine
+    separee par des virgules (rempli en JS a partir des cases cochees)."""
+    if not raw:
+        return []
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+@app.post("/api/zfs/plan")
+async def api_zfs_plan(request: Request, username: str = Depends(require_login)):
+    """Validation en direct (appelee en AJAX pendant que l'utilisateur
+    remplit le formulaire) : renvoie erreurs/avertissements/commande sans
+    rien creer. Revalide integralement cote serveur, comme la creation
+    reelle - les memes regles s'appliquent partout."""
+    body = await request.json()
+    check = zfs.validate_pool_plan(
+        name=body.get("name", ""),
+        vdev_type=body.get("vdev_type", ""),
+        main_disks=body.get("main_disks", []),
+        special_disks=body.get("special_disks", []),
+        log_disks=body.get("log_disks", []),
+        cache_disks=body.get("cache_disks", []),
+    )
+    return JSONResponse({
+        "errors": check.errors,
+        "warnings": check.warnings,
+        "command_preview": check.command_preview,
+        "can_create": check.can_create,
+    })
+
+
+@app.post("/pools", response_class=HTMLResponse)
+def pool_create(
+    request: Request,
+    username: str = Depends(require_login),
+    name: str = Form(...),
+    confirm_name: str = Form(...),
+    vdev_type: str = Form(...),
+    main_disks: str = Form(""),
+    special_disks: str = Form(""),
+    log_disks: str = Form(""),
+    cache_disks: str = Form(""),
+):
+    main_list = _parse_disk_list(main_disks)
+    special_list = _parse_disk_list(special_disks)
+    log_list = _parse_disk_list(log_disks)
+    cache_list = _parse_disk_list(cache_disks)
+
+    if confirm_name.strip() != name.strip():
+        check = zfs.PoolPlanCheck(errors=[
+            "Le nom tape pour confirmer ne correspond pas au nom du pool - rien n'a ete cree."
+        ])
+        return templates.TemplateResponse(
+            "pool_result.html",
+            {"request": request, "username": username, "success": False, "check": check, "pool_name": name},
+            status_code=400,
+        )
+
+    check = zfs.validate_pool_plan(name, vdev_type, main_list, special_list, log_list, cache_list)
+    if not check.can_create:
+        return templates.TemplateResponse(
+            "pool_result.html",
+            {"request": request, "username": username, "success": False, "check": check, "pool_name": name},
+            status_code=400,
+        )
+
+    try:
+        output = zfs.create_pool(name, vdev_type, main_list, special_list, log_list, cache_list)
+    except zfs.PoolCreationError as exc:
+        check.errors.append(str(exc))
+        return templates.TemplateResponse(
+            "pool_result.html",
+            {"request": request, "username": username, "success": False, "check": check, "pool_name": name},
+            status_code=500,
+        )
+
+    return templates.TemplateResponse(
+        "pool_result.html",
+        {"request": request, "username": username, "success": True, "check": check, "pool_name": name, "output": output},
+    )
