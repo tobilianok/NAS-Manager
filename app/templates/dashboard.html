@@ -19,6 +19,7 @@
     .badge-pool { background: #164e63; color: #a5f3fc; }
     .badge-available { background: #14532d; color: #bbf7d0; }
     a.logout { color: #94a3b8; font-size: .85rem; text-decoration: none; }
+    .warning { background: #78350f; color: #fde68a; padding: .8rem 1rem; border-radius: 8px; margin-top: 1rem; font-size: .9rem; }
   </style>
 </head>
 <body>
@@ -34,6 +35,10 @@
       Phase 0/1 en cours de construction : detection des disques operationnelle.
       Le tableau de bord (CPU/RAM, pools ZFS, SMART, partages, Docker) arrive dans les phases suivantes.
     </p>
+
+    {% if warning %}
+    <div class="warning">⚠ {{ warning }}</div>
+    {% endif %}
 
     <h2>Disques detectes</h2>
     <table>

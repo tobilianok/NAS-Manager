@@ -62,9 +62,17 @@ def logout(request: Request):
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request, username: str = Depends(require_login)):
     disk_list = disks.list_disks()
+    warning = None
+    if not disk_list:
+        warning = (
+            "Aucun disque detecte. Soit ce serveur n'a reellement aucun "
+            "disque visible, soit la commande 'lsblk' a echoue cote "
+            "systeme. Verifie les journaux avec : "
+            "journalctl -u nas-manager -n 50 --no-pager"
+        )
     return templates.TemplateResponse(
         "dashboard.html",
-        {"request": request, "username": username, "disks": disk_list},
+        {"request": request, "username": username, "disks": disk_list, "warning": warning},
     )
 
 

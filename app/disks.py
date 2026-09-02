@@ -25,10 +25,13 @@ Trois etats possibles pour un disque physique :
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger("nas_manager.disks")
 
 
 @dataclass
@@ -47,19 +50,34 @@ class Disk:
 def _run(cmd: list[str]) -> str:
     """Execute une commande systeme sans jamais lever d'exception : si l'outil
     n'est pas installe (ex: zfsutils-linux pas encore pose) ou echoue, on
-    degrade proprement plutot que de faire planter le tableau de bord."""
+    degrade proprement plutot que de faire planter le tableau de bord. Toute
+    erreur est journalisee (visible via `journalctl -u nas-manager`) pour
+    pouvoir diagnostiquer sans avoir a deviner."""
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     except FileNotFoundError:
+        logger.warning("Commande introuvable : %s", " ".join(cmd))
         return ""
+    if result.returncode != 0:
+        logger.warning(
+            "Commande '%s' a echoue (code %s) : %s",
+            " ".join(cmd), result.returncode, result.stderr.strip(),
+        )
     return result.stdout.strip()
 
 
 def _lsblk_tree() -> list[dict]:
     """Retourne l'arborescence complete des blocs (disques + partitions +
-    couches RAID/LVM imbriquees, avec leurs enfants)."""
+    couches RAID/LVM imbriquees, avec leurs enfants).
+
+    Note : -O (--output-all) n'est PAS combine avec -o (--output) car ces
+    deux options sont mutuellement exclusives sur certaines versions de
+    lsblk (l'une des deux est silencieusement ignoree, ou la commande
+    echoue selon la version) - -o seul suffit, on liste explicitement les
+    colonnes dont on a besoin.
+    """
     out = _run([
-        "lsblk", "-J", "-b", "-O",
+        "lsblk", "-J", "-b",
         "-o", "NAME,PATH,SIZE,TYPE,MODEL,SERIAL,ROTA,MOUNTPOINT,FSTYPE",
     ])
     if not out:
@@ -67,6 +85,7 @@ def _lsblk_tree() -> list[dict]:
     try:
         data = json.loads(out)
     except json.JSONDecodeError:
+        logger.warning("Sortie de lsblk illisible (JSON invalide)")
         return []
     return data.get("blockdevices", [])
 
