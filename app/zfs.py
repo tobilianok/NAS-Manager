@@ -301,6 +301,37 @@ def validate_pool_plan(
             "Recommande de le mirrorer pour un usage en production."
         )
 
+    # --- Tailles de disques incoherentes au sein d'un meme groupe ---
+    # Dans un mirror/raidz, la capacite utile est plafonnee par le PLUS PETIT
+    # disque du groupe - les autres gaspillent leur surplus. Si l'ecart est
+    # important, ZFS refuse meme carrement de creer le pool (sans -f, qu'on
+    # n'utilise jamais ici). On le detecte nous-memes en amont pour donner
+    # une explication claire plutot qu'un message d'erreur ZFS brut.
+    def _check_group_sizes(disk_paths: list[str], group_label: str) -> None:
+        if len(disk_paths) < 2:
+            return
+        sizes = [live_disks[p].size_bytes for p in disk_paths if p in live_disks and live_disks[p].size_bytes > 0]
+        if len(sizes) < 2:
+            return
+        smallest, largest = min(sizes), max(sizes)
+        if smallest == 0:
+            return
+        ratio = largest / smallest
+        if ratio >= 1.10:
+            wasted_pct = round((1 - smallest / largest) * 100)
+            check.warnings.append(
+                f"{group_label} : les disques choisis ont des tailles tres differentes "
+                f"(le plus petit fait {smallest / 1e9:.0f} GB, le plus grand "
+                f"{largest / 1e9:.0f} GB). La capacite utile sera plafonnee a la taille "
+                f"du plus petit disque sur chacun - environ {wasted_pct}% de la capacite "
+                f"du plus grand disque sera gaspillee. Si l'ecart est trop important, "
+                f"ZFS refusera meme purement et simplement de creer le pool."
+            )
+
+    _check_group_sizes(main_disks, "Pool principal")
+    _check_group_sizes(special_disks, "Special VDEV")
+    _check_group_sizes(log_disks, "SLOG")
+
     # --- Construction de la commande (apercu, et utilisee telle quelle a la creation) ---
     check.command_preview = _build_create_command(name or "<nom>", vdev_type, main_disks, special_disks, log_disks, cache_disks)
 
