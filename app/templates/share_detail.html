@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Partage {{ share.name }} - NAS Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
+    header a { color: #94a3b8; text-decoration: none; font-size: .85rem; margin-left: 1rem; }
+    main { padding: 2rem; max-width: 750px; margin: 0 auto; }
+    h1 { font-size: 1.3rem; margin-bottom: .2rem; }
+    .proto-badge { padding: .15rem .5rem; border-radius: 999px; font-size: .72rem; font-weight: 600; margin-left: .4rem; }
+    .proto-smb { background: #164e63; color: #a5f3fc; }
+    .proto-nfs { background: #3730a3; color: #c7d2fe; }
+    .meta { font-size: .85rem; color: #94a3b8; margin-bottom: 1.5rem; }
+    h2 { font-size: .95rem; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; margin-top: 1.8rem; }
+    table { width: 100%; border-collapse: collapse; margin-top: .5rem; }
+    th, td { text-align: left; padding: .55rem .7rem; border-bottom: 1px solid #334155; font-size: .87rem; }
+    th { color: #94a3b8; font-weight: 500; }
+    .badge-rw { background: #14532d; color: #bbf7d0; padding: .1rem .5rem; border-radius: 999px; font-size: .72rem; }
+    .badge-ro { background: #334155; color: #cbd5e1; padding: .1rem .5rem; border-radius: 999px; font-size: .72rem; }
+    .card { background: #1e293b; border-radius: 10px; padding: 1rem 1.3rem; margin-top: .5rem; }
+    .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+    input, select { padding: .5rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: .85rem; }
+    button { padding: .5rem 1rem; border: none; border-radius: 6px; cursor: pointer; font-size: .85rem; font-weight: 600; }
+    .btn-primary { background: #2563eb; color: white; }
+    .btn-danger { background: #7f1d1d; color: #fecaca; }
+    .msg-error { background: #7f1d1d; color: #fecaca; padding: .6rem .8rem; border-radius: 6px; margin: 1rem 0; font-size: .85rem; }
+    .msg-warning { background: #78350f; color: #fde68a; padding: .6rem .8rem; border-radius: 6px; margin: .5rem 0; font-size: .85rem; }
+    .actions { margin-top: 2rem; }
+    a.danger { color: #fca5a5; font-size: .85rem; text-decoration: none; }
+    .nfs-note { font-size: .8rem; color: #94a3b8; margin-top: .5rem; line-height: 1.6; }
+    form.inline { display: inline; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong><a href="/shares" style="color:#e2e8f0; text-decoration:none;">← Partages</a></strong>
+    <div>
+      <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
+      <a href="/logout">Deconnexion</a>
+    </div>
+  </header>
+  <main>
+    <h1>
+      {{ share.name }}
+      {% if 'smb' in share.protocols %}<span class="proto-badge proto-smb">SMB</span>{% endif %}
+      {% if 'nfs' in share.protocols %}<span class="proto-badge proto-nfs">NFS</span>{% endif %}
+    </h1>
+    <div class="meta">{{ share.mountpoint }} · dataset {{ share.dataset }} · pool "{{ share.pool }}"</div>
+
+    {% if error %}<div class="msg-error">{{ error }}</div>{% endif %}
+    {% for w in warnings %}<div class="msg-warning">⚠ {{ w }}</div>{% endfor %}
+
+    <h2>Utilisateurs autorises</h2>
+    <table>
+      <thead><tr><th>Compte</th><th>Acces</th><th></th></tr></thead>
+      <tbody>
+        {% for u in share.users %}
+        <tr>
+          <td>{{ u.username }}</td>
+          <td>
+            {% if u.access == 'rw' %}<span class="badge-rw">Lecture/ecriture</span>
+            {% else %}<span class="badge-ro">Lecture seule</span>{% endif %}
+          </td>
+          <td>
+            <form class="inline" method="post" action="/shares/{{ share.name }}/users/{{ u.username }}/delete">
+              <button type="submit" class="btn-danger">Retirer</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not share.users %}
+        <tr><td colspan="3" style="color:#94a3b8;">Aucun utilisateur autorise pour l'instant.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+
+    {% if available_users %}
+    <div class="card">
+      <form class="row" method="post" action="/shares/{{ share.name }}/users">
+        <select name="share_username" required>
+          {% for u in available_users %}
+          <option value="{{ u.username }}">{{ u.username }}</option>
+          {% endfor %}
+        </select>
+        <select name="access">
+          <option value="rw">Lecture/ecriture</option>
+          <option value="ro">Lecture seule</option>
+        </select>
+        <button type="submit" class="btn-primary">Ajouter</button>
+      </form>
+    </div>
+    {% else %}
+    <p style="color:#94a3b8; font-size:.85rem;">
+      Tous les comptes de partage existants ont deja acces, ou aucun compte n'a encore ete cree
+      (<a href="/share-users" style="color:#93c5fd;">en creer un</a>).
+    </p>
+    {% endif %}
+
+    {% if 'nfs' in share.protocols %}
+    <h2>Reseaux autorises (NFS)</h2>
+    <div class="card">
+      <form class="row" method="post" action="/shares/{{ share.name }}/nfs-networks">
+        <input type="text" name="networks" style="flex:1;" value="{{ share.nfs_networks | join(', ') }}" placeholder="192.168.1.0/24">
+        <button type="submit" class="btn-primary">Mettre a jour</button>
+      </form>
+      <div class="nfs-note">
+        Plages IP (au format CIDR, separees par des virgules) autorisees a monter ce partage NFS.
+        Rappel : NFS ne verifie pas d'identifiant/mot de passe par utilisateur, seulement l'adresse IP du client -
+        ne l'ouvre jamais au-dela de ton reseau local sans comprendre les implications.
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="actions">
+      <a class="danger" href="/shares/{{ share.name }}/delete">Supprimer ce partage</a>
+    </div>
+  </main>
+</body>
+</html>

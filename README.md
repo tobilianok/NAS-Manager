@@ -11,6 +11,10 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 - Phase 3 : tableau de bord système (CPU/RAM/uptime en direct), état SMART des
   disques, remplacement guidé de disque en cas de panne (mise hors ligne,
   instructions physiques, suivi du resilver) — livré, en attente de test réel.
+- Phase 4 : dossiers partagés SMB/NFS (chaque partage = un dataset ZFS dédié),
+  comptes de partage dédiés (sans accès SSH ni à l'interface d'admin),
+  permissions lecture/écriture ou lecture seule par utilisateur, export NFS
+  restreint par plage IP — livré, en attente de test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -55,7 +59,7 @@ pytest tests/ -v
 Optionnel (pas nécessaire pour faire tourner NAS Manager), mais recommandé
 avant de valider une mise à jour manuellement modifiée : la suite couvre la
 détection des disques, la validation des pools ZFS, le remplacement de
-disque, la lecture SMART et les routes web.
+disque, la lecture SMART, les partages SMB/NFS et les routes web.
 
 ## Développement
 

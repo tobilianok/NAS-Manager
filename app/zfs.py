@@ -715,3 +715,60 @@ def get_resilver_status(pool_name: str) -> ResilverStatus:
             status.errors_text = stripped[len("errors:"):].strip()
 
     return status
+
+
+# ---------------------------------------------------------------------------
+# Datasets (utilises notamment par app.shares pour les dossiers partages)
+# ---------------------------------------------------------------------------
+
+class DatasetError(RuntimeError):
+    pass
+
+
+def dataset_exists(dataset_path: str) -> bool:
+    code, out, _ = _run(["zfs", "list", "-H", "-o", "name", dataset_path])
+    return code == 0 and out.strip() == dataset_path
+
+
+def get_dataset_mountpoint(dataset_path: str) -> str | None:
+    code, out, _ = _run(["zfs", "list", "-H", "-o", "mountpoint", dataset_path])
+    if code != 0 or not out:
+        return None
+    mountpoint = out.strip()
+    return mountpoint if mountpoint not in ("none", "-") else None
+
+
+def create_dataset(dataset_path: str) -> str:
+    """Cree un dataset ZFS (et ses eventuels parents manquants via -p).
+    dataset_path doit etre de la forme '<pool>/.../<nom>' ; le pool doit
+    deja exister reellement (revalide en direct, jamais de confiance dans
+    un nom fourni par le client)."""
+    pool_name = dataset_path.split("/")[0]
+    if get_pool(pool_name) is None:
+        raise DatasetError(f"Le pool '{pool_name}' n'existe pas.")
+    if dataset_exists(dataset_path):
+        raise DatasetError(f"Le dataset '{dataset_path}' existe deja.")
+
+    code, out, err = _run(["zfs", "create", "-p", dataset_path])
+    if code != 0:
+        raise DatasetError(f"Creation du dataset '{dataset_path}' impossible : {err or out}")
+
+    logger.info("Dataset '%s' cree", dataset_path)
+    return out
+
+
+def destroy_dataset(dataset_path: str) -> str:
+    """Detruit un dataset ZFS et tout son contenu (recursif sur ses
+    eventuels snapshots/enfants). IRREVERSIBLE - ne doit jamais etre appele
+    sans confirmation explicite cote route web (meme principe que
+    destroy_pool). Jamais de -f : si le dataset est occupe (montage actif
+    ailleurs, etc.), ZFS refuse lui-meme plutot que de forcer."""
+    if not dataset_exists(dataset_path):
+        raise DatasetError(f"Le dataset '{dataset_path}' n'existe pas.")
+
+    code, out, err = _run(["zfs", "destroy", "-r", dataset_path])
+    if code != 0:
+        raise DatasetError(f"Suppression du dataset '{dataset_path}' impossible : {err or out}")
+
+    logger.warning("Dataset '%s' detruit (demande utilisateur)", dataset_path)
+    return out

@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import auth, disks, zfs, sysstats, smart as smart_module, replace_workflow
+from app import auth, disks, zfs, sysstats, smart as smart_module, replace_workflow, shares, nasusers
 
 BASE_DIR = os.path.dirname(__file__)
 
@@ -538,3 +538,204 @@ def partial_resilver(request: Request, username: str = Depends(require_login)):
         "_resilver_partial.html",
         {"request": request, "resilver": resilver},
     )
+
+
+# ---------------------------------------------------------------------------
+# Comptes de partage (SMB/NFS) - independants des comptes d'administration
+# ---------------------------------------------------------------------------
+
+@app.get("/share-users", response_class=HTMLResponse)
+def share_users_list(request: Request, username: str = Depends(require_login), error: str | None = None):
+    return templates.TemplateResponse(
+        "share_users.html",
+        {"request": request, "username": username, "users": nasusers.list_share_users(), "error": error},
+    )
+
+
+@app.post("/share-users", response_class=HTMLResponse)
+def share_users_create(
+    request: Request, username: str = Depends(require_login),
+    new_username: str = Form(...), password: str = Form(...),
+):
+    try:
+        nasusers.create_share_user(new_username, password)
+    except nasusers.ShareUserError as exc:
+        return templates.TemplateResponse(
+            "share_users.html",
+            {"request": request, "username": username, "users": nasusers.list_share_users(), "error": str(exc)},
+            status_code=400,
+        )
+    return RedirectResponse("/share-users", status_code=302)
+
+
+@app.post("/share-users/{name}/password", response_class=HTMLResponse)
+def share_users_password(
+    request: Request, name: str, username: str = Depends(require_login), password: str = Form(...),
+):
+    try:
+        nasusers.set_share_user_password(name, password)
+    except nasusers.ShareUserError as exc:
+        return templates.TemplateResponse(
+            "share_users.html",
+            {"request": request, "username": username, "users": nasusers.list_share_users(), "error": str(exc)},
+            status_code=400,
+        )
+    return RedirectResponse("/share-users", status_code=302)
+
+
+@app.post("/share-users/{name}/delete", response_class=HTMLResponse)
+def share_users_delete(request: Request, name: str, username: str = Depends(require_login)):
+    try:
+        nasusers.delete_share_user(name)
+    except nasusers.ShareUserError as exc:
+        return templates.TemplateResponse(
+            "share_users.html",
+            {"request": request, "username": username, "users": nasusers.list_share_users(), "error": str(exc)},
+            status_code=400,
+        )
+    return RedirectResponse("/share-users", status_code=302)
+
+
+# ---------------------------------------------------------------------------
+# Dossiers partages (SMB/NFS)
+# ---------------------------------------------------------------------------
+
+@app.get("/shares", response_class=HTMLResponse)
+def shares_list(request: Request, username: str = Depends(require_login)):
+    return templates.TemplateResponse(
+        "shares.html",
+        {"request": request, "username": username, "shares": shares.list_shares()},
+    )
+
+
+@app.get("/shares/new", response_class=HTMLResponse)
+def share_new_form(request: Request, username: str = Depends(require_login)):
+    return templates.TemplateResponse(
+        "share_new.html",
+        {"request": request, "username": username, "pools": zfs.list_pools(), "error": None},
+    )
+
+
+@app.post("/shares", response_class=HTMLResponse)
+def share_create(
+    request: Request, username: str = Depends(require_login),
+    name: str = Form(...), pool: str = Form(...),
+    protocol_smb: str = Form(""), protocol_nfs: str = Form(""),
+):
+    protocols = []
+    if protocol_smb:
+        protocols.append("smb")
+    if protocol_nfs:
+        protocols.append("nfs")
+
+    try:
+        share, warnings = shares.create_share(name, pool, protocols)
+    except (shares.ShareError, zfs.DatasetError) as exc:
+        return templates.TemplateResponse(
+            "share_new.html",
+            {"request": request, "username": username, "pools": zfs.list_pools(), "error": str(exc)},
+            status_code=400,
+        )
+    return RedirectResponse(f"/shares/{share.name}", status_code=302)
+
+
+def _render_share_detail(
+    request: Request, username: str, name: str,
+    error: str | None = None, warnings: list[str] | None = None, status_code: int = 200,
+):
+    share = shares.get_share(name)
+    if share is None:
+        raise HTTPException(status_code=404, detail=f"Partage '{name}' introuvable.")
+
+    used_usernames = {u.username for u in share.users}
+    available_users = [u for u in nasusers.list_share_users() if u.username not in used_usernames]
+
+    return templates.TemplateResponse(
+        "share_detail.html",
+        {
+            "request": request, "username": username, "share": share,
+            "available_users": available_users, "error": error, "warnings": warnings or [],
+        },
+        status_code=status_code,
+    )
+
+
+# IMPORTANT : declaree APRES /shares/new pour la meme raison que
+# /pools/{name} apres /pools/new (voir commentaire plus haut).
+@app.get("/shares/{name}", response_class=HTMLResponse)
+def share_detail(request: Request, name: str, username: str = Depends(require_login)):
+    return _render_share_detail(request, username, name)
+
+
+@app.post("/shares/{name}/users", response_class=HTMLResponse)
+def share_add_user(
+    request: Request, name: str, username: str = Depends(require_login),
+    share_username: str = Form(...), access: str = Form(...),
+):
+    try:
+        warnings = shares.add_user_to_share(name, share_username, access)
+    except shares.ShareError as exc:
+        return _render_share_detail(request, username, name, error=str(exc), status_code=400)
+    return _render_share_detail(request, username, name, warnings=warnings)
+
+
+@app.post("/shares/{name}/users/{share_username}/delete", response_class=HTMLResponse)
+def share_remove_user(request: Request, name: str, share_username: str, username: str = Depends(require_login)):
+    try:
+        warnings = shares.remove_user_from_share(name, share_username)
+    except shares.ShareError as exc:
+        return _render_share_detail(request, username, name, error=str(exc), status_code=400)
+    return _render_share_detail(request, username, name, warnings=warnings)
+
+
+@app.post("/shares/{name}/nfs-networks", response_class=HTMLResponse)
+def share_update_nfs_networks(
+    request: Request, name: str, username: str = Depends(require_login), networks: str = Form(...),
+):
+    network_list = [n.strip() for n in networks.split(",") if n.strip()]
+    try:
+        warnings = shares.update_nfs_networks(name, network_list)
+    except shares.ShareError as exc:
+        return _render_share_detail(request, username, name, error=str(exc), status_code=400)
+    return _render_share_detail(request, username, name, warnings=warnings)
+
+
+@app.get("/shares/{name}/delete", response_class=HTMLResponse)
+def share_delete_form(request: Request, name: str, username: str = Depends(require_login)):
+    share = shares.get_share(name)
+    if share is None:
+        raise HTTPException(status_code=404, detail=f"Partage '{name}' introuvable.")
+    return templates.TemplateResponse(
+        "share_delete.html",
+        {"request": request, "username": username, "share": share, "error": None},
+    )
+
+
+@app.post("/shares/{name}/delete", response_class=HTMLResponse)
+def share_delete_submit(
+    request: Request, name: str, username: str = Depends(require_login), confirm_name: str = Form(...),
+):
+    share = shares.get_share(name)
+    if share is None:
+        raise HTTPException(status_code=404, detail=f"Partage '{name}' introuvable.")
+
+    if confirm_name.strip() != name.strip():
+        return templates.TemplateResponse(
+            "share_delete.html",
+            {
+                "request": request, "username": username, "share": share,
+                "error": "Le nom tape ne correspond pas au nom du partage - rien n'a ete supprime.",
+            },
+            status_code=400,
+        )
+
+    try:
+        shares.delete_share(name)
+    except (shares.ShareError, zfs.DatasetError) as exc:
+        return templates.TemplateResponse(
+            "share_delete.html",
+            {"request": request, "username": username, "share": share, "error": str(exc)},
+            status_code=500,
+        )
+
+    return RedirectResponse("/shares", status_code=302)

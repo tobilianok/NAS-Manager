@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Comptes de partage - NAS Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
+    header a { color: #94a3b8; text-decoration: none; font-size: .85rem; margin-left: 1rem; }
+    main { padding: 2rem; max-width: 750px; margin: 0 auto; }
+    h1 { font-size: 1.3rem; }
+    p.intro { color: #94a3b8; font-size: .88rem; line-height: 1.6; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    th, td { text-align: left; padding: .6rem .8rem; border-bottom: 1px solid #334155; font-size: .88rem; }
+    th { color: #94a3b8; font-weight: 500; }
+    form.inline { display: inline; }
+    input, select { padding: .5rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: .85rem; }
+    button { padding: .5rem 1rem; border: none; border-radius: 6px; cursor: pointer; font-size: .85rem; font-weight: 600; }
+    .btn-primary { background: #2563eb; color: white; }
+    .btn-danger { background: #7f1d1d; color: #fecaca; }
+    .new-user-card { background: #1e293b; border-radius: 10px; padding: 1.2rem 1.5rem; margin-top: 1.5rem; }
+    .new-user-card .row { display: flex; gap: .8rem; margin-top: .6rem; align-items: center; }
+    .msg-error { background: #7f1d1d; color: #fecaca; padding: .6rem .8rem; border-radius: 6px; margin-top: 1rem; font-size: .85rem; }
+    .pwd-row { display: flex; gap: .5rem; align-items: center; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong><a href="/" style="color:#e2e8f0; text-decoration:none;">← NAS Manager</a></strong>
+    <div>
+      <a href="/shares">Partages</a>
+      <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
+      <a href="/logout">Deconnexion</a>
+    </div>
+  </header>
+  <main>
+    <h1>Comptes de partage</h1>
+    <p class="intro">
+      Ces comptes servent UNIQUEMENT a s'authentifier sur les partages SMB/NFS -
+      ils n'ont aucun acces SSH ni a cette interface d'administration
+      (contrairement aux comptes du groupe "nasadmin").
+    </p>
+
+    {% if error %}
+    <div class="msg-error">{{ error }}</div>
+    {% endif %}
+
+    <table>
+      <thead><tr><th>Compte</th><th>Changer le mot de passe</th><th></th></tr></thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td>{{ u.username }}</td>
+          <td>
+            <form class="pwd-row" method="post" action="/share-users/{{ u.username }}/password">
+              <input type="password" name="password" placeholder="Nouveau mot de passe" minlength="8" required>
+              <button type="submit" class="btn-primary">Changer</button>
+            </form>
+          </td>
+          <td>
+            <form class="inline" method="post" action="/share-users/{{ u.username }}/delete">
+              <button type="submit" class="btn-danger">Supprimer</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not users %}
+        <tr><td colspan="3" style="color:#94a3b8;">Aucun compte de partage pour l'instant.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+
+    <div class="new-user-card">
+      <strong>Nouveau compte de partage</strong>
+      <form method="post" action="/share-users">
+        <div class="row">
+          <input type="text" name="new_username" placeholder="nom d'utilisateur" pattern="[a-z][a-z0-9_-]{2,31}" required>
+          <input type="password" name="password" placeholder="mot de passe (8+ caracteres)" minlength="8" required>
+          <button type="submit" class="btn-primary">Creer</button>
+        </div>
+      </form>
+    </div>
+  </main>
+</body>
+</html>
