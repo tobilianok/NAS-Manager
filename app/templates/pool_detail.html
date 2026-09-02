@@ -1,45 +1,7 @@
-<!doctype html>
-<html lang="fr">
-<head>
-  <meta charset="utf-8">
-  <title>Pool {{ pool.name }} - NAS Manager</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
-    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
-    header a { color: #94a3b8; text-decoration: none; font-size: .85rem; margin-left: 1rem; }
-    main { padding: 2rem; max-width: 900px; margin: 0 auto; }
-    h1 { font-size: 1.3rem; margin-bottom: .2rem; }
-    h2 { font-size: .95rem; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; margin-top: 1.8rem; }
-    .health { padding: .15rem .5rem; border-radius: 999px; font-size: .75rem; font-weight: 600; margin-left: .6rem; }
-    .health-ONLINE { background: #14532d; color: #bbf7d0; }
-    .health-DEGRADED { background: #78350f; color: #fde68a; }
-    .health-FAULTED, .health-UNAVAIL { background: #7f1d1d; color: #fecaca; }
-    .bar-bg { background: #1e293b; border-radius: 6px; height: 10px; overflow: hidden; margin: .6rem 0; }
-    .bar-fill { background: #2563eb; height: 100%; }
-    .meta { font-size: .85rem; color: #94a3b8; }
-    table { width: 100%; border-collapse: collapse; margin-top: .5rem; }
-    th, td { text-align: left; padding: .55rem .7rem; border-bottom: 1px solid #334155; font-size: .87rem; }
-    th { color: #94a3b8; font-weight: 500; }
-    .badge { padding: .15rem .5rem; border-radius: 999px; font-size: .72rem; font-weight: 600; }
-    .badge-ONLINE { background: #14532d; color: #bbf7d0; }
-    .badge-other { background: #7f1d1d; color: #fecaca; }
-    a.replace-link { color: #fca5a5; text-decoration: none; font-size: .82rem; }
-    .banner-replace { background: #7f1d1d; color: #fecaca; padding: .9rem 1.2rem; border-radius: 8px; margin-bottom: 1.2rem; font-size: .9rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
-    .banner-replace a { color: #fff; background: #dc2626; padding: .5rem 1rem; border-radius: 6px; text-decoration: none; font-weight: 600; white-space: nowrap; }
-    .actions { margin-top: 1.5rem; }
-    a.danger { color: #fca5a5; font-size: .85rem; text-decoration: none; }
-  </style>
-</head>
-<body>
-  <header>
-    <strong><a href="/pools" style="color:#e2e8f0; text-decoration:none;">← Pools</a></strong>
-    <div>
-      <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
-      <a href="/logout">Deconnexion</a>
-    </div>
-  </header>
-  <main>
+{% extends "base.html" %}
+{% block title %}Pool {{ pool.name }} - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/pools">← Pools</a>{% endblock %}
+{% block content %}
     {% if replacement_state and replacement_state.pool == pool.name %}
     <div class="banner-replace">
       <span>🔧 Remplacement en cours : {{ replacement_state.old_disk }} - {{ step_label }}</span>
@@ -56,7 +18,7 @@
 
     {% for group_name, group_disks in [('Pool principal', pool.main_disks), ('Special VDEV', pool.special_disks), ('SLOG', pool.log_disks), ('L2ARC (cache)', pool.cache_disks)] %}
       {% if group_disks %}
-      <h2>{{ group_name }}</h2>
+      <h2 class="section-title">{{ group_name }}</h2>
       <table>
         <thead><tr><th>Disque</th><th>Etat</th><th></th></tr></thead>
         <tbody>
@@ -64,10 +26,10 @@
           {% set state = pool.disk_states.get(d, 'ONLINE' if group_name == 'L2ARC (cache)' else 'INCONNU') %}
           <tr>
             <td>{{ d }}</td>
-            <td><span class="badge {{ 'badge-ONLINE' if state == 'ONLINE' else 'badge-other' }}">{{ state }}</span></td>
+            <td><span class="badge {{ 'badge-ok' if state == 'ONLINE' else 'badge-danger' }}">{{ state }}</span></td>
             <td>
               {% if group_name != 'L2ARC (cache)' %}
-              <a class="replace-link" href="/pools/{{ pool.name }}/disks/{{ d.split('/')[-1] }}/replace">Remplacer ce disque</a>
+              <a class="btn-link" style="color:#fca5a5;" href="/pools/{{ pool.name }}/disks/{{ d.split('/')[-1] }}/replace">Remplacer ce disque</a>
               {% endif %}
             </td>
           </tr>
@@ -78,8 +40,6 @@
     {% endfor %}
 
     <div class="actions">
-      <a class="danger" href="/pools/{{ pool.name }}/delete">Supprimer ce pool</a>
+      <a class="btn-link" style="color:#fca5a5;" href="/pools/{{ pool.name }}/delete">Supprimer ce pool</a>
     </div>
-  </main>
-</body>
-</html>
+{% endblock %}

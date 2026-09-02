@@ -11,7 +11,10 @@ Type=simple
 User=root
 WorkingDirectory=/opt/nas-manager
 EnvironmentFile=/opt/nas-manager/.env
-ExecStart=/opt/nas-manager/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
+# HTTPS avec le certificat auto-signe genere par install.sh (voir README -
+# "Securite - HTTPS"). Le port 8443 (plutot que 443) evite tout conflit
+# avec un service publie par une stack Docker sur le port standard.
+ExecStart=/opt/nas-manager/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8443 --ssl-keyfile /etc/nas-manager/ssl/privkey.pem --ssl-certfile /etc/nas-manager/ssl/cert.pem
 Restart=on-failure
 RestartSec=5
 

@@ -1,36 +1,7 @@
-<!doctype html>
-<html lang="fr">
-<head>
-  <meta charset="utf-8">
-  <title>Supprimer {{ pool.name }} - NAS Manager</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
-    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
-    header a { color: #94a3b8; text-decoration: none; font-size: .85rem; margin-left: 1rem; }
-    main { padding: 2rem; max-width: 700px; margin: 0 auto; }
-    h1 { font-size: 1.2rem; }
-    .confirm-box { border: 2px solid #7f1d1d; border-radius: 10px; padding: 1.5rem; background: #7f1d1d22; }
-    .confirm-box p { font-size: .9rem; line-height: 1.6; }
-    .field-label { display: block; font-size: .85rem; color: #94a3b8; margin: 1rem 0 .3rem; }
-    input[type=text] { width: 100%; padding: .6rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; box-sizing: border-box; font-size: .95rem; }
-    .msg-error { background: #7f1d1d; color: #fecaca; padding: .6rem .8rem; border-radius: 6px; margin-top: 1rem; font-size: .85rem; }
-    .actions { margin-top: 1.2rem; display: flex; gap: .8rem; }
-    button.destroy { padding: .8rem 1.5rem; border: none; border-radius: 6px; background: #dc2626; color: white; font-weight: 600; cursor: pointer; font-size: .95rem; }
-    button.destroy:hover { background: #b91c1c; }
-    a.cancel { padding: .8rem 1.5rem; border-radius: 6px; text-decoration: none; color: #94a3b8; border: 1px solid #334155; }
-    ul.recap { font-size: .85rem; color: #cbd5e1; line-height: 1.7; }
-  </style>
-</head>
-<body>
-  <header>
-    <strong><a href="/pools" style="color:#e2e8f0; text-decoration:none;">← Pools</a></strong>
-    <div>
-      <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
-      <a href="/logout">Deconnexion</a>
-    </div>
-  </header>
-  <main>
+{% extends "base.html" %}
+{% block title %}Supprimer {{ pool.name }} - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/pools">← Pools</a>{% endblock %}
+{% block content %}
     <h1>Supprimer le pool "{{ pool.name }}"</h1>
     <div class="confirm-box">
       <p>
@@ -46,18 +17,16 @@
       </ul>
 
       {% if error %}
-      <div class="msg-error">{{ error }}</div>
+      <div class="msg msg-error">{{ error }}</div>
       {% endif %}
 
       <form method="post" action="/pools/{{ pool.name }}/delete">
-        <label class="field-label" for="confirm_name">Pour confirmer, retape le nom exact du pool</label>
+        <label for="confirm_name">Pour confirmer, retape le nom exact du pool</label>
         <input type="text" id="confirm_name" name="confirm_name" placeholder="{{ pool.name }}" autocomplete="off" required>
         <div class="actions">
-          <button type="submit" class="destroy">Supprimer definitivement</button>
-          <a class="cancel" href="/pools">Annuler</a>
+          <button type="submit" class="btn-solid-danger">Supprimer definitivement</button>
+          <a class="btn btn-cancel" href="/pools">Annuler</a>
         </div>
       </form>
     </div>
-  </main>
-</body>
-</html>
+{% endblock %}

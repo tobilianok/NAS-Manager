@@ -4,30 +4,19 @@
   <meta charset="utf-8">
   <title>NAS Manager - Connexion</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0;
-           display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-    .card { background: #1e293b; padding: 2.5rem; border-radius: 12px; width: 320px; box-shadow: 0 10px 30px rgba(0,0,0,.3); }
-    h1 { font-size: 1.25rem; margin: 0 0 1.5rem; }
-    label { display: block; font-size: .85rem; margin-bottom: .25rem; color: #94a3b8; }
-    input { width: 100%; padding: .6rem; margin-bottom: 1rem; border-radius: 6px; border: 1px solid #334155;
-            background: #0f172a; color: #e2e8f0; box-sizing: border-box; }
-    button { width: 100%; padding: .7rem; border: none; border-radius: 6px; background: #2563eb; color: white;
-             font-weight: 600; cursor: pointer; }
-    button:hover { background: #1d4ed8; }
-    .error { background: #7f1d1d; color: #fecaca; padding: .6rem; border-radius: 6px; margin-bottom: 1rem; font-size: .85rem; }
-  </style>
+  <link rel="stylesheet" href="/static/css/style.css">
 </head>
-<body>
-  <div class="card">
-    <h1>NAS Manager</h1>
-    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+<body class="login-body">
+  <div class="login-card">
+    <h1><span class="logo-dot"></span> NAS Manager</h1>
+    <p class="login-sub">Gestion NAS - connexion avec ton compte systeme</p>
+    {% if error %}<div class="msg msg-error">{{ error }}</div>{% endif %}
     <form method="post" action="/login">
       <label for="username">Compte systeme</label>
       <input type="text" id="username" name="username" autocomplete="username" required>
       <label for="password">Mot de passe</label>
       <input type="password" id="password" name="password" autocomplete="current-password" required>
-      <button type="submit">Se connecter</button>
+      <button type="submit" class="btn-primary" style="margin-top:1.4rem;">Se connecter</button>
     </form>
   </div>
 </body>

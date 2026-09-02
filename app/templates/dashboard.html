@@ -1,64 +1,9 @@
-<!doctype html>
-<html lang="fr">
-<head>
-  <meta charset="utf-8">
-  <title>NAS Manager</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.3/htmx.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.14.1/cdn.min.js" defer></script>
-  <style>
-    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
-    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
-    main { padding: 2rem; max-width: 1000px; margin: 0 auto; }
-    h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; margin-top: 2rem; }
-    table { width: 100%; border-collapse: collapse; margin-top: .5rem; }
-    th, td { text-align: left; padding: .6rem .8rem; border-bottom: 1px solid #334155; font-size: .9rem; }
-    th { color: #94a3b8; font-weight: 500; }
-    .badge { padding: .15rem .5rem; border-radius: 999px; font-size: .75rem; font-weight: 600; }
-    .badge-protected { background: #7f1d1d; color: #fecaca; }
-    .badge-pool { background: #164e63; color: #a5f3fc; }
-    .badge-available { background: #14532d; color: #bbf7d0; }
-    a.logout { color: #94a3b8; font-size: .85rem; text-decoration: none; }
-    .warning { background: #78350f; color: #fde68a; padding: .8rem 1rem; border-radius: 8px; margin-top: 1rem; font-size: .9rem; }
-    .banner-replace { background: #7f1d1d; color: #fecaca; padding: .9rem 1.2rem; border-radius: 8px; margin-top: 1rem; font-size: .9rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
-    .banner-replace a { color: #fff; background: #dc2626; padding: .5rem 1rem; border-radius: 6px; text-decoration: none; font-weight: 600; white-space: nowrap; }
-    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-top: .8rem; }
-    .stat-card { background: #1e293b; border-radius: 10px; padding: 1rem 1.2rem; }
-    .stat-label { font-size: .75rem; color: #94a3b8; text-transform: uppercase; letter-spacing: .05em; }
-    .stat-value { font-size: 1.8rem; font-weight: 700; margin: .2rem 0; }
-    .stat-value-small { font-size: 1.1rem; font-weight: 600; margin: .3rem 0; }
-    .stat-sub { font-size: .78rem; color: #94a3b8; }
-    .bar-bg { background: #0f172a; border-radius: 6px; height: 8px; overflow: hidden; margin: .5rem 0; }
-    .bar-fill { height: 100%; }
-    .bar-ok { background: #22c55e; }
-    .bar-warn { background: #f59e0b; }
-    .bar-crit { background: #ef4444; }
-    .pool-alert-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-top: .5rem; }
-    .pool-alert-card { display: block; background: #1e293b; border-radius: 10px; padding: 1rem 1.2rem; text-decoration: none; color: #e2e8f0; border: 1px solid transparent; }
-    .pool-alert-card.alert-warning { border-color: #78350f; }
-    .pool-alert-card.alert-critical { border-color: #7f1d1d; }
-    .pool-alert-top { display: flex; justify-content: space-between; align-items: center; }
-    .health { padding: .15rem .5rem; border-radius: 999px; font-size: .7rem; font-weight: 600; }
-    .health-ONLINE { background: #14532d; color: #bbf7d0; }
-    .health-DEGRADED { background: #78350f; color: #fde68a; }
-    .health-FAULTED, .health-UNAVAIL { background: #7f1d1d; color: #fecaca; }
-  </style>
-</head>
-<body>
-  <header>
-    <strong>NAS Manager</strong>
-    <div>
-      <a class="logout" href="/pools" style="margin-right:1.5rem;">Pools ZFS</a>
-      <a class="logout" href="/shares" style="margin-right:1.5rem;">Partages</a>
-      <a class="logout" href="/docker" style="margin-right:1.5rem;">Docker</a>
-      <a class="logout" href="/disks/smart" style="margin-right:1.5rem;">SMART</a>
-      <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
-      <a class="logout" href="/logout">Deconnexion</a>
-    </div>
-  </header>
-  <main>
+{% extends "base.html" %}
+{% block title %}NAS Manager{% endblock %}
+{% block breadcrumb %}<span>Tableau de bord</span>{% endblock %}
+{% block content %}
     {% if warning %}
-    <div class="warning">⚠ {{ warning }}</div>
+    <div class="warning-banner">⚠ {{ warning }}</div>
     {% endif %}
 
     {% if replacement_state %}
@@ -68,12 +13,12 @@
     </div>
     {% endif %}
 
-    <h2>Etat du systeme</h2>
+    <h2 class="section-title">Etat du systeme</h2>
     <div id="live-stats" hx-get="/partials/sysstats" hx-trigger="load, every 5s" hx-swap="innerHTML">
       Chargement...
     </div>
 
-    <h2>Disques detectes</h2>
+    <h2 class="section-title">Disques detectes</h2>
     <table>
       <thead>
         <tr><th>Peripherique</th><th>Modele</th><th>Taille</th><th>Type</th><th>Statut</th><th>Detail</th><th>SMART</th></tr>
@@ -87,19 +32,17 @@
           <td>{{ 'HDD' if d.rota else 'SSD/NVMe' }}</td>
           <td>
             {% if d.status == 'system_protected' %}
-              <span class="badge badge-protected">Protege (systeme)</span>
+              <span class="badge badge-danger">Protege (systeme)</span>
             {% elif d.status == 'in_pool' %}
-              <span class="badge badge-pool">Deja en pool</span>
+              <span class="badge badge-neutral">Deja en pool</span>
             {% else %}
-              <span class="badge badge-available">Disponible</span>
+              <span class="badge badge-ok">Disponible</span>
             {% endif %}
           </td>
-          <td style="color:#94a3b8; font-size:.8rem;">{{ d.detail }}</td>
-          <td><a class="logout" href="/disks/{{ d.name }}/smart">Voir</a></td>
+          <td class="dim">{{ d.detail }}</td>
+          <td><a class="btn-link" href="/disks/{{ d.name }}/smart">Voir</a></td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
-  </main>
-</body>
-</html>
+{% endblock %}

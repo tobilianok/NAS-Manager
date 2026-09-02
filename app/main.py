@@ -14,6 +14,17 @@ from app import auth, disks, zfs, sysstats, smart as smart_module, replace_workf
 
 BASE_DIR = os.path.dirname(__file__)
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Lit une variable d'environnement booleenne (.env) de facon tolerante :
+    '1'/'true'/'yes'/'on' (insensible a la casse) valent vrai, tout le reste
+    (y compris absent) retombe sur `default`."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 app = FastAPI(title="NAS Manager")
 
 secret_key = os.environ.get("SESSION_SECRET_KEY")
@@ -22,7 +33,11 @@ if not secret_key:
         "SESSION_SECRET_KEY manquant. Ce fichier doit etre genere par "
         "install.sh dans /opt/nas-manager/.env"
     )
-app.add_middleware(SessionMiddleware, secret_key=secret_key, https_only=False)
+# En production, install.sh sert l'interface en HTTPS (certificat auto-signe)
+# et positionne SESSION_HTTPS_ONLY=true dans .env : le cookie de session
+# n'est alors jamais envoye en clair. Reste a false par defaut (dev local
+# sans TLS via `uvicorn --reload`, cf. README).
+app.add_middleware(SessionMiddleware, secret_key=secret_key, https_only=_env_flag("SESSION_HTTPS_ONLY", False))
 
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))

@@ -1,24 +1,7 @@
-<!doctype html>
-<html lang="fr">
-<head>
-  <meta charset="utf-8">
-  <title>Arreter le serveur - NAS Manager</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
-    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
-    main { padding: 2rem; max-width: 650px; margin: 0 auto; }
-    h1 { font-size: 1.2rem; }
-    .confirm-box { border: 2px solid #7f1d1d; border-radius: 10px; padding: 1.5rem; background: #7f1d1d22; font-size: .9rem; line-height: 1.7; }
-    ol { padding-left: 1.2rem; }
-    .actions { margin-top: 1.3rem; display: flex; gap: .8rem; }
-    button.destroy { padding: .8rem 1.5rem; border: none; border-radius: 6px; background: #dc2626; color: white; font-weight: 600; cursor: pointer; font-size: .95rem; }
-    a.cancel { padding: .8rem 1.5rem; border-radius: 6px; text-decoration: none; color: #94a3b8; border: 1px solid #334155; }
-  </style>
-</head>
-<body>
-  <header><strong>NAS Manager</strong></header>
-  <main>
+{% extends "base.html" %}
+{% block title %}Arreter le serveur - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/replacement">← Remplacement en cours</a>{% endblock %}
+{% block content %}
     <h1>Arreter le serveur maintenant ?</h1>
     <div class="confirm-box">
       <p>
@@ -26,7 +9,7 @@
         jusqu'a ce que tu le rallumes physiquement (bouton d'alimentation ou equivalent).
       </p>
       <p><strong>Marche a suivre apres l'arret :</strong></p>
-      <ol>
+      <ol style="padding-left:1.2rem;">
         <li>Attends l'extinction complete (voyants eteints).</li>
         <li>Retire le disque {{ state.old_disk }}{{ ' (serie ' ~ state.old_disk_serial ~ ')' if state.old_disk_serial else '' }}.</li>
         <li>Installe le nouveau disque a la place.</li>
@@ -35,11 +18,9 @@
       </ol>
       <form method="post" action="/replacement/shutdown">
         <div class="actions">
-          <button type="submit" class="destroy">Oui, arreter le serveur maintenant</button>
-          <a class="cancel" href="/replacement">Annuler</a>
+          <button type="submit" class="btn-solid-danger">Oui, arreter le serveur maintenant</button>
+          <a class="btn btn-cancel" href="/replacement">Annuler</a>
         </div>
       </form>
     </div>
-  </main>
-</body>
-</html>
+{% endblock %}

@@ -1,73 +1,19 @@
-<!doctype html>
-<html lang="fr">
-<head>
-  <meta charset="utf-8">
-  <title>Nouveau pool ZFS - NAS Manager</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.14.1/cdn.min.js" defer></script>
-  <style>
-    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
-    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
-    header a { color: #94a3b8; text-decoration: none; font-size: .85rem; margin-left: 1rem; }
-    main { padding: 2rem; max-width: 900px; margin: 0 auto; }
-    h1 { font-size: 1.3rem; margin-bottom: .3rem; }
-    .subtitle { color: #94a3b8; font-size: .9rem; margin-bottom: 2rem; }
-    section { background: #1e293b; border-radius: 10px; padding: 1.5rem; margin-bottom: 1.5rem; }
-    section h2 { font-size: .95rem; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; margin: 0 0 1rem; }
-    label.field-label { display: block; font-size: .85rem; color: #94a3b8; margin-bottom: .3rem; }
-    input[type=text] { width: 100%; padding: .6rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; box-sizing: border-box; font-size: .95rem; }
-
-    .vdev-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .7rem; }
-    .vdev-option { border: 2px solid #334155; border-radius: 8px; padding: .8rem; cursor: pointer; }
-    .vdev-option.selected { border-color: #2563eb; background: #1e3a8a33; }
-    .vdev-option .name { font-weight: 600; font-size: .9rem; }
-    .vdev-option .req { font-size: .78rem; color: #94a3b8; margin-top: .2rem; }
-    .vdev-option .req.ok { color: #86efac; }
-    .vdev-option .req.bad { color: #fca5a5; }
-
-    table.disks { width: 100%; border-collapse: collapse; }
-    table.disks th, table.disks td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid #334155; font-size: .85rem; }
-    table.disks th { color: #94a3b8; font-weight: 500; }
-    select.role { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: .3rem .4rem; }
-
-    .info-panel { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem; margin-top: .8rem; font-size: .85rem; color: #cbd5e1; line-height: 1.5; }
-    .info-panel .warn-strong { color: #fca5a5; font-weight: 600; }
-    details summary { cursor: pointer; font-size: .85rem; color: #93c5fd; margin-bottom: .5rem; }
-
-    .messages { margin-top: 1rem; }
-    .msg { padding: .6rem .8rem; border-radius: 6px; margin-bottom: .5rem; font-size: .85rem; }
-    .msg-error { background: #7f1d1d; color: #fecaca; }
-    .msg-warning { background: #78350f; color: #fde68a; }
-
-    code.cmd { display: block; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: .7rem; font-size: .8rem; color: #93c5fd; overflow-x: auto; white-space: pre; }
-
-    .confirm-box { border: 2px solid #7f1d1d; border-radius: 10px; padding: 1.2rem; background: #7f1d1d22; }
-    .confirm-box p { font-size: .9rem; margin: 0 0 1rem; }
-    button.submit { padding: .8rem 1.5rem; border: none; border-radius: 6px; background: #dc2626; color: white; font-weight: 600; cursor: pointer; font-size: .95rem; }
-    button.submit:disabled { background: #475569; cursor: not-allowed; }
-    button.submit:hover:not(:disabled) { background: #b91c1c; }
-  </style>
-</head>
-<body x-data="poolForm()">
-  <header>
-    <strong><a href="/pools" style="color:#e2e8f0; text-decoration:none;">← Pools</a></strong>
-    <div>
-      <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
-      <a href="/logout">Deconnexion</a>
-    </div>
-  </header>
-  <main>
+{% extends "base.html" %}
+{% block title %}Nouveau pool ZFS - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/pools">← Pools</a>{% endblock %}
+{% block body_attrs %}x-data="poolForm()"{% endblock %}
+{% block content %}
     <h1>Creer un nouveau pool ZFS</h1>
     <p class="subtitle">Chaque disque n'a qu'un role a la fois. Les explications s'affichent au fur et a mesure de tes choix.</p>
 
     <form method="post" action="/pools" @submit="return canSubmit">
-      <section>
+      <section class="form-section">
         <h2>1. Nom du pool</h2>
-        <label class="field-label" for="name">Nom</label>
+        <label for="name">Nom</label>
         <input type="text" id="name" name="name" x-model="name" @input="refreshPlan()" placeholder="ex: tank, stockage, backup..." required>
       </section>
 
-      <section>
+      <section class="form-section">
         <h2>2. Type de redondance</h2>
         <div class="vdev-options">
           <template x-for="[key, label] in Object.entries(vdevLabels)" :key="key">
@@ -87,7 +33,7 @@
         </div>
       </section>
 
-      <section>
+      <section class="form-section">
         <h2>3. Disques</h2>
         <table class="disks">
           <thead><tr><th>Peripherique</th><th>Modele</th><th>Taille</th><th>Type</th><th>Role dans ce pool</th></tr></thead>
@@ -99,7 +45,7 @@
                 <td x-text="formatSize(disk.size_bytes)"></td>
                 <td x-text="disk.rota ? 'HDD' : 'SSD/NVMe'"></td>
                 <td>
-                  <select class="role" x-model="roles[disk.path]" @change="refreshPlan()">
+                  <select x-model="roles[disk.path]" @change="refreshPlan()">
                     <option value="">— Aucun —</option>
                     <option value="main">Pool principal</option>
                     <option value="special">Special VDEV (metadonnees)</option>
@@ -110,13 +56,13 @@
               </tr>
             </template>
             <tr x-show="availableDisks.length === 0">
-              <td colspan="5" style="color:#94a3b8;">Aucun disque disponible pour l'instant.</td>
+              <td colspan="5" class="dim">Aucun disque disponible pour l'instant.</td>
             </tr>
           </tbody>
         </table>
       </section>
 
-      <section>
+      <section class="form-section">
         <h2>4. Caches optionnels — a lire avant de choisir</h2>
 
         <details>
@@ -161,9 +107,9 @@
         </details>
       </section>
 
-      <section x-show="planResult.warnings.length || planResult.errors.length || name">
+      <section class="form-section" x-show="planResult.warnings.length || planResult.errors.length || name">
         <h2>Verification en direct</h2>
-        <div class="messages">
+        <div>
           <template x-for="err in planResult.errors" :key="err">
             <div class="msg msg-error" x-text="err"></div>
           </template>
@@ -171,7 +117,7 @@
             <div class="msg msg-warning" x-text="warn"></div>
           </template>
         </div>
-        <label class="field-label">Commande qui sera executee</label>
+        <label>Commande qui sera executee</label>
         <code class="cmd" x-text="planResult.command_preview"></code>
       </section>
 
@@ -180,10 +126,9 @@
           <strong>Cette action va formater le(s) disque(s) selectionne(s) et est en principe irreversible.</strong>
           Pour confirmer, retape le nom du pool ci-dessous.
         </p>
-        <label class="field-label" for="confirm_name">Confirmation du nom</label>
+        <label for="confirm_name">Confirmation du nom</label>
         <input type="text" id="confirm_name" name="confirm_name" x-model="confirmName" placeholder="retape le nom exact du pool" style="margin-bottom:1rem;">
-        <br>
-        <button type="submit" class="submit" :disabled="!canSubmit">Creer le pool</button>
+        <button type="submit" class="btn-solid-danger" :disabled="!canSubmit">Creer le pool</button>
       </section>
 
       <input type="hidden" name="vdev_type" :value="vdevType">
@@ -192,8 +137,8 @@
       <input type="hidden" name="log_disks" :value="disksByRole('log').join(',')">
       <input type="hidden" name="cache_disks" :value="disksByRole('cache').join(',')">
     </form>
-  </main>
-
+{% endblock %}
+{% block extra_scripts %}
   <script>
     function poolForm() {
       return {
@@ -246,5 +191,4 @@
       };
     }
   </script>
-</body>
-</html>
+{% endblock %}

@@ -13,42 +13,51 @@ fi
 
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${INSTALL_DIR}/.env"
+SSL_DIR="/etc/nas-manager/ssl"
 
-echo "==> [1/11] Mise a jour du systeme et installation des dependances"
+echo "==> [1/13] Mise a jour du systeme et installation des dependances"
 apt-get update
 apt-get install -y \
     python3 python3-venv python3-pip \
     zfsutils-linux smartmontools lsscsi nvme-cli \
     samba nfs-kernel-server acl \
+    openssl ufw \
     git curl unzip
 
-echo "==> [2/11] Verification du module ZFS"
+echo "==> [2/13] Verification du module ZFS"
 if ! modinfo zfs >/dev/null 2>&1; then
     echo "ATTENTION : le module ZFS ne semble pas disponible sur ce noyau." >&2
     echo "Verifie que zfsutils-linux s'est bien installe avant de continuer." >&2
     exit 1
 fi
 
-echo "==> [3/11] Creation de l'environnement virtuel Python"
+echo "==> [3/13] Creation de l'environnement virtuel Python"
 if [[ ! -d "${INSTALL_DIR}/venv" ]]; then
     python3 -m venv "${INSTALL_DIR}/venv"
 fi
 "${INSTALL_DIR}/venv/bin/pip" install --upgrade pip
 "${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
 
-echo "==> [4/11] Generation de la cle de session (si absente)"
+echo "==> [4/13] Generation de la cle de session (si absente)"
 if [[ ! -f "${ENV_FILE}" ]]; then
     SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
     cat > "${ENV_FILE}" <<EOF
 SESSION_SECRET_KEY=${SECRET}
+SESSION_HTTPS_ONLY=true
 EOF
     chmod 600 "${ENV_FILE}"
     echo "    Cle de session generee dans ${ENV_FILE}"
 else
-    echo "    ${ENV_FILE} existe deja, conserve tel quel."
+    # Fichier deja present (installation existante) : on s'assure juste que
+    # SESSION_HTTPS_ONLY y est bien defini, sans toucher au reste.
+    if ! grep -q '^SESSION_HTTPS_ONLY=' "${ENV_FILE}"; then
+        echo "SESSION_HTTPS_ONLY=true" >> "${ENV_FILE}"
+        echo "    SESSION_HTTPS_ONLY=true ajoute a ${ENV_FILE} existant."
+    fi
+    echo "    ${ENV_FILE} existe deja, conserve tel quel (hors ajout ci-dessus si necessaire)."
 fi
 
-echo "==> [5/11] Groupe d'administration NAS Manager"
+echo "==> [5/13] Groupe d'administration NAS Manager"
 if ! getent group nasadmin >/dev/null; then
     groupadd nasadmin
     echo "    Groupe 'nasadmin' cree."
@@ -65,17 +74,17 @@ else
     echo "      sudo usermod -aG nasadmin <nom_utilisateur>"
 fi
 
-echo "==> [6/11] Groupe des comptes de partage SMB/NFS"
+echo "==> [6/13] Groupe des comptes de partage SMB/NFS"
 if ! getent group nasshares >/dev/null; then
     groupadd nasshares
     echo "    Groupe 'nasshares' cree (comptes dedies aux partages, sans acces SSH ni interface web)."
 fi
 
-echo "==> [7/11] Dossier d'etat persistant (survit aux redemarrages)"
+echo "==> [7/13] Dossier d'etat persistant (survit aux redemarrages)"
 mkdir -p /var/lib/nas-manager
 chmod 700 /var/lib/nas-manager
 
-echo "==> [8/11] Preparation Samba / NFS (bloc gere par NAS Manager)"
+echo "==> [8/13] Preparation Samba / NFS (bloc gere par NAS Manager)"
 mkdir -p /etc/samba
 if [[ ! -f /etc/samba/smb.conf ]]; then
     cat > /etc/samba/smb.conf <<'EOF'
@@ -91,7 +100,7 @@ touch /etc/exports
 systemctl enable smbd nmbd nfs-kernel-server >/dev/null 2>&1 || true
 systemctl restart smbd nmbd nfs-kernel-server
 
-echo "==> [9/11] Installation de Docker Engine (gestion des stacks Docker Compose)"
+echo "==> [9/13] Installation de Docker Engine (gestion des stacks Docker Compose)"
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     echo "    Docker et le plugin 'compose' sont deja installes, etape ignoree."
 else
@@ -108,7 +117,48 @@ else
     echo "    Docker Engine, le plugin 'compose' et 'buildx' installes."
 fi
 
-echo "==> [10/11] Installation du service systemd"
+echo "==> [10/13] Certificat HTTPS (auto-signe)"
+mkdir -p "${SSL_DIR}"
+chmod 700 "${SSL_DIR}"
+if [[ ! -f "${SSL_DIR}/privkey.pem" || ! -f "${SSL_DIR}/cert.pem" ]]; then
+    IP_FOR_CERT="$(hostname -I | awk '{print $1}')"
+    HOST_FOR_CERT="$(hostname)"
+    openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout "${SSL_DIR}/privkey.pem" -out "${SSL_DIR}/cert.pem" \
+        -days 3650 -subj "/CN=${HOST_FOR_CERT}" \
+        -addext "subjectAltName=DNS:${HOST_FOR_CERT},IP:${IP_FOR_CERT},IP:127.0.0.1"
+    chmod 600 "${SSL_DIR}/privkey.pem"
+    chmod 644 "${SSL_DIR}/cert.pem"
+    echo "    Certificat auto-signe genere dans ${SSL_DIR} (valide 10 ans)."
+    echo "    Ton navigateur affichera un avertissement 'connexion non securisee'"
+    echo "    a accepter une fois : normal pour un certificat auto-signe en reseau local."
+else
+    echo "    Certificat deja present dans ${SSL_DIR}, conserve tel quel."
+    echo "    (Pour en regenerer un, supprime ${SSL_DIR}/*.pem puis relance ce script.)"
+fi
+
+echo "==> [11/13] Pare-feu (ufw) - ouverture des seuls ports necessaires"
+# IMPORTANT : ufw ne filtre PAS les ports publies par les containers Docker.
+# Docker manipule directement iptables (chaine DOCKER-USER) et contourne les
+# regles ufw par defaut - un port expose par une stack (ex: "8081:80" dans un
+# docker-compose.yml) reste donc joignable depuis le reseau meme avec ufw
+# actif. C'est une limitation connue de Docker (pas de ce script) ; si tu as
+# besoin de restreindre l'acces reseau a une stack precise, filtre-la au
+# niveau du routeur/pare-feu perimetrique, ou renseigne-toi sur "ufw-docker".
+ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp
+ufw allow 8443/tcp comment 'NAS Manager (HTTPS)'
+ufw allow 445/tcp comment 'Samba'
+ufw allow 139/tcp comment 'Samba (NetBIOS)'
+ufw allow 137/udp comment 'Samba (NetBIOS)'
+ufw allow 138/udp comment 'Samba (NetBIOS)'
+ufw allow 2049/tcp comment 'NFS'
+ufw allow 111/tcp comment 'NFS (rpcbind)'
+ufw allow 111/udp comment 'NFS (rpcbind)'
+ufw --force enable >/dev/null 2>&1 || true
+echo "    Pare-feu actif. Regles :"
+ufw status | sed 's/^/    /'
+
+echo "==> [12/13] Installation du service systemd"
 # Le fichier .service reference /opt/nas-manager en dur : on l'adapte au
 # dossier reel d'installation (utile si le depot n'est pas clone exactement
 # a cet endroit).
@@ -117,14 +167,14 @@ systemctl daemon-reload
 systemctl enable nas-manager.service
 systemctl restart nas-manager.service
 
-echo "==> [11/11] Verification du service"
+echo "==> [13/13] Verification du service"
 sleep 2
 if systemctl is-active --quiet nas-manager.service; then
     IP_ADDR="$(hostname -I | awk '{print $1}')"
     echo ""
     echo "Installation terminee avec succes."
-    echo "Interface accessible sur : http://${IP_ADDR}:8080"
-    echo "(HTTPS pas encore configure a ce stade du projet - reseau local uniquement pour l'instant)"
+    echo "Interface accessible sur : https://${IP_ADDR}:8443"
+    echo "(certificat auto-signe : ton navigateur demandera une confirmation la premiere fois)"
 else
     echo "Le service ne semble pas demarrer correctement. Verifie les logs :" >&2
     echo "  journalctl -u nas-manager.service -n 50 --no-pager" >&2

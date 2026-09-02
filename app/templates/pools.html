@@ -1,55 +1,19 @@
-<!doctype html>
-<html lang="fr">
-<head>
-  <meta charset="utf-8">
-  <title>Pools ZFS - NAS Manager</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
-    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
-    header a { color: #94a3b8; text-decoration: none; font-size: .85rem; margin-left: 1rem; }
-    main { padding: 2rem; max-width: 1000px; margin: 0 auto; }
-    .top-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
-    h1 { font-size: 1.3rem; margin: 0; }
-    a.btn { background: #2563eb; color: white; padding: .6rem 1.1rem; border-radius: 6px; text-decoration: none; font-size: .9rem; font-weight: 600; }
-    a.btn:hover { background: #1d4ed8; }
-    .pool-card { background: #1e293b; border-radius: 10px; padding: 1.2rem 1.5rem; margin-bottom: 1rem; }
-    .pool-name { font-size: 1.1rem; font-weight: 600; }
-    .health { padding: .15rem .5rem; border-radius: 999px; font-size: .75rem; font-weight: 600; margin-left: .6rem; }
-    .health-ONLINE { background: #14532d; color: #bbf7d0; }
-    .health-DEGRADED { background: #78350f; color: #fde68a; }
-    .health-FAULTED, .health-UNAVAIL { background: #7f1d1d; color: #fecaca; }
-    .bar-bg { background: #0f172a; border-radius: 6px; height: 10px; overflow: hidden; margin: .6rem 0; }
-    .bar-fill { background: #2563eb; height: 100%; }
-    .meta { font-size: .82rem; color: #94a3b8; }
-    .meta span { margin-right: 1.2rem; }
-    .empty { color: #94a3b8; padding: 2rem; text-align: center; background: #1e293b; border-radius: 10px; }
-  </style>
-</head>
-<body>
-  <header>
-    <strong><a href="/" style="color:#e2e8f0; text-decoration:none;">← NAS Manager</a></strong>
-    <div>
-      <a href="/shares" style="margin-right:1.5rem;">Partages</a>
-      <a href="/docker" style="margin-right:1.5rem;">Docker</a>
-      <a href="/disks/smart" style="margin-right:1.5rem;">SMART</a>
-      <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
-      <a href="/logout">Deconnexion</a>
-    </div>
-  </header>
-  <main>
+{% extends "base.html" %}
+{% block title %}Pools ZFS - NAS Manager{% endblock %}
+{% block breadcrumb %}<span>Pools ZFS</span>{% endblock %}
+{% block content %}
     <div class="top-row">
       <h1>Pools ZFS</h1>
-      <a class="btn" href="/pools/new">+ Nouveau pool</a>
+      <a class="btn btn-primary" href="/pools/new">+ Nouveau pool</a>
     </div>
 
     {% if not pools %}
-    <div class="empty">Aucun pool ZFS pour l'instant. Clique sur "Nouveau pool" pour en creer un.</div>
+    <div class="empty-state">Aucun pool ZFS pour l'instant. Clique sur "Nouveau pool" pour en creer un.</div>
     {% endif %}
 
     {% for p in pools %}
-    <div class="pool-card">
-      <a class="pool-name" style="color:#e2e8f0; text-decoration:none;" href="/pools/{{ p.name }}">{{ p.name }}</a>
+    <div class="card">
+      <a style="color:var(--text); text-decoration:none; font-size:1.1rem; font-weight:600;" href="/pools/{{ p.name }}">{{ p.name }}</a>
       <span class="health health-{{ p.health }}">{{ p.health }}</span>
       <div class="bar-bg"><div class="bar-fill" style="width: {{ p.used_percent }}%;"></div></div>
       <div class="meta">
@@ -61,10 +25,8 @@
         {% if p.cache_disks %}<span>L2ARC : {{ p.cache_disks | length }} disque(s)</span>{% endif %}
       </div>
       <div style="margin-top:.8rem;">
-        <a href="/pools/{{ p.name }}/delete" style="color:#fca5a5; font-size:.82rem; text-decoration:none;">Supprimer ce pool</a>
+        <a href="/pools/{{ p.name }}/delete" class="btn-link" style="color:#fca5a5;">Supprimer ce pool</a>
       </div>
     </div>
     {% endfor %}
-  </main>
-</body>
-</html>
+{% endblock %}
