@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Docker - NAS Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
+    header a { color: #94a3b8; text-decoration: none; font-size: .85rem; margin-left: 1rem; }
+    main { padding: 2rem; max-width: 1000px; margin: 0 auto; }
+    .top-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+    h1 { font-size: 1.3rem; margin: 0; }
+    a.btn { background: #2563eb; color: white; padding: .6rem 1.1rem; border-radius: 6px; text-decoration: none; font-size: .9rem; font-weight: 600; }
+    .stack-card { background: #1e293b; border-radius: 10px; padding: 1.2rem 1.5rem; margin-bottom: 1rem; text-decoration: none; color: #e2e8f0; display: block; }
+    .stack-name { font-size: 1.05rem; font-weight: 600; }
+    .meta { font-size: .82rem; color: #94a3b8; margin-top: .3rem; }
+    .badge { padding: .15rem .5rem; border-radius: 999px; font-size: .72rem; font-weight: 600; margin-left: .4rem; }
+    .badge-running { background: #14532d; color: #bbf7d0; }
+    .badge-stopped { background: #334155; color: #cbd5e1; }
+    .empty { color: #94a3b8; padding: 2rem; text-align: center; background: #1e293b; border-radius: 10px; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong><a href="/" style="color:#e2e8f0; text-decoration:none;">← NAS Manager</a></strong>
+    <div>
+      <a href="/shares">Partages</a>
+      <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
+      <a href="/logout">Deconnexion</a>
+    </div>
+  </header>
+  <main>
+    <div class="top-row">
+      <h1>Stacks Docker Compose</h1>
+      <a class="btn" href="/docker/new">+ Nouvelle stack</a>
+    </div>
+
+    {% if not rows %}
+    <div class="empty">Aucune stack pour l'instant. Clique sur "Nouvelle stack" pour en creer une.</div>
+    {% endif %}
+
+    {% for row in rows %}
+    {% set running = row.containers | selectattr('state', 'equalto', 'running') | list | length %}
+    <a class="stack-card" href="/docker/{{ row.stack.name }}">
+      <span class="stack-name">{{ row.stack.name }}</span>
+      {% if running > 0 %}
+      <span class="badge badge-running">{{ running }}/{{ row.containers | length }} en cours</span>
+      {% else %}
+      <span class="badge badge-stopped">Arretee ({{ row.containers | length }} container(s))</span>
+      {% endif %}
+      <div class="meta">{{ row.stack.directory }} · pool "{{ row.stack.pool }}"</div>
+    </a>
+    {% endfor %}
+  </main>
+</body>
+</html>

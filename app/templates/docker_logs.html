@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Journaux {{ service }} - {{ stack.name }} - NAS Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
+    header a { color: #94a3b8; text-decoration: none; font-size: .85rem; margin-left: 1rem; }
+    main { padding: 2rem; max-width: 1100px; margin: 0 auto; }
+    h1 { font-size: 1.2rem; }
+    .sub { color: #94a3b8; font-size: .85rem; margin-top: -.5rem; margin-bottom: 1rem; }
+    pre.logs {
+      background: #000; color: #d1d5db; padding: 1.2rem; border-radius: 8px;
+      font-family: ui-monospace, monospace; font-size: .8rem; line-height: 1.5;
+      overflow-x: auto; white-space: pre-wrap; word-break: break-all; max-height: 75vh;
+    }
+    .actions { margin-top: 1rem; }
+    a.btn { background: #334155; color: #e2e8f0; padding: .5rem 1rem; border-radius: 6px; text-decoration: none; font-size: .85rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong><a href="/docker/{{ stack.name }}" style="color:#e2e8f0; text-decoration:none;">← {{ stack.name }}</a></strong>
+    <div>
+      <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
+      <a href="/logout">Deconnexion</a>
+    </div>
+  </header>
+  <main>
+    <h1>Journaux du service "{{ service }}"</h1>
+    <div class="sub">Stack "{{ stack.name }}" - 200 dernieres lignes (instantane, pas de suivi en direct)</div>
+    <pre class="logs">{{ logs if logs else "(aucun journal disponible)" }}</pre>
+    <div class="actions">
+      <a class="btn" href="/docker/{{ stack.name }}/logs/{{ service }}">↻ Rafraichir</a>
+    </div>
+  </main>
+</body>
+</html>

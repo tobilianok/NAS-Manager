@@ -14,7 +14,16 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 - Phase 4 : dossiers partagés SMB/NFS (chaque partage = un dataset ZFS dédié),
   comptes de partage dédiés (sans accès SSH ni à l'interface d'admin),
   permissions lecture/écriture ou lecture seule par utilisateur, export NFS
-  restreint par plage IP — livré, en attente de test réel.
+  restreint par plage IP — validé en conditions réelles (SMB confirmé ; NFS
+  et permissions ro/rw pas encore testés spécifiquement).
+- Phase 5 : gestion complète des stacks Docker Compose (chaque stack = un
+  dataset ZFS dédié pour la config ET les volumes en bind-mount), création
+  depuis un docker-compose.yml collé directement, démarrage/arrêt/redémarrage,
+  édition de la configuration à chaud, vérification des mises à jour d'image
+  par comparaison de digest (sans jamais télécharger tant que ce n'est pas
+  demandé explicitement), consultation des journaux par service, suppression
+  sans aucune trace résiduelle (down -v + destruction du dataset) — livré, en
+  attente de test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -26,6 +35,8 @@ Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS
 - Auth : comptes systèmes Linux (PAM)
 - Le service tourne en **root** (obligatoire pour piloter `zpool`, `parted`,
   `smartctl`, `systemctl`, Docker, Samba/NFS).
+- Docker : installé automatiquement par `install.sh` (Docker Engine + plugin
+  `compose` + `buildx`) via le script officiel `get.docker.com`.
 
 ## Installation
 
@@ -59,7 +70,8 @@ pytest tests/ -v
 Optionnel (pas nécessaire pour faire tourner NAS Manager), mais recommandé
 avant de valider une mise à jour manuellement modifiée : la suite couvre la
 détection des disques, la validation des pools ZFS, le remplacement de
-disque, la lecture SMART, les partages SMB/NFS et les routes web.
+disque, la lecture SMART, les partages SMB/NFS, les stacks Docker Compose et
+les routes web (147 tests).
 
 ## Développement
 

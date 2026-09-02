@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Nouvelle stack - NAS Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
+    header a { color: #94a3b8; text-decoration: none; font-size: .85rem; margin-left: 1rem; }
+    main { padding: 2rem; max-width: 800px; margin: 0 auto; }
+    h1 { font-size: 1.2rem; }
+    .card { background: #1e293b; border-radius: 10px; padding: 1.3rem 1.5rem; }
+    label { display: block; font-size: .85rem; color: #94a3b8; margin: 1rem 0 .3rem; }
+    input[type=text], select { width: 100%; padding: .6rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; box-sizing: border-box; font-size: .9rem; }
+    textarea { width: 100%; min-height: 320px; padding: .8rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: .85rem; line-height: 1.5; }
+    .msg-error { background: #7f1d1d; color: #fecaca; padding: .6rem .8rem; border-radius: 6px; margin-top: 1rem; font-size: .85rem; white-space: pre-wrap; }
+    .actions { margin-top: 1.5rem; display: flex; gap: .8rem; }
+    button.create { padding: .8rem 1.5rem; border: none; border-radius: 6px; background: #2563eb; color: white; font-weight: 600; cursor: pointer; font-size: .95rem; }
+    a.cancel { padding: .8rem 1.5rem; border-radius: 6px; text-decoration: none; color: #94a3b8; border: 1px solid #334155; }
+    .info-box { background: #1e3a5f33; border: 1px solid #1e3a5f; border-radius: 8px; padding: .8rem 1rem; margin-top: 1rem; font-size: .82rem; color: #cbd5e1; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong><a href="/docker" style="color:#e2e8f0; text-decoration:none;">← Docker</a></strong>
+    <div>
+      <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
+      <a href="/logout">Deconnexion</a>
+    </div>
+  </header>
+  <main>
+    <h1>Nouvelle stack Docker Compose</h1>
+
+    {% if error %}
+    <div class="msg-error">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="/docker">
+      <div class="card">
+        <label for="name">Nom de la stack</label>
+        <input type="text" id="name" name="name" value="{{ name }}" pattern="[a-z][a-z0-9_-]{0,31}" placeholder="ex: paperless" required>
+
+        <label for="pool">Pool ZFS (config + volumes stockes ici)</label>
+        <select id="pool" name="pool" required>
+          <option value="">-- Choisir un pool --</option>
+          {% for p in pools %}
+          <option value="{{ p.name }}">{{ p.name }} ({{ (p.free_bytes / (1000**3)) | round(0) }} Go libres)</option>
+          {% endfor %}
+        </select>
+        {% if not pools %}
+        <div class="info-box">Aucun pool ZFS disponible - <a href="/pools/new" style="color:#93c5fd;">crees-en un d'abord</a>.</div>
+        {% endif %}
+
+        <label for="compose">Contenu du docker-compose.yml</label>
+        <textarea id="compose" name="compose_content" spellcheck="false" placeholder="services:
+  app:
+    image: nginx:latest
+    restart: unless-stopped
+    ports:
+      - &quot;8081:80&quot;
+    volumes:
+      - ./data:/usr/share/nginx/html">{{ compose_content }}</textarea>
+        <div class="info-box">
+          Les chemins relatifs (ex: <code>./data</code>) pointeront a l'interieur du dossier dedie a cette
+          stack sur le pool choisi - rien ne sera jamais ecrit ailleurs sur le systeme.
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="create">Creer et demarrer</button>
+        <a class="cancel" href="/docker">Annuler</a>
+      </div>
+    </form>
+  </main>
+</body>
+</html>

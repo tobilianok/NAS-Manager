@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import auth, disks, zfs, sysstats, smart as smart_module, replace_workflow, shares, nasusers
+from app import auth, disks, zfs, sysstats, smart as smart_module, replace_workflow, shares, nasusers, dockerstacks
 
 BASE_DIR = os.path.dirname(__file__)
 
@@ -739,3 +739,195 @@ def share_delete_submit(
         )
 
     return RedirectResponse("/shares", status_code=302)
+
+
+# ---------------------------------------------------------------------------
+# Stacks Docker Compose
+# ---------------------------------------------------------------------------
+
+@app.get("/docker", response_class=HTMLResponse)
+def docker_list(request: Request, username: str = Depends(require_login)):
+    stacks = dockerstacks.list_stacks()
+    rows = []
+    for s in stacks:
+        try:
+            containers = dockerstacks.get_stack_containers(s.name)
+        except dockerstacks.DockerStackError:
+            containers = []
+        rows.append({"stack": s, "containers": containers})
+    return templates.TemplateResponse(
+        "docker_stacks.html",
+        {"request": request, "username": username, "rows": rows},
+    )
+
+
+@app.get("/docker/new", response_class=HTMLResponse)
+def docker_new_form(request: Request, username: str = Depends(require_login)):
+    return templates.TemplateResponse(
+        "docker_new.html",
+        {"request": request, "username": username, "pools": zfs.list_pools(), "error": None, "name": "", "compose_content": ""},
+    )
+
+
+@app.post("/docker", response_class=HTMLResponse)
+def docker_create(
+    request: Request, username: str = Depends(require_login),
+    name: str = Form(...), pool: str = Form(...), compose_content: str = Form(...),
+):
+    try:
+        stack, output = dockerstacks.create_stack(name, pool, compose_content)
+    except (dockerstacks.DockerStackError, zfs.DatasetError) as exc:
+        return templates.TemplateResponse(
+            "docker_new.html",
+            {
+                "request": request, "username": username, "pools": zfs.list_pools(),
+                "error": str(exc), "name": name, "compose_content": compose_content,
+            },
+            status_code=400,
+        )
+    return RedirectResponse(f"/docker/{stack.name}", status_code=302)
+
+
+def _render_docker_detail(
+    request: Request, username: str, name: str,
+    error: str | None = None, message: str | None = None,
+    updates: dict[str, str] | None = None, status_code: int = 200,
+):
+    stack = dockerstacks.get_stack(name)
+    if stack is None:
+        raise HTTPException(status_code=404, detail=f"Stack '{name}' introuvable.")
+    try:
+        containers = dockerstacks.get_stack_containers(name)
+    except dockerstacks.DockerStackError as exc:
+        containers = []
+        error = error or str(exc)
+    compose_content = dockerstacks.get_compose_content(name)
+
+    return templates.TemplateResponse(
+        "docker_detail.html",
+        {
+            "request": request, "username": username, "stack": stack,
+            "containers": containers, "compose_content": compose_content,
+            "error": error, "message": message, "updates": updates or {},
+        },
+        status_code=status_code,
+    )
+
+
+# IMPORTANT : declaree APRES /docker/new (voir explication plus haut pour
+# le meme cas avec /pools/{name} et /shares/{name}).
+@app.get("/docker/{name}", response_class=HTMLResponse)
+def docker_detail(request: Request, name: str, username: str = Depends(require_login)):
+    return _render_docker_detail(request, username, name)
+
+
+@app.post("/docker/{name}/start", response_class=HTMLResponse)
+def docker_start(request: Request, name: str, username: str = Depends(require_login)):
+    try:
+        dockerstacks.start_stack(name)
+    except dockerstacks.DockerStackError as exc:
+        return _render_docker_detail(request, username, name, error=str(exc), status_code=400)
+    return _render_docker_detail(request, username, name, message="Stack demarree.")
+
+
+@app.post("/docker/{name}/stop", response_class=HTMLResponse)
+def docker_stop(request: Request, name: str, username: str = Depends(require_login)):
+    try:
+        dockerstacks.stop_stack(name)
+    except dockerstacks.DockerStackError as exc:
+        return _render_docker_detail(request, username, name, error=str(exc), status_code=400)
+    return _render_docker_detail(request, username, name, message="Stack arretee.")
+
+
+@app.post("/docker/{name}/restart", response_class=HTMLResponse)
+def docker_restart(request: Request, name: str, username: str = Depends(require_login)):
+    try:
+        dockerstacks.restart_stack(name)
+    except dockerstacks.DockerStackError as exc:
+        return _render_docker_detail(request, username, name, error=str(exc), status_code=400)
+    return _render_docker_detail(request, username, name, message="Stack redemarree.")
+
+
+@app.post("/docker/{name}/compose", response_class=HTMLResponse)
+def docker_update_compose(
+    request: Request, name: str, username: str = Depends(require_login), compose_content: str = Form(...),
+):
+    try:
+        dockerstacks.update_compose_file(name, compose_content)
+    except dockerstacks.DockerStackError as exc:
+        return _render_docker_detail(request, username, name, error=str(exc), status_code=400)
+    return _render_docker_detail(request, username, name, message="Configuration mise a jour et appliquee.")
+
+
+@app.post("/docker/{name}/check-updates", response_class=HTMLResponse)
+def docker_check_updates(request: Request, name: str, username: str = Depends(require_login)):
+    try:
+        updates = dockerstacks.check_stack_updates(name)
+    except dockerstacks.DockerStackError as exc:
+        return _render_docker_detail(request, username, name, error=str(exc), status_code=400)
+    return _render_docker_detail(request, username, name, updates=updates)
+
+
+@app.post("/docker/{name}/update", response_class=HTMLResponse)
+def docker_apply_update(request: Request, name: str, username: str = Depends(require_login)):
+    try:
+        dockerstacks.pull_and_recreate(name)
+    except dockerstacks.DockerStackError as exc:
+        return _render_docker_detail(request, username, name, error=str(exc), status_code=400)
+    return _render_docker_detail(request, username, name, message="Images mises a jour et containers recrees.")
+
+
+@app.get("/docker/{name}/logs/{service}", response_class=HTMLResponse)
+def docker_logs(request: Request, name: str, service: str, username: str = Depends(require_login)):
+    stack = dockerstacks.get_stack(name)
+    if stack is None:
+        raise HTTPException(status_code=404, detail=f"Stack '{name}' introuvable.")
+    try:
+        logs = dockerstacks.get_logs(name, service)
+    except dockerstacks.DockerStackError as exc:
+        logs = str(exc)
+    return templates.TemplateResponse(
+        "docker_logs.html",
+        {"request": request, "username": username, "stack": stack, "service": service, "logs": logs},
+    )
+
+
+@app.get("/docker/{name}/delete", response_class=HTMLResponse)
+def docker_delete_form(request: Request, name: str, username: str = Depends(require_login)):
+    stack = dockerstacks.get_stack(name)
+    if stack is None:
+        raise HTTPException(status_code=404, detail=f"Stack '{name}' introuvable.")
+    return templates.TemplateResponse(
+        "docker_delete.html",
+        {"request": request, "username": username, "stack": stack, "error": None},
+    )
+
+
+@app.post("/docker/{name}/delete", response_class=HTMLResponse)
+def docker_delete_submit(
+    request: Request, name: str, username: str = Depends(require_login), confirm_name: str = Form(...),
+):
+    stack = dockerstacks.get_stack(name)
+    if stack is None:
+        raise HTTPException(status_code=404, detail=f"Stack '{name}' introuvable.")
+
+    if confirm_name.strip() != name.strip():
+        return templates.TemplateResponse(
+            "docker_delete.html",
+            {
+                "request": request, "username": username, "stack": stack,
+                "error": "Le nom tape ne correspond pas au nom de la stack - rien n'a ete supprime.",
+            },
+            status_code=400,
+        )
+
+    try:
+        dockerstacks.delete_stack(name)
+    except (dockerstacks.DockerStackError, zfs.DatasetError) as exc:
+        return templates.TemplateResponse(
+            "docker_delete.html",
+            {"request": request, "username": username, "stack": stack, "error": str(exc)},
+            status_code=500,
+        )
+
+    return RedirectResponse("/docker", status_code=302)

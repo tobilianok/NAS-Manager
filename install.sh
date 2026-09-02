@@ -14,7 +14,7 @@ fi
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${INSTALL_DIR}/.env"
 
-echo "==> [1/10] Mise a jour du systeme et installation des dependances"
+echo "==> [1/11] Mise a jour du systeme et installation des dependances"
 apt-get update
 apt-get install -y \
     python3 python3-venv python3-pip \
@@ -22,21 +22,21 @@ apt-get install -y \
     samba nfs-kernel-server acl \
     git curl unzip
 
-echo "==> [2/10] Verification du module ZFS"
+echo "==> [2/11] Verification du module ZFS"
 if ! modinfo zfs >/dev/null 2>&1; then
     echo "ATTENTION : le module ZFS ne semble pas disponible sur ce noyau." >&2
     echo "Verifie que zfsutils-linux s'est bien installe avant de continuer." >&2
     exit 1
 fi
 
-echo "==> [3/10] Creation de l'environnement virtuel Python"
+echo "==> [3/11] Creation de l'environnement virtuel Python"
 if [[ ! -d "${INSTALL_DIR}/venv" ]]; then
     python3 -m venv "${INSTALL_DIR}/venv"
 fi
 "${INSTALL_DIR}/venv/bin/pip" install --upgrade pip
 "${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
 
-echo "==> [4/10] Generation de la cle de session (si absente)"
+echo "==> [4/11] Generation de la cle de session (si absente)"
 if [[ ! -f "${ENV_FILE}" ]]; then
     SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
     cat > "${ENV_FILE}" <<EOF
@@ -48,7 +48,7 @@ else
     echo "    ${ENV_FILE} existe deja, conserve tel quel."
 fi
 
-echo "==> [5/10] Groupe d'administration NAS Manager"
+echo "==> [5/11] Groupe d'administration NAS Manager"
 if ! getent group nasadmin >/dev/null; then
     groupadd nasadmin
     echo "    Groupe 'nasadmin' cree."
@@ -65,17 +65,17 @@ else
     echo "      sudo usermod -aG nasadmin <nom_utilisateur>"
 fi
 
-echo "==> [6/10] Groupe des comptes de partage SMB/NFS"
+echo "==> [6/11] Groupe des comptes de partage SMB/NFS"
 if ! getent group nasshares >/dev/null; then
     groupadd nasshares
     echo "    Groupe 'nasshares' cree (comptes dedies aux partages, sans acces SSH ni interface web)."
 fi
 
-echo "==> [7/10] Dossier d'etat persistant (survit aux redemarrages)"
+echo "==> [7/11] Dossier d'etat persistant (survit aux redemarrages)"
 mkdir -p /var/lib/nas-manager
 chmod 700 /var/lib/nas-manager
 
-echo "==> [8/10] Preparation Samba / NFS (bloc gere par NAS Manager)"
+echo "==> [8/11] Preparation Samba / NFS (bloc gere par NAS Manager)"
 mkdir -p /etc/samba
 if [[ ! -f /etc/samba/smb.conf ]]; then
     cat > /etc/samba/smb.conf <<'EOF'
@@ -91,7 +91,24 @@ touch /etc/exports
 systemctl enable smbd nmbd nfs-kernel-server >/dev/null 2>&1 || true
 systemctl restart smbd nmbd nfs-kernel-server
 
-echo "==> [9/10] Installation du service systemd"
+echo "==> [9/11] Installation de Docker Engine (gestion des stacks Docker Compose)"
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    echo "    Docker et le plugin 'compose' sont deja installes, etape ignoree."
+else
+    # On utilise le script officiel de convenance de Docker plutot que
+    # d'ajouter le depot APT a la main : Ubuntu 26.04 LTS est tres recente
+    # et le depot APT officiel de Docker peut mettre du temps a publier un
+    # nom de code correspondant, alors que get.docker.com sait deja gerer
+    # ce cas (repli sur le nom de code Ubuntu stable precedent si besoin).
+    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+    sh /tmp/get-docker.sh
+    rm -f /tmp/get-docker.sh
+    systemctl enable docker >/dev/null 2>&1 || true
+    systemctl restart docker
+    echo "    Docker Engine, le plugin 'compose' et 'buildx' installes."
+fi
+
+echo "==> [10/11] Installation du service systemd"
 # Le fichier .service reference /opt/nas-manager en dur : on l'adapte au
 # dossier reel d'installation (utile si le depot n'est pas clone exactement
 # a cet endroit).
@@ -100,7 +117,7 @@ systemctl daemon-reload
 systemctl enable nas-manager.service
 systemctl restart nas-manager.service
 
-echo "==> [10/10] Verification du service"
+echo "==> [11/11] Verification du service"
 sleep 2
 if systemctl is-active --quiet nas-manager.service; then
     IP_ADDR="$(hostname -I | awk '{print $1}')"

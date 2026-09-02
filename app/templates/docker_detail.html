@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>{{ stack.name }} - Docker - NAS Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
+    header a { color: #94a3b8; text-decoration: none; font-size: .85rem; margin-left: 1rem; }
+    main { padding: 2rem; max-width: 1000px; margin: 0 auto; }
+    .top-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: .3rem; }
+    h1 { font-size: 1.3rem; margin: 0; }
+    h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; margin-top: 2rem; }
+    .meta { font-size: .82rem; color: #94a3b8; margin-bottom: 1.5rem; }
+    .msg-error { background: #7f1d1d; color: #fecaca; padding: .7rem .9rem; border-radius: 6px; margin: 1rem 0; font-size: .85rem; white-space: pre-wrap; }
+    .msg-ok { background: #14532d; color: #bbf7d0; padding: .7rem .9rem; border-radius: 6px; margin: 1rem 0; font-size: .85rem; }
+    table { width: 100%; border-collapse: collapse; margin-top: .5rem; }
+    th, td { text-align: left; padding: .6rem .8rem; border-bottom: 1px solid #334155; font-size: .87rem; }
+    th { color: #94a3b8; font-weight: 500; }
+    .badge { padding: .15rem .5rem; border-radius: 999px; font-size: .72rem; font-weight: 600; }
+    .badge-running { background: #14532d; color: #bbf7d0; }
+    .badge-other { background: #334155; color: #cbd5e1; }
+    .upd-badge { padding: .15rem .5rem; border-radius: 999px; font-size: .72rem; font-weight: 600; }
+    .upd-a_jour { background: #14532d; color: #bbf7d0; }
+    .upd-maj_disponible { background: #78350f; color: #fde68a; }
+    .upd-inconnu { background: #334155; color: #cbd5e1; }
+    .card { background: #1e293b; border-radius: 10px; padding: 1.2rem 1.5rem; margin-top: .8rem; }
+    .btn-row { display: flex; gap: .6rem; margin-top: 1rem; flex-wrap: wrap; }
+    button, a.btn { padding: .55rem 1rem; border-radius: 6px; border: none; font-size: .85rem; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; }
+    .btn-start { background: #16a34a; color: white; }
+    .btn-stop { background: #78350f; color: #fde68a; }
+    .btn-restart { background: #334155; color: #e2e8f0; }
+    .btn-check { background: #2563eb; color: white; }
+    .btn-update { background: #7c3aed; color: white; }
+    .btn-save { background: #2563eb; color: white; }
+    .btn-danger { background: #7f1d1d; color: #fecaca; }
+    a.logs-link { color: #93c5fd; font-size: .8rem; text-decoration: none; }
+    textarea { width: 100%; min-height: 300px; padding: .8rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: .85rem; line-height: 1.5; }
+    .info-box { background: #1e3a5f33; border: 1px solid #1e3a5f; border-radius: 8px; padding: .8rem 1rem; margin-top: 1rem; font-size: .82rem; color: #cbd5e1; line-height: 1.6; }
+    .empty { color: #94a3b8; padding: 1.5rem; text-align: center; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong><a href="/docker" style="color:#e2e8f0; text-decoration:none;">← Docker</a></strong>
+    <div>
+      <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
+      <a href="/logout">Deconnexion</a>
+    </div>
+  </header>
+  <main>
+    <div class="top-row">
+      <h1>{{ stack.name }}</h1>
+    </div>
+    <div class="meta">{{ stack.directory }} · pool "{{ stack.pool }}" · dataset "{{ stack.dataset }}"</div>
+
+    {% if error %}
+    <div class="msg-error">{{ error }}</div>
+    {% endif %}
+    {% if message %}
+    <div class="msg-ok">{{ message }}</div>
+    {% endif %}
+
+    <h2>Containers</h2>
+    {% if not containers %}
+    <div class="card empty">Aucun container (stack arretee ou pas encore demarree).</div>
+    {% else %}
+    <table>
+      <thead>
+        <tr><th>Service</th><th>Container</th><th>Image</th><th>Etat</th><th>Statut</th><th>Journaux</th></tr>
+      </thead>
+      <tbody>
+        {% for c in containers %}
+        <tr>
+          <td>{{ c.service }}</td>
+          <td>{{ c.name }}</td>
+          <td style="font-family: ui-monospace, monospace; font-size:.78rem;">{{ c.image }}</td>
+          <td>
+            {% if c.state == 'running' %}
+            <span class="badge badge-running">running</span>
+            {% else %}
+            <span class="badge badge-other">{{ c.state }}</span>
+            {% endif %}
+          </td>
+          <td style="color:#94a3b8; font-size:.8rem;">{{ c.status_text }}</td>
+          <td><a class="logs-link" href="/docker/{{ stack.name }}/logs/{{ c.service }}">Voir</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    <div class="btn-row">
+      <form method="post" action="/docker/{{ stack.name }}/start" style="display:inline;">
+        <button type="submit" class="btn-start">▶ Demarrer</button>
+      </form>
+      <form method="post" action="/docker/{{ stack.name }}/stop" style="display:inline;">
+        <button type="submit" class="btn-stop">■ Arreter</button>
+      </form>
+      <form method="post" action="/docker/{{ stack.name }}/restart" style="display:inline;">
+        <button type="submit" class="btn-restart">↻ Redemarrer</button>
+      </form>
+    </div>
+
+    <h2>Mises a jour d'image</h2>
+    <div class="card">
+      <p style="font-size:.85rem; color:#cbd5e1; line-height:1.6; margin-top:0;">
+        Compare le digest de chaque image locale a celui publie par le registre distant
+        (Docker Hub par defaut), sans jamais telecharger d'image tant que tu n'as pas
+        explicitement demande la mise a jour ci-dessous.
+      </p>
+      <form method="post" action="/docker/{{ stack.name }}/check-updates" style="display:inline;">
+        <button type="submit" class="btn-check">Verifier les mises a jour</button>
+      </form>
+
+      {% if updates %}
+      <table style="margin-top:1rem;">
+        <thead><tr><th>Image</th><th>Statut</th></tr></thead>
+        <tbody>
+          {% for image, status in updates.items() %}
+          <tr>
+            <td style="font-family: ui-monospace, monospace; font-size:.78rem;">{{ image }}</td>
+            <td>
+              {% if status == 'a_jour' %}
+              <span class="upd-badge upd-a_jour">A jour</span>
+              {% elif status == 'maj_disponible' %}
+              <span class="upd-badge upd-maj_disponible">Mise a jour disponible</span>
+              {% else %}
+              <span class="upd-badge upd-inconnu">Inconnu (registre prive, pas de reseau...)</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if updates.values() | select('equalto', 'maj_disponible') | list %}
+      <form method="post" action="/docker/{{ stack.name }}/update" style="margin-top:1rem;"
+            onsubmit="return confirm('Telecharger les nouvelles images et recreer les containers concernes ? Les volumes et bind-mounts sont preserves.');">
+        <button type="submit" class="btn-update">⬇ Telecharger et recreer les containers</button>
+      </form>
+      {% endif %}
+      {% endif %}
+    </div>
+
+    <h2>Configuration (docker-compose.yml)</h2>
+    <div class="card">
+      <form method="post" action="/docker/{{ stack.name }}/compose">
+        <textarea name="compose_content" spellcheck="false">{{ compose_content }}</textarea>
+        <div class="info-box">
+          Modifier ce fichier et enregistrer relance automatiquement <code>docker compose up -d</code> :
+          seuls les services dont la configuration a change seront recrees, les autres continuent de
+          tourner sans interruption. Les chemins relatifs pointent dans {{ stack.directory }}.
+        </div>
+        <div class="btn-row">
+          <button type="submit" class="btn-save">Enregistrer et appliquer</button>
+        </div>
+      </form>
+    </div>
+
+    <h2>Zone de danger</h2>
+    <div class="card">
+      <a class="btn btn-danger" href="/docker/{{ stack.name }}/delete">Supprimer cette stack definitivement</a>
+    </div>
+  </main>
+</body>
+</html>
