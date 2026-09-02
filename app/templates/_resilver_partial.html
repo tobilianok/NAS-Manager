@@ -1,0 +1,26 @@
+{# Fragment HTMX - pas de doctype/head/body. #}
+<div class="card">
+  <h2>Etape 3 - Reconstruction des donnees (resilver) en cours</h2>
+  <p>
+    <strong>Ne redemarre pas le systeme et ne retire aucun autre disque du pool</strong>
+    tant que cette operation n'est pas terminee. Cette page se rafraichit automatiquement.
+  </p>
+
+  {% if resilver.in_progress %}
+    {% if resilver.percent_done is not none %}
+    <div class="bar-bg"><div class="bar-fill" style="width: {{ resilver.percent_done }}%;"></div></div>
+    <p>{{ resilver.percent_done }}% termine
+      {% if resilver.speed %} · vitesse : {{ resilver.speed }}{% endif %}
+      {% if resilver.eta %} · temps restant estime : {{ resilver.eta }}{% endif %}
+    </p>
+    {% else %}
+    <p>Resilver en cours (progression pas encore disponible)...</p>
+    {% endif %}
+  {% else %}
+    <p>Le resilver ne semble plus en cours - verification du resultat...</p>
+  {% endif %}
+
+  {% if resilver.errors_text and resilver.errors_text != 'No known data errors' %}
+  <p style="color:#fecaca;">⚠ {{ resilver.errors_text }}</p>
+  {% endif %}
+</div>

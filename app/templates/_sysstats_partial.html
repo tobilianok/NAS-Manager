@@ -1,0 +1,54 @@
+{# Fragment HTMX : rafraichi automatiquement (voir dashboard.html), pas de doctype/head/body ici. #}
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-label">CPU</div>
+    {% if stats.cpu_percent is not none %}
+      <div class="stat-value">{{ stats.cpu_percent }}%</div>
+    {% else %}
+      <div class="stat-value stat-value-small">Calcul en cours...</div>
+    {% endif %}
+    <div class="stat-sub">Charge moyenne : {{ stats.load1 }} / {{ stats.load5 }} / {{ stats.load15 }} ({{ stats.cpu_count }} coeur(s))</div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-label">RAM</div>
+    <div class="stat-value">{{ stats.ram_percent }}%</div>
+    <div class="bar-bg"><div class="bar-fill bar-{{ 'crit' if stats.ram_percent >= 90 else ('warn' if stats.ram_percent >= 75 else 'ok') }}" style="width: {{ stats.ram_percent }}%;"></div></div>
+    <div class="stat-sub">{{ (stats.ram_used_bytes / (1000**3)) | round(1) }} Go / {{ (stats.ram_total_bytes / (1000**3)) | round(1) }} Go</div>
+  </div>
+
+  {% if stats.swap_total_bytes > 0 %}
+  <div class="stat-card">
+    <div class="stat-label">SWAP</div>
+    <div class="stat-value">{{ stats.swap_percent }}%</div>
+    <div class="stat-sub">{{ (stats.swap_used_bytes / (1000**3)) | round(1) }} Go / {{ (stats.swap_total_bytes / (1000**3)) | round(1) }} Go</div>
+  </div>
+  {% endif %}
+
+  <div class="stat-card">
+    <div class="stat-label">DISPONIBILITE</div>
+    <div class="stat-value stat-value-small">{{ uptime_label }}</div>
+    <div class="stat-sub">Temps de fonctionnement depuis le dernier demarrage</div>
+  </div>
+</div>
+
+{% if pools_with_alerts %}
+<h2>Pools ZFS</h2>
+<div class="pool-alert-grid">
+  {% for item in pools_with_alerts %}
+  <a class="pool-alert-card alert-{{ item.alert }}" href="/pools/{{ item.pool.name }}">
+    <div class="pool-alert-top">
+      <strong>{{ item.pool.name }}</strong>
+      <span class="health health-{{ item.pool.health }}">{{ item.pool.health }}</span>
+    </div>
+    <div class="bar-bg"><div class="bar-fill bar-{{ 'crit' if item.alert == 'critical' else ('warn' if item.alert == 'warning' else 'ok') }}" style="width: {{ item.pool.used_percent }}%;"></div></div>
+    <div class="stat-sub">
+      {{ item.pool.used_percent }}% utilise
+      {% if item.alert == 'critical' %} - <strong>Espace critique, libere de la place ou etends le pool</strong>
+      {% elif item.alert == 'warning' %} - Espace a surveiller
+      {% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}

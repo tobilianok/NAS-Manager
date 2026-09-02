@@ -74,6 +74,10 @@ class Pool:
     special_disks: list[str] = field(default_factory=list)
     log_disks: list[str] = field(default_factory=list)
     cache_disks: list[str] = field(default_factory=list)
+    # Etat ZFS individuel de chaque disque membre (ONLINE/DEGRADED/FAULTED/
+    # UNAVAIL/OFFLINE/REMOVED...), quel que soit son role (main/special/log).
+    # Utilise pour le workflow de remplacement de disque.
+    disk_states: dict[str, str] = field(default_factory=dict)
 
     @property
     def used_percent(self) -> float:
@@ -120,7 +124,7 @@ def _fill_pool_layout(pool: Pool) -> None:
 
     section = "main"
     vdev_type = "single"
-    disk_re = re.compile(r"^(/dev/\S+)\s")
+    disk_re = re.compile(r"^(/dev/\S+)\s+(\S+)")
 
     for raw_line in out.splitlines():
         line = raw_line.rstrip()
@@ -149,6 +153,8 @@ def _fill_pool_layout(pool: Pool) -> None:
         if not m:
             continue
         disk_path = m.group(1)
+        disk_state = m.group(2)
+        pool.disk_states[disk_path] = disk_state
 
         if section == "main":
             pool.main_disks.append(disk_path)
@@ -478,3 +484,234 @@ def destroy_pool(name: str) -> str:
 
     logger.warning("Pool '%s' detruit (demande utilisateur)", name)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Remplacement de disque (panne ou remplacement preventif)
+# ---------------------------------------------------------------------------
+#
+# Regle de securite absolue (rappel) : la preservation des donnees prime sur
+# tout le reste. Chaque etape revalide en direct l'etat reel du systeme -
+# jamais de confiance dans un etat memorise plus tot dans le workflow,
+# d'autant que ce workflow peut traverser un arret/redemarrage complet du
+# serveur (cas sans baie hot-swap).
+
+@dataclass
+class ReplacementPlanCheck:
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def can_proceed(self) -> bool:
+        return not self.errors
+
+
+def _disk_group(pool: Pool, disk_path: str) -> list[str] | None:
+    if disk_path in pool.main_disks:
+        return pool.main_disks
+    if disk_path in pool.special_disks:
+        return pool.special_disks
+    if disk_path in pool.log_disks:
+        return pool.log_disks
+    return None
+
+
+def plan_disk_replacement(pool_name: str, disk_path: str) -> ReplacementPlanCheck:
+    """Evalue les risques AVANT de commencer un remplacement (avant meme la
+    mise hors ligne). N'empeche jamais l'operation si le disque appartient
+    bien au pool (c'est potentiellement la seule chance de sauver les
+    donnees) - avertit clairement a la place."""
+    check = ReplacementPlanCheck()
+
+    pool = get_pool(pool_name)
+    if pool is None:
+        check.errors.append(f"Aucun pool nomme '{pool_name}' n'existe actuellement.")
+        return check
+
+    group = _disk_group(pool, disk_path)
+    if group is None:
+        check.errors.append(f"Le disque {disk_path} ne fait pas partie du pool '{pool_name}'.")
+        return check
+
+    redundancy = VDEV_REDUNDANCY.get(pool.main_vdev_type, 0) if group is pool.main_disks else (
+        max(0, len(group) - 1)
+    )
+    other_bad = [
+        d for d in group
+        if d != disk_path and pool.disk_states.get(d, "ONLINE") != "ONLINE"
+    ]
+
+    if redundancy == 0:
+        check.warnings.append(
+            "Ce groupe de disques n'a AUCUNE redondance. Si le disque a remplacer "
+            "est deja hors service, ses donnees sont irrecuperables par ZFS - seule "
+            "une sauvegarde externe permettrait de les restaurer. S'il fonctionne "
+            "encore, ZFS peut copier les donnees vers le nouveau disque, mais toute "
+            "interruption pendant l'operation serait fatale pour ces donnees."
+        )
+    elif other_bad:
+        check.warnings.append(
+            f"ATTENTION : {len(other_bad)} autre(s) disque(s) de ce meme groupe "
+            f"sont deja en panne ou hors ligne ({', '.join(other_bad)}), sur une "
+            f"tolerance de {redundancy} panne(s) simultanee(s). Ce remplacement est "
+            f"probablement la derniere chance de sauver les donnees : ne retire et "
+            f"ne debranche AUCUN autre disque de ce pool avant la toute fin du "
+            f"resilver."
+        )
+    else:
+        check.warnings.append(
+            f"Pendant toute la duree de l'operation (jusqu'a la fin du resilver), "
+            f"la tolerance aux pannes de ce groupe sera reduite de 1 par rapport a "
+            f"la normale. Evite toute manipulation physique inutile sur les autres "
+            f"disques du pool pendant cette periode."
+        )
+
+    current_state = pool.disk_states.get(disk_path, "ONLINE")
+    if current_state == "ONLINE":
+        check.warnings.append(
+            "Ce disque est actuellement ONLINE (aucune panne detectee par ZFS) - "
+            "tu t'apprêtes a le retirer preventivement. Verifie bien le numero de "
+            "serie affiche avant toute manipulation physique pour etre certain de "
+            "retirer le bon disque."
+        )
+
+    return check
+
+
+class ReplacementError(RuntimeError):
+    pass
+
+
+def offline_disk(pool_name: str, disk_path: str) -> str:
+    """Met un disque hors ligne dans son pool. Operation reversible (voir
+    online_disk) tant que le remplacement reel (`zpool replace`) n'a pas ete
+    lance."""
+    pool = get_pool(pool_name)
+    if pool is None:
+        raise ReplacementError(f"Aucun pool nomme '{pool_name}' n'existe actuellement.")
+    if disk_path not in pool.disk_states:
+        raise ReplacementError(f"Le disque {disk_path} ne fait pas partie du pool '{pool_name}'.")
+
+    code, out, err = _run(["zpool", "offline", pool_name, disk_path])
+    if code != 0:
+        raise ReplacementError(f"Impossible de mettre {disk_path} hors ligne : {err or out}")
+
+    logger.warning(
+        "Disque %s mis hors ligne dans le pool '%s' (remplacement en cours)",
+        disk_path, pool_name,
+    )
+    return out
+
+
+def online_disk(pool_name: str, disk_path: str) -> str:
+    """Annule une mise hors ligne faite par erreur, avant tout remplacement
+    reel - remet simplement le disque en service."""
+    pool = get_pool(pool_name)
+    if pool is None:
+        raise ReplacementError(f"Aucun pool nomme '{pool_name}' n'existe actuellement.")
+
+    code, out, err = _run(["zpool", "online", pool_name, disk_path])
+    if code != 0:
+        raise ReplacementError(f"Impossible de remettre {disk_path} en ligne : {err or out}")
+
+    logger.info(
+        "Disque %s remis en ligne dans le pool '%s' (remplacement annule)",
+        disk_path, pool_name,
+    )
+    return out
+
+
+def replace_disk(pool_name: str, old_disk: str, new_disk: str) -> str:
+    """Lance le remplacement reel (`zpool replace`), qui declenche
+    automatiquement le resilver. Revalide integralement en direct juste
+    avant d'agir : le nouveau disque doit etre 'available' au sens de
+    app.disks.list_disks() - jamais de confiance dans une selection faite
+    plus tot dans le workflow, l'etat du systeme a pu changer entre temps
+    (y compris apres un redemarrage complet du serveur)."""
+    pool = get_pool(pool_name)
+    if pool is None:
+        raise ReplacementError(f"Aucun pool nomme '{pool_name}' n'existe actuellement.")
+    if old_disk not in pool.disk_states:
+        raise ReplacementError(f"Le disque {old_disk} ne fait pas partie du pool '{pool_name}'.")
+    if old_disk == new_disk:
+        raise ReplacementError("Le nouveau disque ne peut pas etre le meme que l'ancien.")
+
+    live_disks = {d.path: d for d in disks_module.list_disks()}
+    new_info = live_disks.get(new_disk)
+    if new_info is None:
+        raise ReplacementError(f"Disque {new_disk} introuvable sur ce systeme.")
+    if new_info.status == "system_protected":
+        raise ReplacementError(
+            f"Disque {new_disk} fait partie du systeme ({new_info.detail}) - "
+            f"IMPOSSIBLE de l'utiliser, quelle que soit la demande."
+        )
+    if new_info.status == "in_pool":
+        raise ReplacementError(f"Disque {new_disk} deja utilise ({new_info.detail}).")
+
+    code, out, err = _run(["zpool", "replace", pool_name, old_disk, new_disk])
+    if code != 0:
+        raise ReplacementError(f"Le remplacement a echoue : {err or out}")
+
+    logger.warning(
+        "Remplacement lance dans le pool '%s' : %s -> %s (resilver en cours)",
+        pool_name, old_disk, new_disk,
+    )
+    return out
+
+
+@dataclass
+class ResilverStatus:
+    in_progress: bool
+    percent_done: float | None = None
+    speed: str | None = None
+    eta: str | None = None
+    finished_at: str | None = None
+    errors_text: str = ""
+    raw_scan_line: str = ""
+
+
+def get_resilver_status(pool_name: str) -> ResilverStatus:
+    """Parse `zpool status <pool>` pour extraire la progression d'un
+    resilver en cours (ou son resultat s'il vient de se terminer)."""
+    code, out, _ = _run(["zpool", "status", pool_name])
+    if code != 0 or not out:
+        return ResilverStatus(in_progress=False)
+
+    status = ResilverStatus(in_progress=False)
+    lines = out.splitlines()
+
+    for i, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+
+        if stripped.startswith("scan:"):
+            status.raw_scan_line = stripped
+            if "resilver in progress" in stripped:
+                status.in_progress = True
+            elif "resilvered" in stripped and "in progress" not in stripped:
+                m = re.search(r"on (.+)$", stripped)
+                if m:
+                    status.finished_at = m.group(1).strip()
+
+            # Les lignes de progression suivent sur 1 a 2 lignes apres
+            # "scan:" (format multi-lignes de zpool status) - on les
+            # cherche jusqu'a la premiere ligne vide ou "config:".
+            j = i + 1
+            while j < len(lines):
+                follow = lines[j].strip()
+                if not follow or follow.startswith("config:"):
+                    break
+                m = re.search(r"([\d.]+)% done", follow)
+                if m:
+                    status.percent_done = float(m.group(1))
+                m_speed = re.search(r"issued at ([\d.]+\S+/s)", follow)
+                if m_speed:
+                    status.speed = m_speed.group(1)
+                m_eta = re.search(r"(\d+ days? [\d:]+) to go", follow)
+                if m_eta:
+                    status.eta = m_eta.group(1)
+                j += 1
+
+        if stripped.startswith("errors:"):
+            status.errors_text = stripped[len("errors:"):].strip()
+
+    return status

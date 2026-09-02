@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Remplacement en cours - NAS Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.3/htmx.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
+    header a { color: #94a3b8; text-decoration: none; font-size: .85rem; margin-left: 1rem; }
+    main { padding: 2rem; max-width: 750px; margin: 0 auto; }
+    h1 { font-size: 1.2rem; }
+    .progress-steps { display: flex; gap: .4rem; margin: 1.2rem 0 1.8rem; font-size: .78rem; }
+    .progress-steps span { flex: 1; text-align: center; padding: .4rem; border-radius: 6px; background: #1e293b; color: #64748b; }
+    .progress-steps span.done { background: #14532d; color: #bbf7d0; }
+    .progress-steps span.active { background: #2563eb; color: white; font-weight: 600; }
+    .card { background: #1e293b; border-radius: 10px; padding: 1.3rem 1.5rem; font-size: .9rem; line-height: 1.7; }
+    .card h2 { font-size: 1rem; margin-top: 0; }
+    .option-box { border: 1px solid #334155; border-radius: 8px; padding: 1rem 1.2rem; margin-top: 1rem; }
+    .option-box h3 { font-size: .88rem; margin: 0 0 .4rem; color: #93c5fd; }
+    ul.warnings { padding-left: 1.2rem; font-size: .87rem; line-height: 1.7; margin-top: 1rem; }
+    ul.warnings li { background: #78350f33; border: 1px solid #78350f; color: #fde68a; border-radius: 8px; padding: .6rem .9rem; margin-bottom: .5rem; list-style: none; }
+    .actions { margin-top: 1.3rem; display: flex; gap: .8rem; flex-wrap: wrap; }
+    button, .btn-link { padding: .7rem 1.3rem; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: .88rem; text-decoration: none; display: inline-block; }
+    .btn-primary { background: #2563eb; color: white; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-danger { background: #dc2626; color: white; }
+    .btn-danger:hover { background: #b91c1c; }
+    .btn-muted { background: #334155; color: #e2e8f0; }
+    select { width: 100%; padding: .6rem; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: .9rem; margin-top: .3rem; }
+    .msg-error { background: #7f1d1d; color: #fecaca; padding: .6rem .8rem; border-radius: 6px; margin-top: 1rem; font-size: .85rem; }
+    .bar-bg { background: #0f172a; border-radius: 6px; height: 14px; overflow: hidden; margin: .8rem 0; }
+    .bar-fill { background: #2563eb; height: 100%; transition: width .3s; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong><a href="/pools/{{ state.pool }}" style="color:#e2e8f0; text-decoration:none;">← Pool {{ state.pool }}</a></strong>
+    <div>
+      <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
+      <a href="/logout">Deconnexion</a>
+    </div>
+  </header>
+  <main>
+    <h1>Remplacement du disque {{ state.old_disk }}</h1>
+    <div class="progress-steps">
+      <span class="{{ 'active' if state.step == 'offlined' else 'done' }}">1. Hors ligne</span>
+      <span class="{{ 'active' if state.step == 'awaiting_new_disk' else ('done' if state.step in ['resilvering','done'] else '') }}">2. Nouveau disque</span>
+      <span class="{{ 'active' if state.step == 'resilvering' else ('done' if state.step == 'done' else '') }}">3. Resilver</span>
+      <span class="{{ 'active' if state.step == 'done' else '' }}">4. Termine</span>
+    </div>
+
+    {% if error %}
+    <div class="msg-error">{{ error }}</div>
+    {% endif %}
+
+    {% if state.step == 'offlined' %}
+    <div class="card">
+      <h2>Etape 1 - Remplacement physique du disque</h2>
+      <p>
+        Le disque <strong>{{ state.old_disk }}</strong>
+        {{ '(serie ' ~ state.old_disk_serial ~ ')' if state.old_disk_serial else '' }}
+        est maintenant hors ligne dans le pool "{{ state.pool }}". Le pool continue de
+        fonctionner en mode reduit - <strong>ne retire aucun autre disque de ce pool</strong>
+        avant la fin complete du remplacement.
+      </p>
+
+      <div class="option-box">
+        <h3>Option A - Baie de disques amovible (hot-swap)</h3>
+        <p>Si ton boitier permet de retirer un disque a chaud : retire physiquement le disque
+        {{ state.old_disk }}{{ ' (serie ' ~ state.old_disk_serial ~ ')' if state.old_disk_serial else '' }}
+        maintenant, insere le nouveau disque, puis clique sur "J'ai remplace le disque" ci-dessous.</p>
+      </div>
+
+      <div class="option-box">
+        <h3>Option B - Pas de baie amovible</h3>
+        <p>Tu dois arreter completement le serveur avant de manipuler les disques.
+        Cette assistance reprendra automatiquement a la meme etape apres le redemarrage.</p>
+        <div class="actions">
+          <a class="btn-link btn-muted" href="/replacement/shutdown-confirm">Arreter le serveur maintenant</a>
+        </div>
+      </div>
+
+      <ul class="warnings">
+        {% for w in check_warnings %}<li>⚠ {{ w }}</li>{% endfor %}
+      </ul>
+
+      <div class="actions">
+        <form method="post" action="/replacement/continue">
+          <button type="submit" class="btn-primary">J'ai remplace le disque physiquement</button>
+        </form>
+        <form method="post" action="/replacement/cancel">
+          <button type="submit" class="btn-muted">Annuler et remettre le disque en ligne</button>
+        </form>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if state.step == 'awaiting_new_disk' %}
+    <div class="card">
+      <h2>Etape 2 - Choisir le nouveau disque</h2>
+      <p>Selectionne le disque physiquement installe pour remplacer {{ state.old_disk }}.
+      Verifie bien le modele/numero de serie pour etre certain de choisir le bon disque.</p>
+
+      {% if available_disks %}
+      <form method="post" action="/replacement/select">
+        <select name="new_disk" required>
+          <option value="">-- Choisir un disque --</option>
+          {% for d in available_disks %}
+          <option value="{{ d.path }}">{{ d.path }} - {{ d.model or 'modele inconnu' }} - {{ (d.size_bytes / (1000**3)) | round(0) }} Go - serie {{ d.serial or 'inconnue' }}</option>
+          {% endfor %}
+        </select>
+        <div class="actions">
+          <button type="submit" class="btn-primary">Lancer le remplacement (demarre le resilver)</button>
+        </div>
+      </form>
+      {% else %}
+      <p style="color:#fde68a;">
+        Aucun disque disponible n'est detecte actuellement. Verifie que le nouveau disque
+        est bien installe et reconnu par le systeme (rafraichis la page une fois branche).
+      </p>
+      {% endif %}
+
+      <div class="actions">
+        <form method="post" action="/replacement/cancel">
+          <button type="submit" class="btn-muted">Annuler et remettre l'ancien disque en ligne</button>
+        </form>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if state.step == 'resilvering' %}
+    <div id="resilver-live" hx-get="/partials/resilver" hx-trigger="load, every 5s" hx-swap="innerHTML">
+      Chargement de la progression...
+    </div>
+    {% endif %}
+
+    {% if state.step == 'done' %}
+    <div class="card">
+      <h2>✅ Remplacement termine</h2>
+      <p>
+        Le disque {{ state.old_disk }} a ete remplace par {{ state.new_disk }} et la
+        reconstruction (resilver) est terminee. Le pool "{{ state.pool }}" est de retour
+        a son etat de redondance normal.
+      </p>
+      <div class="actions">
+        <form method="post" action="/replacement/finish">
+          <button type="submit" class="btn-primary">Terminer</button>
+        </form>
+      </div>
+    </div>
+    {% endif %}
+  </main>
+</body>
+</html>

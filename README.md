@@ -4,8 +4,16 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
 ## État du projet
 
-Phase 0 (fondations) + début Phase 1 (détection des disques). Voir la feuille de
-route complète dans le projet Claude ("Création OS pour NAS" → doc `roadmap.md`).
+- Phase 0 : fondations (auth PAM, service systemd) — validé en conditions réelles.
+- Phase 1 : détection et protection des disques système — validé en conditions réelles.
+- Phase 2 : gestion des pools ZFS (création, cache L2ARC/SLOG/Special VDEV avec
+  pédagogie, suppression) — validé en conditions réelles.
+- Phase 3 : tableau de bord système (CPU/RAM/uptime en direct), état SMART des
+  disques, remplacement guidé de disque en cas de panne (mise hors ligne,
+  instructions physiques, suivi du resilver) — livré, en attente de test réel.
+
+Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
+→ doc `roadmap.md`).
 
 ## Stack
 
@@ -28,11 +36,26 @@ pour mettre à jour l'installation.
 
 ## Sécurité — disques protégés
 
-Le système Ubuntu est installé sur un RAID1 logiciel (mdadm) qui **ne doit
-jamais être modifié** par cette interface. Le module `app/disks.py` détecte
-automatiquement ces disques (via `findmnt /`, `/proc/mdstat`, et les disques
-déjà membres d'un pool ZFS) et les exclut de toute opération. Cette liste
-n'est jamais éditable depuis l'interface web.
+Le système Ubuntu (RAID1, LVM, ou toute combinaison) ne doit **jamais** être
+modifiable par cette interface. Le module `app/disks.py` parcourt
+l'arborescence complète `lsblk` (partitions, RAID logiciel, LVM imbriqués...)
+et marque protégé tout disque physique portant, de près ou de loin, un bout
+du système actuellement démarré — quelle que soit la technologie sous-jacente.
+Cette liste n'est jamais éditable depuis l'interface web.
+
+## Tests automatisés
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+
+Optionnel (pas nécessaire pour faire tourner NAS Manager), mais recommandé
+avant de valider une mise à jour manuellement modifiée : la suite couvre la
+détection des disques, la validation des pools ZFS, le remplacement de
+disque, la lecture SMART et les routes web.
 
 ## Développement
 

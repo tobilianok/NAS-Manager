@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>SMART {{ disk.path }} - NAS Manager</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.3/htmx.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; background: #1e293b; }
+    header a { color: #94a3b8; text-decoration: none; font-size: .85rem; margin-left: 1rem; }
+    main { padding: 2rem; max-width: 900px; margin: 0 auto; }
+    h1 { font-size: 1.25rem; margin-bottom: .2rem; }
+    .sub { color: #94a3b8; font-size: .85rem; margin-bottom: 1.2rem; }
+    .status-banner { padding: 1rem 1.3rem; border-radius: 10px; margin-bottom: 1.5rem; font-weight: 600; }
+    .status-OK { background: #14532d33; border: 1px solid #14532d; color: #bbf7d0; }
+    .status-ATTENTION { background: #78350f33; border: 1px solid #78350f; color: #fde68a; }
+    .status-CRITIQUE { background: #7f1d1d33; border: 1px solid #7f1d1d; color: #fecaca; }
+    .status-INCONNU { background: #33415533; border: 1px solid #334155; color: #cbd5e1; }
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .stat-card { background: #1e293b; border-radius: 10px; padding: .9rem 1.1rem; }
+    .stat-label { font-size: .72rem; color: #94a3b8; text-transform: uppercase; letter-spacing: .05em; }
+    .stat-value { font-size: 1.4rem; font-weight: 700; margin-top: .2rem; }
+    ul.warnings { padding-left: 1.2rem; font-size: .88rem; line-height: 1.7; }
+    ul.warnings li { margin-bottom: .3rem; }
+    table { width: 100%; border-collapse: collapse; margin-top: .5rem; }
+    th, td { text-align: left; padding: .5rem .7rem; border-bottom: 1px solid #334155; font-size: .85rem; }
+    th { color: #94a3b8; font-weight: 500; }
+    tr.worrying td { color: #fde68a; }
+    details.glossary { margin-top: 2rem; background: #1e293b; border-radius: 10px; padding: 1rem 1.3rem; }
+    details.glossary summary { cursor: pointer; font-weight: 600; }
+    details.glossary p { font-size: .85rem; color: #cbd5e1; line-height: 1.6; }
+    .refresh-btn { background: #334155; color: #e2e8f0; border: none; padding: .5rem 1rem; border-radius: 6px; cursor: pointer; font-size: .82rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong><a href="/disks/smart" style="color:#e2e8f0; text-decoration:none;">← Etat SMART</a></strong>
+    <div>
+      <span style="color:#94a3b8; margin-right:1rem;">{{ username }}</span>
+      <a href="/logout">Deconnexion</a>
+    </div>
+  </header>
+  <main>
+    <h1>{{ disk.path }} {{ '(' ~ disk.model ~ ')' if disk.model else '' }}</h1>
+    <div class="sub">
+      Numero de serie : {{ disk.serial or 'inconnu' }} · Taille : {{ (disk.size_bytes / (1000**3)) | round(1) }} Go
+      <form method="get" style="display:inline; margin-left:1rem;">
+        <button class="refresh-btn" type="submit">↻ Actualiser</button>
+      </form>
+    </div>
+
+    <div class="status-banner status-{{ report.status_label }}">
+      Etat SMART : {{ report.status_label }}
+      {% if report.healthy is not none %}
+        (auto-diagnostic disque : {{ 'reussi' if report.healthy else 'ECHEC' }})
+      {% endif %}
+    </div>
+
+    {% if report.raw_error %}
+    <p style="color:#94a3b8;">{{ report.raw_error }}</p>
+    {% endif %}
+
+    {% if report.available %}
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-label">Temperature</div>
+        <div class="stat-value">{{ (report.temperature_c ~ ' degC') if report.temperature_c is not none else '-' }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Heures de service</div>
+        <div class="stat-value">{{ report.power_on_hours if report.power_on_hours is not none else '-' }}</div>
+      </div>
+    </div>
+
+    {% if report.warnings %}
+    <h2 style="font-size:1rem;">Avertissements</h2>
+    <ul class="warnings">
+      {% for w in report.warnings %}<li>⚠ {{ w }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if report.attributes %}
+    <h2 style="font-size:1rem;">Attributs detailles</h2>
+    <table>
+      <thead><tr><th>ID</th><th>Nom</th><th>Valeur brute</th><th>Note</th></tr></thead>
+      <tbody>
+        {% for a in report.attributes %}
+        <tr class="{{ 'worrying' if a.worrying else '' }}">
+          <td>{{ a.id if a.id is not none else '-' }}</td>
+          <td>{{ a.name }}</td>
+          <td>{{ a.raw_value }}</td>
+          <td style="color:#94a3b8;">{{ a.note }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% endif %}
+
+    <details class="glossary">
+      <summary>Comprendre les indicateurs SMART</summary>
+      <p><strong>Etat SMART global :</strong> {{ glossary.healthy }}</p>
+      <p><strong>Secteurs realloues :</strong> {{ glossary.reallocated }}</p>
+      <p><strong>Secteurs en attente :</strong> {{ glossary.pending }}</p>
+      <p><strong>Temperature :</strong> {{ glossary.temperature }}</p>
+      <p><strong>Heures de service :</strong> {{ glossary.power_on_hours }}</p>
+      <p><strong>Usure NVMe :</strong> {{ glossary.nvme_wear }}</p>
+    </details>
+  </main>
+</body>
+</html>
