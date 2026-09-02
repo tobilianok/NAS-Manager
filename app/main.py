@@ -189,3 +189,47 @@ def pool_create(
         "pool_result.html",
         {"request": request, "username": username, "success": True, "check": check, "pool_name": name, "output": output},
     )
+
+
+@app.get("/pools/{name}/delete", response_class=HTMLResponse)
+def pool_delete_form(request: Request, name: str, username: str = Depends(require_login)):
+    pool = zfs.get_pool(name)
+    if pool is None:
+        raise HTTPException(status_code=404, detail=f"Pool '{name}' introuvable.")
+    return templates.TemplateResponse(
+        "pool_delete.html",
+        {"request": request, "username": username, "pool": pool, "error": None},
+    )
+
+
+@app.post("/pools/{name}/delete", response_class=HTMLResponse)
+def pool_delete_submit(
+    request: Request,
+    name: str,
+    username: str = Depends(require_login),
+    confirm_name: str = Form(...),
+):
+    pool = zfs.get_pool(name)
+    if pool is None:
+        raise HTTPException(status_code=404, detail=f"Pool '{name}' introuvable.")
+
+    if confirm_name.strip() != name.strip():
+        return templates.TemplateResponse(
+            "pool_delete.html",
+            {
+                "request": request, "username": username, "pool": pool,
+                "error": "Le nom tape ne correspond pas au nom du pool - rien n'a ete supprime.",
+            },
+            status_code=400,
+        )
+
+    try:
+        zfs.destroy_pool(name)
+    except zfs.PoolDestructionError as exc:
+        return templates.TemplateResponse(
+            "pool_delete.html",
+            {"request": request, "username": username, "pool": pool, "error": str(exc)},
+            status_code=500,
+        )
+
+    return RedirectResponse("/pools", status_code=302)

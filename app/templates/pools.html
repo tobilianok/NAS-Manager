@@ -57,6 +57,9 @@
         {% if p.log_disks %}<span>SLOG : {{ p.log_disks | length }} disque(s)</span>{% endif %}
         {% if p.cache_disks %}<span>L2ARC : {{ p.cache_disks | length }} disque(s)</span>{% endif %}
       </div>
+      <div style="margin-top:.8rem;">
+        <a href="/pools/{{ p.name }}/delete" style="color:#fca5a5; font-size:.82rem; text-decoration:none;">Supprimer ce pool</a>
+      </div>
     </div>
     {% endfor %}
   </main>

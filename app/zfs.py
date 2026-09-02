@@ -436,3 +436,45 @@ def create_pool(
 
     logger.info("Pool '%s' cree avec succes (%s)", name, " ".join(full_args))
     return out
+
+
+class PoolDestructionError(RuntimeError):
+    pass
+
+
+def get_pool(name: str) -> Pool | None:
+    """Retrouve un pool existant par son nom, ou None. A utiliser pour
+    toute action sur un pool nomme par l'utilisateur (jamais faire confiance
+    a un nom d'URL sans verifier qu'il correspond a un pool REELLEMENT
+    existant, obtenu en direct via zpool)."""
+    for pool in list_pools():
+        if pool.name == name:
+            return pool
+    return None
+
+
+def destroy_pool(name: str) -> str:
+    """
+    Detruit definitivement un pool ZFS et toutes les donnees qu'il contient.
+    IRREVERSIBLE. Ne fait AUCUNE hypothese sur le nom recu : revalide en
+    direct que le pool existe reellement avant d'agir (zpool destroy sur un
+    nom invalide echouerait de toute facon, mais on prefere un message
+    clair a une commande lancee au hasard).
+
+    Contrairement a la creation, `zpool destroy` n'a pas d'option d'essai a
+    blanc - la protection ici repose sur : (1) la confirmation du nom tapee
+    par l'utilisateur cote route web, (2) la revalidation que le pool existe
+    reellement juste avant l'appel, et (3) le fait qu'on ne passe JAMAIS -f,
+    donc ZFS refusera lui-meme si le pool est occupe (montage actif, etc.)
+    plutot que de forcer.
+    """
+    pool = get_pool(name)
+    if pool is None:
+        raise PoolDestructionError(f"Aucun pool nomme '{name}' n'existe actuellement.")
+
+    code, out, err = _run(["zpool", "destroy", name])
+    if code != 0:
+        raise PoolDestructionError(f"La suppression du pool a echoue : {err or out}")
+
+    logger.warning("Pool '%s' detruit (demande utilisateur)", name)
+    return out
