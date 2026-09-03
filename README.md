@@ -1,4 +1,4 @@
-<img width="1898" height="948" alt="image" src="https://github.com/user-attachments/assets/599e305b-b675-4cc1-8add-3b2e71d16e50" />
+![Tableau de bord NAS Manager](docs/screenshots/dashboard.png)
 
 
 # NAS Manager
