@@ -180,6 +180,19 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
   sur la page du pool, et bouton de `zpool upgrade` (avec re-saisie du nom)
   quand la fonctionnalité `raidz_expansion` dort sur un pool créé avant —
   livré, en attente de test réel.
+- Phase 10a : refonte du widget réseau du tableau de bord. La correction de
+  la 9a avait remplacé un défaut par un autre — les courbes occupaient enfin
+  toute la largeur, mais deux traits de 24 px étirés sur 1200 px donnent un
+  rapport de 40:1 qui écrase complètement le signal. Les deux traits sont
+  remplacés par **un seul graphique par carte** (~104 px de haut), avec les
+  courbes descendante et montante superposées **à échelle verticale
+  commune** — sans ça, chacune normalisée sur son propre maximum, une carte
+  à 2 Kbit/s et une à 200 Kbit/s auraient exactement la même allure et la
+  comparaison serait mensongère. Aplat translucide sous chaque courbe pour
+  percevoir le volume d'un coup d'œil, épaisseur de trait constante malgré
+  l'étirement horizontal (`vector-effect="non-scaling-stroke"`), et le pic
+  de la période affiché en clair dans le coin — livré, en attente de test
+  réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -293,7 +306,7 @@ de mot de passe), la sauvegarde/restauration de configuration (contenu de
 l'archive, refus des archives piégées, restauration sélective) et les
 routes web, et l'agrandissement de pool (refus des configurations qui
 affaibliraient la redondance, essai à blanc, recalcul avant exécution)
-(521 tests).
+(530 tests).
 
 ## Développement
 
