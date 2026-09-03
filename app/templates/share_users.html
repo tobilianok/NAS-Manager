@@ -2,12 +2,12 @@
 {% block title %}Comptes de partage - NAS Manager{% endblock %}
 {% block breadcrumb %}<span>Comptes de partage</span>{% endblock %}
 {% block content %}
-<div x-data="{ createOpen: false, profileFor: null, passwordFor: null, avatarFor: null }">
+<div x-data="{ createOpen: false, profileFor: null, passwordFor: null, avatarFor: null, grantAdminFor: null, revokeAdminFor: null }">
     <h1>Comptes de partage</h1>
     <p class="intro">
-      Ces comptes servent UNIQUEMENT a s'authentifier sur les partages SMB/NFS -
-      ils n'ont aucun acces SSH ni a cette interface d'administration
-      (contrairement aux comptes du groupe "nasadmin").
+      Ces comptes servent a s'authentifier sur les partages SMB/NFS. Ils n'ont aucun acces SSH,
+      et par defaut aucun acces a cette interface d'administration — sauf si tu leur donnes
+      explicitement l'acces admin (colonne « Acces admin » ci-dessous).
     </p>
 
     {% if error %}
@@ -17,7 +17,7 @@
     <div class="info-box">Exigences de mot de passe : {{ password_requirements }}.</div>
 
     <table>
-      <thead><tr><th>Compte</th><th>Groupes</th><th></th></tr></thead>
+      <thead><tr><th>Compte</th><th>Groupes</th><th>Acces admin</th><th></th></tr></thead>
       <tbody>
         {% for u in users %}
         <tr>
@@ -42,10 +42,23 @@
             {% for g in u.extra_groups %}<span class="group-chip">{{ g }}</span>{% endfor %}
             {% if not u.extra_groups %}<span class="dim">-</span>{% endif %}
           </td>
+          <td>
+            {% if u.is_nasadmin %}
+            <span class="badge badge-danger" title="Ce compte peut se connecter a cette interface et tout y administrer.">⚠ Acces admin</span>
+            {% if u.username == username %}<span class="group-chip">toi</span>{% endif %}
+            {% else %}
+            <span class="dim">non</span>
+            {% endif %}
+          </td>
           <td class="actions" style="margin:0;">
             <button type="button" class="btn-muted btn-sm" @click="avatarFor = '{{ u.username }}'">Avatar</button>
             <button type="button" class="btn-muted btn-sm" @click="profileFor = '{{ u.username }}'">Modifier</button>
             <button type="button" class="btn-muted btn-sm" @click="passwordFor = '{{ u.username }}'">Mot de passe</button>
+            {% if u.is_nasadmin %}
+            <button type="button" class="btn-muted btn-sm" @click="revokeAdminFor = '{{ u.username }}'">Retirer l'acces admin</button>
+            {% else %}
+            <button type="button" class="btn-muted btn-sm" @click="grantAdminFor = '{{ u.username }}'">Donner l'acces admin</button>
+            {% endif %}
             <form class="inline-form" method="post" action="/share-users/{{ u.username }}/delete">
               <button type="submit" class="btn-danger btn-sm">Supprimer</button>
             </form>
@@ -53,7 +66,7 @@
         </tr>
         {% endfor %}
         {% if not users %}
-        <tr><td colspan="3" class="dim">Aucun compte de partage pour l'instant.</td></tr>
+        <tr><td colspan="4" class="dim">Aucun compte de partage pour l'instant.</td></tr>
         {% endif %}
       </tbody>
     </table>
@@ -149,6 +162,53 @@
           <div class="actions">
             <button type="submit" class="btn-primary">Changer le mot de passe</button>
             <button type="button" class="btn-cancel" @click="passwordFor = null">Annuler</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modale : donner l'acces admin (action sensible, cf. app/nasusers.py) -->
+    <div class="modal-overlay" x-show="grantAdminFor === '{{ u.username }}'" x-cloak @keydown.escape.window="grantAdminFor = null">
+      <div class="modal-box" @click.outside="grantAdminFor = null">
+        <button type="button" class="modal-close" @click="grantAdminFor = null">&times;</button>
+        <h2>Donner l'acces admin a {{ u.username }}</h2>
+        <div class="msg msg-warning">
+          <strong>{{ u.username }} pourra se connecter a cette interface et TOUT y administrer</strong> :
+          creer et detruire des pools ZFS, supprimer des partages et des stacks Docker, gerer les
+          comptes systeme. Le shell "nologin" d'un compte de partage n'empeche pas la connexion au site.
+        </div>
+        <div class="info-box">
+          A garder en tete : un mot de passe de partage circule beaucoup plus facilement qu'un mot de
+          passe d'administration (tape sur un telephone, enregistre dans Windows, communique a un
+          proche). Si ce compte est partage entre plusieurs personnes, cree plutot un compte systeme
+          dedie depuis <a href="/admin-accounts" style="color:#93c5fd;">Comptes systeme</a>.
+        </div>
+        <form method="post" action="/share-users/{{ u.username }}/admin/grant">
+          <label>Ton mot de passe ({{ username }}) pour confirmer</label>
+          <input type="password" name="confirm_password" required>
+          <div class="actions">
+            <button type="submit" class="btn-solid-danger">Donner l'acces admin</button>
+            <button type="button" class="btn-cancel" @click="grantAdminFor = null">Annuler</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modale : retirer l'acces admin -->
+    <div class="modal-overlay" x-show="revokeAdminFor === '{{ u.username }}'" x-cloak @keydown.escape.window="revokeAdminFor = null">
+      <div class="modal-box" @click.outside="revokeAdminFor = null">
+        <button type="button" class="modal-close" @click="revokeAdminFor = null">&times;</button>
+        <h2>Retirer l'acces admin a {{ u.username }}</h2>
+        <p class="dim">
+          {{ u.username }} restera un compte de partage normal (acces SMB/NFS inchange), mais ne
+          pourra plus se connecter a cette interface.
+        </p>
+        <form method="post" action="/share-users/{{ u.username }}/admin/revoke">
+          <label>Ton mot de passe ({{ username }}) pour confirmer</label>
+          <input type="password" name="confirm_password" required>
+          <div class="actions">
+            <button type="submit" class="btn-solid-danger">Retirer l'acces admin</button>
+            <button type="button" class="btn-cancel" @click="revokeAdminFor = null">Annuler</button>
           </div>
         </form>
       </div>

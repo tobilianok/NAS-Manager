@@ -182,7 +182,7 @@ def test_get_report_smoke(monkeypatch):
     monkeypatch.setattr(health.shutil, "which", lambda name: None)
 
     report = health.get_report()
-    assert len(report.checks) == 6
+    assert len(report.checks) == 7
     # Plus aucune verification "toujours OK" (la politique de mot de passe a
     # ete retiree, cf. commentaire dans health.py) - quand toutes les sources
     # sont indisponibles, le rapport global doit donc etre "inconnu" et non
@@ -194,7 +194,52 @@ def test_get_report_real_system_smoke():
     """Test de fumee sur le vrai systeme (sandbox) : ne doit jamais lever
     d'exception, meme sans zfs/docker/ufw/sensors installes."""
     report = health.get_report()
-    assert len(report.checks) == 6
+    assert len(report.checks) == 7
     assert report.overall_level in (
         health.LEVEL_OK, health.LEVEL_ATTENTION, health.LEVEL_CRITIQUE, health.LEVEL_INCONNU,
     )
+
+
+# ---------------------------------------------------------------------------
+# Comptes de partage ayant l'acces admin (Phase 9b)
+# ---------------------------------------------------------------------------
+
+def test_check_share_admins_ok_when_none(monkeypatch):
+    from app import nasusers
+    monkeypatch.setattr(nasusers, "list_share_users", lambda: [
+        nasusers.ShareUser(username="alice"),
+    ])
+    check = health.check_share_admins()
+    assert check.level == health.LEVEL_OK
+
+
+def test_check_share_admins_unknown_when_no_share_user_at_all(monkeypatch):
+    """Pas de compte de partage = rien a evaluer : surtout pas un OK
+    permanent (meme raisonnement que le controle de mot de passe retire
+    en Phase 8a)."""
+    from app import nasusers
+    monkeypatch.setattr(nasusers, "list_share_users", lambda: [])
+    check = health.check_share_admins()
+    assert check.level == health.LEVEL_INCONNU
+
+
+def test_check_share_admins_warns_and_names_them(monkeypatch):
+    from app import nasusers
+    monkeypatch.setattr(nasusers, "list_share_users", lambda: [
+        nasusers.ShareUser(username="alice"),
+        nasusers.ShareUser(username="bob", is_nasadmin=True),
+    ])
+    check = health.check_share_admins()
+    assert check.level == health.LEVEL_ATTENTION
+    assert "bob" in check.detail and "alice" not in check.detail
+
+
+def test_check_share_admins_degrades_to_unknown_on_error(monkeypatch):
+    from app import nasusers
+
+    def boom():
+        raise OSError("plus de /etc/group")
+
+    monkeypatch.setattr(nasusers, "list_share_users", boom)
+    check = health.check_share_admins()
+    assert check.level == health.LEVEL_INCONNU

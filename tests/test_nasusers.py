@@ -300,3 +300,121 @@ def test_delete_avatar_removes_both(avatar_dirs):
     nasusers.set_avatar_photo("alice", "photo.png", b"fake-png-bytes")
     nasusers.delete_avatar("alice")
     assert nasusers.get_avatar_photo_path("alice") is None
+
+
+# ---------------------------------------------------------------------------
+# Acces admin a l'interface pour un compte de partage (Phase 9b)
+# ---------------------------------------------------------------------------
+
+class FakeNamedGroup:
+    def __init__(self, name, gid, members=None):
+        self.gr_name = name
+        self.gr_gid = gid
+        self.gr_mem = members or []
+
+
+def _patch_admin_context(monkeypatch, admin_members=(), share_users=("alice", "bob")):
+    """nasshares (groupe primaire) + nasadmin (appartenance secondaire)."""
+    import grp
+    import pwd
+
+    groups = {
+        "nasshares": FakeNamedGroup("nasshares", 5000, []),
+        "nasadmin": FakeNamedGroup("nasadmin", 1500, list(admin_members)),
+    }
+
+    def fake_getgrnam(name):
+        if name not in groups:
+            raise KeyError(name)
+        return groups[name]
+
+    monkeypatch.setattr(grp, "getgrnam", fake_getgrnam)
+    monkeypatch.setattr(grp, "getgrall", lambda: list(groups.values()))
+    monkeypatch.setattr(pwd, "getpwall", lambda: [FakePwEntry(u, 5000) for u in share_users])
+
+    calls = []
+    monkeypatch.setattr(nasusers, "_run", lambda cmd, input_text=None: (calls.append(cmd), (0, "", ""))[1])
+    monkeypatch.setattr(nasusers.auth, "authenticate", lambda u, p: p == "bonmotdepasse")
+    return calls
+
+
+def test_list_share_users_reports_admin_flag(monkeypatch):
+    _patch_admin_context(monkeypatch, admin_members=["bob"])
+    users = {u.username: u for u in nasusers.list_share_users()}
+    assert users["bob"].is_nasadmin is True
+    assert users["alice"].is_nasadmin is False
+
+
+def test_grant_admin_access_requires_own_password(monkeypatch):
+    calls = _patch_admin_context(monkeypatch)
+    with pytest.raises(nasusers.ShareUserError, match="Mot de passe incorrect"):
+        nasusers.grant_admin_access("alice", "louis", "mauvais")
+    assert not any("usermod" in c for c in calls)
+
+
+def test_grant_admin_access_adds_to_nasadmin(monkeypatch):
+    calls = _patch_admin_context(monkeypatch)
+    nasusers.grant_admin_access("alice", "louis", "bonmotdepasse")
+    assert ["usermod", "-aG", "nasadmin", "alice"] in calls
+
+
+def test_grant_admin_access_is_idempotent(monkeypatch):
+    calls = _patch_admin_context(monkeypatch, admin_members=["bob"])
+    nasusers.grant_admin_access("bob", "louis", "peu-importe")
+    assert not any(c[0] == "usermod" for c in calls)
+
+
+def test_grant_admin_access_rejects_non_share_user(monkeypatch):
+    _patch_admin_context(monkeypatch)
+    with pytest.raises(nasusers.ShareUserError, match="n'est pas un compte de partage"):
+        nasusers.grant_admin_access("root", "louis", "bonmotdepasse")
+
+
+def test_revoke_admin_access_blocks_self(monkeypatch):
+    """Un compte de partage ayant nasadmin PEUT etre le compte connecte :
+    il ne doit pas pouvoir se verrouiller dehors lui-meme."""
+    calls = _patch_admin_context(monkeypatch, admin_members=["bob"])
+    with pytest.raises(nasusers.ShareUserError, match="ton propre compte"):
+        nasusers.revoke_admin_access("bob", "bob", "bonmotdepasse")
+    assert not any(c[0] == "gpasswd" for c in calls)
+
+
+def test_revoke_admin_access_requires_own_password(monkeypatch):
+    calls = _patch_admin_context(monkeypatch, admin_members=["bob"])
+    with pytest.raises(nasusers.ShareUserError, match="Mot de passe incorrect"):
+        nasusers.revoke_admin_access("bob", "louis", "mauvais")
+    assert not any(c[0] == "gpasswd" for c in calls)
+
+
+def test_revoke_admin_access_removes_from_group(monkeypatch):
+    calls = _patch_admin_context(monkeypatch, admin_members=["bob"])
+    nasusers.revoke_admin_access("bob", "louis", "bonmotdepasse")
+    assert ["gpasswd", "-d", "bob", "nasadmin"] in calls
+
+
+def test_revoke_admin_access_rejects_non_admin(monkeypatch):
+    _patch_admin_context(monkeypatch)
+    with pytest.raises(nasusers.ShareUserError, match="n'a pas l'acces admin"):
+        nasusers.revoke_admin_access("alice", "louis", "bonmotdepasse")
+
+
+def test_set_share_user_profile_never_drops_admin_access(monkeypatch):
+    """usermod -G remplace TOUS les groupes secondaires : editer un simple
+    nom complet ne doit pas retirer silencieusement l'acces admin."""
+    calls = _patch_admin_context(monkeypatch, admin_members=["bob"])
+    monkeypatch.setattr(nasusers, "list_assignable_groups", lambda: ["famille"])
+    nasusers.set_share_user_profile("bob", full_name="Bob Martin", extra_groups=["famille"])
+
+    usermod = [c for c in calls if c[0] == "usermod"][0]
+    groups_arg = set(usermod[usermod.index("-G") + 1].split(","))
+    assert groups_arg == {"famille", "nasadmin"}
+
+
+def test_set_share_user_profile_does_not_add_admin_when_absent(monkeypatch):
+    calls = _patch_admin_context(monkeypatch)
+    monkeypatch.setattr(nasusers, "list_assignable_groups", lambda: ["famille"])
+    nasusers.set_share_user_profile("alice", full_name="Alice", extra_groups=["famille"])
+
+    usermod = [c for c in calls if c[0] == "usermod"][0]
+    groups_arg = set(usermod[usermod.index("-G") + 1].split(","))
+    assert groups_arg == {"famille"}

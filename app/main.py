@@ -681,6 +681,33 @@ def share_users_update_profile(
     return RedirectResponse("/share-users", status_code=302)
 
 
+@app.post("/share-users/{name}/admin/grant", response_class=HTMLResponse)
+def share_users_grant_admin(
+    request: Request, name: str, username: str = Depends(require_login),
+    confirm_password: str = Form(...),
+):
+    """Donne l'acces admin a l'interface a un compte de partage (Phase 9b).
+    Action sensible : exige le mot de passe de l'admin CONNECTE, jamais
+    celui du compte cible (cf. app/nasusers.py)."""
+    try:
+        nasusers.grant_admin_access(name, username, confirm_password)
+    except nasusers.ShareUserError as exc:
+        return _render_share_users(request, username, str(exc))
+    return RedirectResponse("/share-users", status_code=302)
+
+
+@app.post("/share-users/{name}/admin/revoke", response_class=HTMLResponse)
+def share_users_revoke_admin(
+    request: Request, name: str, username: str = Depends(require_login),
+    confirm_password: str = Form(...),
+):
+    try:
+        nasusers.revoke_admin_access(name, username, confirm_password)
+    except nasusers.ShareUserError as exc:
+        return _render_share_users(request, username, str(exc))
+    return RedirectResponse("/share-users", status_code=302)
+
+
 @app.post("/share-users/{name}/password", response_class=HTMLResponse)
 def share_users_password(
     request: Request, name: str, username: str = Depends(require_login),
