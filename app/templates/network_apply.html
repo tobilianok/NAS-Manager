@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Application - Reseau - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/network">← Reseau</a>{% endblock %}
+{% block content %}
+    <h1>Application de la configuration reseau</h1>
+
+    {% if apply_state %}
+    <div id="network-apply-status" hx-get="/partials/network-apply-status" hx-trigger="load, every 3s" hx-swap="innerHTML">
+      {% include "_network_apply_status_partial.html" %}
+    </div>
+    {% else %}
+
+    {% if error %}
+    <div class="msg msg-error">{{ error }}</div>
+    {% endif %}
+
+    <div class="warning-banner">
+      ⚠ Cette configuration va etre appliquee IMMEDIATEMENT, puis annulee automatiquement si tu
+      ne la confirmes pas dans les ~90 secondes qui suivent - garde cette page ouverte pour
+      pouvoir confirmer. Si l'ecran devient injoignable (mauvaise IP, DNS casse...), ne fais
+      rien : la configuration precedente revient toute seule.
+    </div>
+
+    {% if check and check.errors %}
+    <div class="msg msg-error">
+      <strong>Configuration invalide :</strong>
+      <ul>{% for e in check.errors %}<li>{{ e }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+
+    {% if check and check.warnings %}
+    <ul class="warnings">
+      {% for w in check.warnings %}<li>⚠ {{ w }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+
+    <div class="card">
+      <h2>Configuration proposee</h2>
+      <pre style="white-space:pre-wrap; font-size:.82rem; color:var(--text-muted);">{{ pending_yaml }}</pre>
+    </div>
+
+    <form method="post" action="/network/apply">
+      <div class="actions">
+        <button type="submit" class="btn-solid-danger" {{ "disabled" if check and check.errors }}>
+          Appliquer (confirmation requise sous ~90s)
+        </button>
+        <a class="btn btn-cancel" href="/network">Annuler</a>
+      </div>
+    </form>
+
+    {% endif %}
+{% endblock %}

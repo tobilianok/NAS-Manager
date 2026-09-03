@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}DNS - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/network">← Reseau</a>{% endblock %}
+{% block content %}
+    <h1>Serveurs DNS</h1>
+    <div class="info-box">
+      Laisse ce champ vide pour utiliser les serveurs DNS fournis automatiquement par ton
+      routeur/box (DHCP) - c'est le choix le plus simple pour la grande majorite des installations.
+      Ne renseigne des serveurs manuellement que si tu as une raison precise de le faire
+      (ex: DNS interne, filtrage, Pi-hole...).
+    </div>
+
+    <form method="post" action="/network/dns">
+      <div class="card">
+        <label for="dns_servers">Serveurs DNS (separes par des virgules)</label>
+        <input type="text" id="dns_servers" name="dns_servers" value="{{ dns_servers | join(', ') }}" placeholder="1.1.1.1, 8.8.8.8">
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="btn btn-primary">Continuer vers le recapitulatif</button>
+        <a class="btn btn-cancel" href="/network">Annuler</a>
+      </div>
+    </form>
+{% endblock %}

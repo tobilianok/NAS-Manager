@@ -1,0 +1,46 @@
+{# Fragment HTMX - pas de doctype/head/body. Reaffiche l'etat de l'essai
+   'netplan try' en cours (ou son resultat final). #}
+{% if apply_state is none %}
+<p class="meta">Aucune application en cours.</p>
+{% elif apply_state.status in ("in_progress", "confirming", "cancelling") %}
+<div class="card">
+  {% if apply_state.status == "cancelling" %}
+  <p><strong>Annulation en cours...</strong> Retour a la configuration precedente.</p>
+  {% else %}
+  <p>
+    <strong>Configuration appliquee.</strong>
+    {% if remaining is not none %}
+    Retour arriere automatique dans <strong>{{ remaining }}s</strong> si tu ne confirmes pas.
+    {% endif %}
+  </p>
+  <p class="meta">
+    Verifie que tu peux toujours acceder a cette page (et, si l'adresse a change, a la nouvelle
+    adresse) avant de confirmer. En cas de doute, laisse simplement le delai s'ecouler : la
+    configuration precedente sera restauree automatiquement, sans rien faire.
+  </p>
+  <div class="actions">
+    <form method="post" action="/network/apply/confirm" hx-post="/network/apply/confirm" hx-target="#network-apply-status" hx-swap="innerHTML">
+      <button type="submit" class="btn btn-success" {{ "disabled" if apply_state.status == "confirming" }}>Confirmer cette configuration</button>
+    </form>
+    <form method="post" action="/network/apply/cancel" hx-post="/network/apply/cancel" hx-target="#network-apply-status" hx-swap="innerHTML">
+      <button type="submit" class="btn btn-danger">Annuler et revenir en arriere</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+{% elif apply_state.status == "confirmed" %}
+<div class="msg msg-ok">
+  Configuration reseau confirmee et appliquee avec succes.
+  <form method="post" action="/network/apply/dismiss" style="display:inline; margin-left:.6rem;">
+    <button type="submit" class="btn-sm btn-muted">Retour au reseau</button>
+  </form>
+</div>
+{% else %}
+<div class="msg msg-warning">
+  L'application a ete annulee ou a expire sans confirmation - la configuration precedente a ete
+  restauree automatiquement.
+  <form method="post" action="/network/apply/dismiss" style="display:inline; margin-left:.6rem;">
+    <button type="submit" class="btn-sm btn-muted">Retour au reseau</button>
+  </form>
+</div>
+{% endif %}

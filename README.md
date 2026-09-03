@@ -40,9 +40,20 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
   (upload PNG/SVG/JPEG/WebP), politique de mot de passe complexe avec
   confirmation pour les comptes de partage, et clarification de la section
   cache (L2ARC/SLOG/Special VDEV) à la création d'un pool — livré, en
-  attente de test réel. La configuration réseau (IP fixe/DHCP, DNS,
-  agrégats de liens, wifi) et une console Docker interactive sont prévues
-  pour une prochaine phase (7b), volontairement traitées à part vu leur
+  attente de test réel.
+- Phase 7b : nouveau menu "Réseau" complet — configuration IP par carte
+  (DHCP ou adresse fixe), DNS, agrégats de liens (bonding actif-passif ou
+  LACP) pour les serveurs à plusieurs cartes, et gestion du wifi (scan +
+  WPA2) si une carte wifi est détectée ; toute application passe par un
+  récapitulatif puis par `netplan try` (mécanisme natif Ubuntu) — le
+  changement est actif immédiatement mais annulé automatiquement s'il n'est
+  pas confirmé sous ~90s, exactement comme sur un routeur grand public,
+  pour ne jamais pouvoir rester bloqué dehors durablement par une mauvaise
+  IP ou un DNS cassé. Console Docker interactive (`docker exec` façon
+  Portainer, une session shell persistante par service en cours
+  d'exécution, pilotée via WebSocket) accessible directement depuis le
+  détail d'une stack — livré, en attente de test réel. Ces deux
+  fonctionnalités étaient volontairement exclues de la Phase 7a vu leur
   sensibilité (risque de coupure d'accès au NAS pour le réseau).
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
@@ -66,6 +77,20 @@ Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS
 - Températures : lues via `lm-sensors` (`sensors -j`), installé et détecté
   automatiquement par `install.sh` (`sensors-detect --auto`) ; dégrade
   proprement en "inconnu" si aucun capteur n'est trouvé (fréquent en VM).
+- Configuration réseau : gérée via `netplan` (moteur standard d'Ubuntu
+  Server), un seul fichier dédié (`/etc/netplan/90-nas-manager.yaml`) qui
+  sert lui-même de source de vérité (pas de registre JSON dupliqué à tenir
+  synchronisé). Toute application passe par une double sécurité : (1) un
+  essai à blanc réel (`netplan generate --root-dir <temp>`, jamais sur le
+  système réel) avant toute écriture définitive, puis (2) `netplan try`
+  (mécanisme natif, pas une réimplémentation maison) qui applique le
+  changement immédiatement et le révoque tout seul si personne ne confirme
+  dans le délai imparti. Wifi : scan best-effort via `iw`, connexion WPA2
+  via `wpasupplicant` (les deux installés par `install.sh`).
+- Console Docker interactive : session shell persistante par container
+  (`docker exec -i <container> sh`), relayée en direct via WebSocket
+  (pas de pseudo-terminal complet ni de dépendance JS externe type
+  xterm.js — un simple flux ligne par ligne suffit pour l'usage visé).
 
 ## Installation
 
@@ -132,7 +157,9 @@ Optionnel (pas nécessaire pour faire tourner NAS Manager), mais recommandé
 avant de valider une mise à jour manuellement modifiée : la suite couvre la
 détection des disques, la validation des pools ZFS, le remplacement de
 disque, la lecture SMART, les partages SMB/NFS, les stacks Docker Compose,
-l'état réseau, la météo de santé/sécurité et les routes web (220 tests).
+l'état réseau, la météo de santé/sécurité, la configuration réseau
+(netplan, agrégats, wifi, application avec confirmation/retour arrière),
+la console Docker interactive et les routes web (300 tests).
 
 ## Développement
 

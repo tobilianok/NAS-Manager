@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import datetime
 import mimetypes
 import os
 import subprocess
 from dataclasses import asdict
 
-from fastapi import FastAPI, Request, Form, Depends, HTTPException, File, UploadFile
+from fastapi import FastAPI, Request, Form, Depends, HTTPException, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -13,7 +15,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app import (
     auth, disks, zfs, sysstats, smart as smart_module, replace_workflow, shares,
-    nasusers, dockerstacks, netstats, health,
+    nasusers, dockerstacks, netstats, health, netconfig, dockerconsole,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -999,6 +1001,81 @@ def docker_icon_delete(request: Request, name: str, username: str = Depends(requ
     return _render_docker_detail(request, username, name, message="Icone supprimee.")
 
 
+@app.get("/docker/{name}/console/{service}", response_class=HTMLResponse)
+def docker_console_page(request: Request, name: str, service: str, username: str = Depends(require_login)):
+    stack = dockerstacks.get_stack(name)
+    if stack is None:
+        raise HTTPException(status_code=404, detail=f"Stack '{name}' introuvable.")
+    try:
+        dockerconsole.resolve_console_target(name, service)
+    except dockerconsole.DockerConsoleError as exc:
+        return _render_docker_detail(request, username, name, error=str(exc), status_code=400)
+    return templates.TemplateResponse(
+        "docker_console.html",
+        {"request": request, "username": username, "stack": stack, "service": service},
+    )
+
+
+@app.websocket("/ws/docker/{name}/console/{service}")
+async def docker_console_ws(websocket: WebSocket, name: str, service: str):
+    username = websocket.session.get("username")
+    if not username:
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+
+    try:
+        container = dockerconsole.resolve_console_target(name, service)
+    except dockerconsole.DockerConsoleError as exc:
+        await websocket.send_text(f"\r\n[erreur] {exc}\r\n")
+        await websocket.close(code=1011)
+        return
+
+    try:
+        process = await dockerconsole.spawn_shell(container)
+    except dockerconsole.DockerConsoleError as exc:
+        await websocket.send_text(f"\r\n[erreur] {exc}\r\n")
+        await websocket.close(code=1011)
+        return
+
+    await websocket.send_text(
+        f"-- connecte a '{container}' (service '{service}') - tape 'exit' pour quitter --\r\n"
+    )
+
+    async def pump_output():
+        assert process.stdout is not None
+        try:
+            while True:
+                chunk = await process.stdout.read(4096)
+                if not chunk:
+                    break
+                await websocket.send_text(chunk.decode(errors="replace"))
+        except Exception:
+            pass
+
+    reader_task = asyncio.create_task(pump_output())
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if process.stdin is None or process.stdin.is_closing():
+                break
+            process.stdin.write((data + "\n").encode())
+            await process.stdin.drain()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        reader_task.cancel()
+        if process.returncode is None:
+            process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5)
+        except Exception:
+            pass
+
+
 @app.get("/docker/{name}/delete", response_class=HTMLResponse)
 def docker_delete_form(request: Request, name: str, username: str = Depends(require_login)):
     stack = dockerstacks.get_stack(name)
@@ -1038,3 +1115,276 @@ def docker_delete_submit(
         )
 
     return RedirectResponse("/docker", status_code=302)
+
+
+# ---------------------------------------------------------------------------
+# Reseau (Phase 7b) - IP/DHCP, DNS, agregats de liens, wifi.
+#
+# Rappel de securite (voir le commentaire d'en-tete de app/netconfig.py) :
+# chaque changement passe par une page de recapitulatif/validation
+# ("/network/apply") avant toute application reelle, et l'application
+# elle-meme utilise 'netplan try' (confirmation ou retour arriere
+# automatique sous ~90s) - jamais d'ecriture reseau definitive en un seul
+# clic.
+# ---------------------------------------------------------------------------
+
+def _apply_remaining_seconds(state: netconfig.ApplyState | None) -> int | None:
+    if state is None or state.status not in ("in_progress", "confirming", "cancelling"):
+        return None
+    started = datetime.datetime.fromisoformat(state.started_at)
+    elapsed = (datetime.datetime.now() - started).total_seconds()
+    return max(0, int(state.timeout - elapsed))
+
+
+@app.get("/network", response_class=HTMLResponse)
+def network_overview(request: Request, username: str = Depends(require_login)):
+    interfaces = netconfig.list_physical_interfaces()
+    managed = netconfig.read_managed_config()
+    return templates.TemplateResponse(
+        "network.html",
+        {
+            "request": request, "username": username,
+            "interfaces": interfaces,
+            "bonds": managed.bonds,
+            "bond_available": netconfig.available_for_bonding(interfaces),
+            "wifi_interfaces": [i for i in interfaces if i.is_wifi],
+            "dns_servers": netconfig.get_dns_servers(),
+            "apply_state": netconfig.poll_apply_status(),
+        },
+    )
+
+
+@app.post("/network/apply/dismiss")
+def network_apply_dismiss(username: str = Depends(require_login)):
+    netconfig.dismiss_apply_state()
+    return RedirectResponse("/network", status_code=302)
+
+
+@app.get("/network/interface/{iface_name}/edit", response_class=HTMLResponse)
+def network_interface_edit_form(request: Request, iface_name: str, username: str = Depends(require_login)):
+    interfaces = {i.name: i for i in netconfig.list_physical_interfaces()}
+    iface = interfaces.get(iface_name)
+    if iface is None:
+        raise HTTPException(status_code=404, detail=f"Carte reseau '{iface_name}' introuvable.")
+    if iface.bond_member_of:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{iface_name}' fait partie de l'agregat '{iface.bond_member_of}' - modifie l'agregat lui-meme.",
+        )
+    return templates.TemplateResponse(
+        "network_interface_edit.html",
+        {"request": request, "username": username, "iface": iface},
+    )
+
+
+@app.post("/network/interface/{iface_name}/edit", response_class=HTMLResponse)
+def network_interface_edit_submit(
+    request: Request, iface_name: str, username: str = Depends(require_login),
+    mode: str = Form("dhcp"), address: str = Form(""), gateway4: str = Form(""),
+):
+    config = netconfig.read_managed_config()
+    config.interfaces[iface_name] = netconfig.InterfaceConfig(
+        dhcp4=(mode == "dhcp"), address=address.strip() or None, gateway4=gateway4.strip() or None,
+    )
+    request.session["pending_network_config"] = config.to_dict()
+    return RedirectResponse("/network/apply", status_code=302)
+
+
+@app.get("/network/dns", response_class=HTMLResponse)
+def network_dns_form(request: Request, username: str = Depends(require_login)):
+    return templates.TemplateResponse(
+        "network_dns.html",
+        {"request": request, "username": username, "dns_servers": netconfig.get_dns_servers()},
+    )
+
+
+@app.post("/network/dns", response_class=HTMLResponse)
+def network_dns_submit(request: Request, username: str = Depends(require_login), dns_servers: str = Form("")):
+    config = netconfig.read_managed_config()
+    config.dns_servers = [s.strip() for s in dns_servers.split(",") if s.strip()]
+    if config.dns_servers and not config.interfaces and not config.bonds and not config.wifis:
+        # netplan rattache le DNS a chaque entree d'interface individuellement
+        # (pas de section globale) : si rien n'est encore gere par NAS
+        # Manager, on rattache automatiquement les serveurs DNS choisis a
+        # toutes les cartes physiques detectees (en DHCP par defaut pour
+        # l'adresse IP elle-meme) - sinon le DNS choisi n'aurait litteralement
+        # nulle part ou s'appliquer dans le fichier genere.
+        for iface in netconfig.list_physical_interfaces():
+            if not iface.is_wifi and iface.bond_member_of is None:
+                config.interfaces[iface.name] = netconfig.InterfaceConfig()
+    request.session["pending_network_config"] = config.to_dict()
+    return RedirectResponse("/network/apply", status_code=302)
+
+
+@app.get("/network/bond/new", response_class=HTMLResponse)
+def network_bond_new_form(request: Request, username: str = Depends(require_login)):
+    return templates.TemplateResponse(
+        "network_bond_new.html",
+        {
+            "request": request, "username": username,
+            "available": netconfig.available_for_bonding(), "bond_modes": netconfig.BOND_MODES, "error": None,
+        },
+    )
+
+
+@app.post("/network/bond/new", response_class=HTMLResponse)
+def network_bond_new_submit(
+    request: Request, username: str = Depends(require_login),
+    bond_name: str = Form(...), members: list[str] = Form(default=[]), mode: str = Form("active-backup"),
+    ip_mode: str = Form("dhcp"), address: str = Form(""), gateway4: str = Form(""),
+):
+    bond_name = bond_name.strip()
+    member_list = [m.strip() for m in members if m.strip()]
+
+    if not netconfig.BOND_NAME_RE.match(bond_name) or len(member_list) < 2:
+        return templates.TemplateResponse(
+            "network_bond_new.html",
+            {
+                "request": request, "username": username,
+                "available": netconfig.available_for_bonding(), "bond_modes": netconfig.BOND_MODES,
+                "error": (
+                    "Nom d'agregat invalide (lettres minuscules/chiffres/tirets, 15 caracteres max) "
+                    "ou moins de 2 cartes choisies."
+                ),
+            },
+            status_code=400,
+        )
+
+    config = netconfig.read_managed_config()
+    for member in member_list:
+        config.interfaces.pop(member, None)
+    config.bonds[bond_name] = netconfig.BondConfig(
+        members=member_list, mode=mode, dhcp4=(ip_mode == "dhcp"),
+        address=address.strip() or None, gateway4=gateway4.strip() or None,
+    )
+    request.session["pending_network_config"] = config.to_dict()
+    return RedirectResponse("/network/apply", status_code=302)
+
+
+@app.post("/network/bond/{bond_name}/delete", response_class=HTMLResponse)
+def network_bond_delete(request: Request, bond_name: str, username: str = Depends(require_login)):
+    config = netconfig.read_managed_config()
+    bond = config.bonds.pop(bond_name, None)
+    if bond is None:
+        raise HTTPException(status_code=404, detail=f"Agregat '{bond_name}' introuvable.")
+    for member in bond.members:
+        config.interfaces.setdefault(member, netconfig.InterfaceConfig())
+    request.session["pending_network_config"] = config.to_dict()
+    return RedirectResponse("/network/apply", status_code=302)
+
+
+@app.get("/network/wifi/{iface_name}/edit", response_class=HTMLResponse)
+def network_wifi_edit_form(request: Request, iface_name: str, username: str = Depends(require_login)):
+    if not netconfig.is_wifi_interface(iface_name):
+        raise HTTPException(status_code=404, detail=f"'{iface_name}' n'est pas une carte wifi.")
+    managed = netconfig.read_managed_config()
+    return templates.TemplateResponse(
+        "network_wifi_edit.html",
+        {
+            "request": request, "username": username, "iface_name": iface_name,
+            "config": managed.wifis.get(iface_name, netconfig.WifiConfig()),
+            "scanned_ssids": netconfig.scan_wifi(iface_name),
+        },
+    )
+
+
+@app.post("/network/wifi/{iface_name}/edit", response_class=HTMLResponse)
+def network_wifi_edit_submit(
+    request: Request, iface_name: str, username: str = Depends(require_login),
+    ssid: str = Form(...), psk: str = Form(""), mode: str = Form("dhcp"),
+    address: str = Form(""), gateway4: str = Form(""),
+):
+    if not netconfig.is_wifi_interface(iface_name):
+        raise HTTPException(status_code=404, detail=f"'{iface_name}' n'est pas une carte wifi.")
+    config = netconfig.read_managed_config()
+    config.wifis[iface_name] = netconfig.WifiConfig(
+        ssid=ssid.strip(), psk=psk, dhcp4=(mode == "dhcp"),
+        address=address.strip() or None, gateway4=gateway4.strip() or None,
+    )
+    request.session["pending_network_config"] = config.to_dict()
+    return RedirectResponse("/network/apply", status_code=302)
+
+
+@app.get("/network/apply", response_class=HTMLResponse)
+def network_apply_review(request: Request, username: str = Depends(require_login)):
+    apply_state = netconfig.poll_apply_status()
+    if apply_state is not None:
+        return templates.TemplateResponse(
+            "network_apply.html",
+            {
+                "request": request, "username": username, "apply_state": apply_state,
+                "remaining": _apply_remaining_seconds(apply_state),
+                "check": None, "pending_yaml": None, "error": None,
+            },
+        )
+
+    pending = request.session.get("pending_network_config")
+    if pending is None:
+        return RedirectResponse("/network", status_code=302)
+
+    config = netconfig.ManagedNetworkConfig.from_dict(pending)
+    return templates.TemplateResponse(
+        "network_apply.html",
+        {
+            "request": request, "username": username, "apply_state": None,
+            "check": netconfig.validate_network_plan(config),
+            "pending_yaml": netconfig.build_managed_yaml(config),
+            "error": None,
+        },
+    )
+
+
+@app.post("/network/apply", response_class=HTMLResponse)
+def network_apply_start(request: Request, username: str = Depends(require_login)):
+    pending = request.session.get("pending_network_config")
+    if pending is None:
+        return RedirectResponse("/network", status_code=302)
+
+    config = netconfig.ManagedNetworkConfig.from_dict(pending)
+    try:
+        netconfig.start_apply(config)
+    except netconfig.NetworkApplyError as exc:
+        return templates.TemplateResponse(
+            "network_apply.html",
+            {
+                "request": request, "username": username, "apply_state": None,
+                "check": netconfig.validate_network_plan(config),
+                "pending_yaml": netconfig.build_managed_yaml(config),
+                "error": str(exc),
+            },
+            status_code=400,
+        )
+
+    request.session.pop("pending_network_config", None)
+    return RedirectResponse("/network/apply", status_code=302)
+
+
+def _apply_status_partial(request: Request):
+    apply_state = netconfig.poll_apply_status()
+    return templates.TemplateResponse(
+        "_network_apply_status_partial.html",
+        {"request": request, "apply_state": apply_state, "remaining": _apply_remaining_seconds(apply_state)},
+    )
+
+
+@app.get("/partials/network-apply-status", response_class=HTMLResponse)
+def partial_network_apply_status(request: Request, username: str = Depends(require_login)):
+    return _apply_status_partial(request)
+
+
+@app.post("/network/apply/confirm", response_class=HTMLResponse)
+def network_apply_confirm(request: Request, username: str = Depends(require_login)):
+    try:
+        netconfig.confirm_apply()
+    except netconfig.NetworkApplyError:
+        pass
+    return _apply_status_partial(request)
+
+
+@app.post("/network/apply/cancel", response_class=HTMLResponse)
+def network_apply_cancel(request: Request, username: str = Depends(require_login)):
+    try:
+        netconfig.cancel_apply()
+    except netconfig.NetworkApplyError:
+        pass
+    return _apply_status_partial(request)

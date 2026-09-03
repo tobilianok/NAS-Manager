@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}Reseau - NAS Manager{% endblock %}
+{% block breadcrumb %}Reseau{% endblock %}
+{% block content %}
+    <h1>Reseau</h1>
+
+    <div class="warning-banner">
+      ⚠ Toute modification reseau (IP, agregat, wifi) est appliquee via un mecanisme de securite
+      natif de Ubuntu (<code>netplan try</code>) : le changement passe d'abord par une page de
+      recapitulatif, puis, une fois lance, il est actif immediatement mais annule automatiquement
+      si tu ne le confirmes pas dans le delai imparti (~90s) - comme sur un routeur grand public.
+      Tu ne peux jamais te retrouver bloque dehors durablement par une mauvaise IP ou un mauvais DNS.
+    </div>
+
+    {% if apply_state and apply_state.status in ("in_progress", "confirming", "cancelling") %}
+    <div class="status-banner" style="background:var(--warning-bg); color:var(--warning-text);">
+      Une application de configuration reseau est en cours.
+      <a href="/network/apply" style="color:inherit; text-decoration:underline;">Voir / confirmer →</a>
+    </div>
+    {% elif apply_state %}
+    <div class="msg {{ 'msg-ok' if apply_state.status == 'confirmed' else 'msg-warning' }}">
+      {% if apply_state.status == "confirmed" %}
+      Derniere application confirmee avec succes.
+      {% else %}
+      Derniere tentative annulee ou expiree - la configuration precedente a ete restauree automatiquement.
+      {% endif %}
+      <form method="post" action="/network/apply/dismiss" style="display:inline; margin-left:.6rem;">
+        <button type="submit" class="btn-sm btn-muted">OK</button>
+      </form>
+    </div>
+    {% endif %}
+
+    <div class="card">
+      <div class="top-row">
+        <h2 style="margin:0;">Serveurs DNS</h2>
+        <a class="btn btn-sm" href="/network/dns">Modifier</a>
+      </div>
+      {% if dns_servers %}
+      <p class="meta">{{ dns_servers | join(", ") }}</p>
+      {% else %}
+      <p class="meta">Aucun serveur DNS specifique configure - fournis automatiquement par DHCP.</p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>Cartes reseau physiques</h2>
+      {% if not interfaces %}
+      <div class="empty-state">Aucune carte reseau physique detectee.</div>
+      {% else %}
+      <table class="table">
+        <thead><tr><th>Carte</th><th>Adresse MAC</th><th>Adresse(s) IP</th><th>Mode</th><th>Agregat</th><th></th></tr></thead>
+        <tbody>
+          {% for iface in interfaces %}
+          <tr>
+            <td><strong>{{ iface.name }}</strong>{% if iface.is_wifi %} <span class="badge badge-neutral">wifi</span>{% endif %}</td>
+            <td class="meta">{{ iface.mac or "inconnue" }}</td>
+            <td class="meta">{{ iface.addresses | join(", ") if iface.addresses else "aucune" }}</td>
+            <td>
+              {% if iface.bond_member_of %}
+              <span class="meta">membre de l'agregat</span>
+              {% elif iface.config.dhcp4 %}
+              <span class="badge badge-neutral">DHCP</span>
+              {% else %}
+              <span class="badge badge-ok">Statique ({{ iface.config.address }})</span>
+              {% endif %}
+            </td>
+            <td class="meta">{{ iface.bond_member_of or "—" }}</td>
+            <td>
+              {% if iface.bond_member_of %}
+              <span class="meta">—</span>
+              {% elif iface.is_wifi %}
+              <a class="btn btn-sm" href="/network/wifi/{{ iface.name }}/edit">Configurer le wifi</a>
+              {% else %}
+              <a class="btn btn-sm" href="/network/interface/{{ iface.name }}/edit">Configurer</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <div class="top-row">
+        <h2 style="margin:0;">Agregats de liens (bonding)</h2>
+        {% if bond_available | length >= 2 %}
+        <a class="btn btn-sm btn-primary" href="/network/bond/new">Creer un agregat</a>
+        {% endif %}
+      </div>
+      {% if bond_available | length < 2 %}
+      <p class="meta">Il faut au moins 2 cartes reseau physiques non deja agregees pour creer un agregat de liens.</p>
+      {% endif %}
+      {% if not bonds %}
+      <div class="empty-state">Aucun agregat configure.</div>
+      {% else %}
+      <table class="table">
+        <thead><tr><th>Nom</th><th>Membres</th><th>Mode</th><th>Mode IP</th><th></th></tr></thead>
+        <tbody>
+          {% for name, bond in bonds.items() %}
+          <tr>
+            <td><strong>{{ name }}</strong></td>
+            <td class="meta">{{ bond.members | join(", ") }}</td>
+            <td class="meta">{{ bond.mode }}</td>
+            <td>{% if bond.dhcp4 %}<span class="badge badge-neutral">DHCP</span>{% else %}<span class="badge badge-ok">Statique ({{ bond.address }})</span>{% endif %}</td>
+            <td>
+              <form method="post" action="/network/bond/{{ name }}/delete" onsubmit="return confirm('Supprimer l\'agregat {{ name }} et repasser ses cartes en DHCP individuel ?');">
+                <button type="submit" class="btn-sm btn-danger">Supprimer</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>Wifi</h2>
+      {% if not wifi_interfaces %}
+      <div class="empty-state">Aucune carte wifi detectee sur ce serveur.</div>
+      {% else %}
+      <p class="meta">
+        Une carte reseau NAS branchee en Ethernet reste toujours recommandee pour la fiabilite -
+        le wifi peut etre utile en secours ou en configuration temporaire.
+      </p>
+      <table class="table">
+        <thead><tr><th>Carte</th><th></th></tr></thead>
+        <tbody>
+          {% for iface in wifi_interfaces %}
+          <tr>
+            <td><strong>{{ iface.name }}</strong></td>
+            <td><a class="btn btn-sm" href="/network/wifi/{{ iface.name }}/edit">Configurer</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+{% endblock %}

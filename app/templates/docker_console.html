@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Console {{ service }} - {{ stack.name }} - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/docker/{{ stack.name }}">← {{ stack.name }}</a>{% endblock %}
+{% block content %}
+    <h1>Console - {{ stack.name }} / {{ service }}</h1>
+    <div class="info-box">
+      Session shell interactive directement dans le container (equivalent de <code>docker exec -it
+      ... sh</code>). Pas de pseudo-terminal complet (pas de curses/couleurs avancees) - pour
+      lancer des commandes et lire leur resultat, ca suffit largement.
+    </div>
+
+    <div class="console-wrap">
+      <pre id="console-output" class="console-output"></pre>
+      <form id="console-form" class="console-input-row">
+        <span class="console-prompt">$</span>
+        <input id="console-input" type="text" autocomplete="off" placeholder="Tape une commande et appuie sur Entree...">
+      </form>
+    </div>
+
+    <script>
+    (function () {
+      var output = document.getElementById('console-output');
+      var form = document.getElementById('console-form');
+      var input = document.getElementById('console-input');
+
+      function append(text) {
+        output.textContent += text;
+        output.scrollTop = output.scrollHeight;
+      }
+
+      var proto = (location.protocol === 'https:') ? 'wss://' : 'ws://';
+      var ws = new WebSocket(proto + location.host + '/ws/docker/{{ stack.name }}/console/{{ service }}');
+
+      ws.onmessage = function (ev) { append(ev.data); };
+      ws.onclose = function () { append('\n-- connexion fermee --\n'); input.disabled = true; };
+      ws.onerror = function () { append('\n-- erreur de connexion --\n'); };
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        if (ws.readyState !== WebSocket.OPEN) return;
+        var cmd = input.value;
+        append('$ ' + cmd + '\n');
+        ws.send(cmd);
+        input.value = '';
+      });
+
+      input.focus();
+    })();
+    </script>
+{% endblock %}

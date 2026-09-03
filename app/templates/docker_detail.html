@@ -42,7 +42,7 @@
     {% else %}
     <table>
       <thead>
-        <tr><th>Service</th><th>Container</th><th>Image</th><th>Etat</th><th>Statut</th><th>Journaux</th></tr>
+        <tr><th>Service</th><th>Container</th><th>Image</th><th>Etat</th><th>Statut</th><th>Journaux</th><th>Console</th></tr>
       </thead>
       <tbody>
         {% for c in containers %}
@@ -59,6 +59,13 @@
           </td>
           <td class="dim">{{ c.status_text }}</td>
           <td><a class="btn-link" href="/docker/{{ stack.name }}/logs/{{ c.service }}">Voir</a></td>
+          <td>
+            {% if c.state == 'running' %}
+            <a class="btn-link" href="/docker/{{ stack.name }}/console/{{ c.service }}">Ouvrir</a>
+            {% else %}
+            <span class="dim">—</span>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>

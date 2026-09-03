@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Configurer {{ iface.name }} - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/network">← Reseau</a>{% endblock %}
+{% block content %}
+    <h1>Configurer "{{ iface.name }}"</h1>
+    <p class="meta">Adresse MAC : {{ iface.mac or "inconnue" }}</p>
+
+    <form method="post" action="/network/interface/{{ iface.name }}/edit" x-data="{ mode: '{{ 'dhcp' if iface.config.dhcp4 else 'static' }}' }">
+      <div class="card">
+        <label class="checkbox-row"><input type="radio" name="mode" value="dhcp" x-model="mode"> DHCP (adresse automatique - recommande sauf besoin specifique)</label>
+        <label class="checkbox-row"><input type="radio" name="mode" value="static" x-model="mode"> Adresse IP fixe</label>
+
+        <div x-show="mode === 'static'" style="margin-top:1rem;">
+          <label for="address">Adresse IP (CIDR, ex: 192.168.1.50/24)</label>
+          <input type="text" id="address" name="address" value="{{ iface.config.address or '' }}" placeholder="192.168.1.50/24">
+
+          <label for="gateway4">Passerelle</label>
+          <input type="text" id="gateway4" name="gateway4" value="{{ iface.config.gateway4 or '' }}" placeholder="192.168.1.1">
+
+          <div class="info-box">
+            Le DNS se gere separement, depuis <a href="/network/dns" style="color:#93c5fd;">Reseau → DNS</a>.
+          </div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="btn btn-primary">Continuer vers le recapitulatif</button>
+        <a class="btn btn-cancel" href="/network">Annuler</a>
+      </div>
+    </form>
+{% endblock %}

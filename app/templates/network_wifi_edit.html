@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Wifi {{ iface_name }} - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/network">← Reseau</a>{% endblock %}
+{% block content %}
+    <h1>Configurer le wifi sur "{{ iface_name }}"</h1>
+    <div class="info-box">
+      Une connexion Ethernet filaire reste toujours plus fiable pour un NAS (debit, stabilite,
+      pas de coupure liee a la portee du signal) - reserve le wifi a un usage de secours ou
+      temporaire quand c'est possible.
+    </div>
+
+    <form method="post" action="/network/wifi/{{ iface_name }}/edit" x-data="{ ipMode: '{{ 'dhcp' if config.dhcp4 else 'static' }}' }">
+      <div class="card">
+        <label for="ssid">Nom du reseau (SSID)</label>
+        <input type="text" id="ssid" name="ssid" list="scanned-ssids" value="{{ config.ssid }}" required>
+        {% if scanned_ssids %}
+        <datalist id="scanned-ssids">
+          {% for s in scanned_ssids %}<option value="{{ s }}">{% endfor %}
+        </datalist>
+        <p class="meta">Reseaux detectes a proximite : {{ scanned_ssids | join(", ") }}</p>
+        {% else %}
+        <p class="meta">Aucun scan disponible pour l'instant - saisis le nom du reseau manuellement.</p>
+        {% endif %}
+
+        <label for="psk">Mot de passe (WPA2)</label>
+        <input type="password" id="psk" name="psk" value="{{ config.psk }}" placeholder="laisser vide si reseau ouvert">
+      </div>
+
+      <div class="card">
+        <label class="checkbox-row"><input type="radio" name="mode" value="dhcp" x-model="ipMode"> DHCP</label>
+        <label class="checkbox-row"><input type="radio" name="mode" value="static" x-model="ipMode"> Adresse IP fixe</label>
+        <div x-show="ipMode === 'static'" style="margin-top:1rem;">
+          <label for="address">Adresse IP (CIDR)</label>
+          <input type="text" id="address" name="address" value="{{ config.address or '' }}" placeholder="192.168.1.70/24">
+          <label for="gateway4">Passerelle</label>
+          <input type="text" id="gateway4" name="gateway4" value="{{ config.gateway4 or '' }}" placeholder="192.168.1.1">
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="btn btn-primary">Continuer vers le recapitulatif</button>
+        <a class="btn btn-cancel" href="/network">Annuler</a>
+      </div>
+    </form>
+{% endblock %}

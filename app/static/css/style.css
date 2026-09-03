@@ -540,6 +540,26 @@ tr.worrying td { color: var(--warning-text); }
 .weather-check-detail { color: var(--text-muted); font-size: .8rem; margin-top: .1rem; line-height: 1.5; }
 
 /* ---------------------------------------------------------------------
+   Console Docker interactive (Phase 7b)
+   --------------------------------------------------------------------- */
+
+.console-wrap { background: #050810; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.console-output {
+  margin: 0; padding: 1rem 1.2rem; height: 420px; overflow-y: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .82rem;
+  color: #d1f7d1; white-space: pre-wrap; word-break: break-all;
+}
+.console-input-row {
+  display: flex; align-items: center; gap: .6rem; padding: .6rem 1.2rem;
+  border-top: 1px solid var(--border); background: var(--bg-elevated);
+}
+.console-prompt { color: var(--text-muted); font-family: ui-monospace, monospace; }
+.console-input-row input {
+  flex: 1; background: transparent; border: none; color: var(--text);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .85rem; outline: none;
+}
+
+/* ---------------------------------------------------------------------
    Login (page hors app-shell)
    --------------------------------------------------------------------- */
 

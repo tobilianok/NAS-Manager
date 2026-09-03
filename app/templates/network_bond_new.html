@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Nouvel agregat - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/network">← Reseau</a>{% endblock %}
+{% block content %}
+    <h1>Creer un agregat de liens (bonding)</h1>
+    <p class="meta">
+      Un agregat combine plusieurs cartes reseau physiques en une seule interface logique -
+      utile pour la tolerance de panne (une carte tombe, l'autre prend le relais) et/ou pour
+      cumuler du debit selon le mode choisi.
+    </p>
+
+    {% if error %}
+    <div class="msg msg-error">{{ error }}</div>
+    {% endif %}
+
+    {% if available | length < 2 %}
+    <div class="empty-state">Il faut au moins 2 cartes reseau physiques non deja agregees.</div>
+    {% else %}
+    <form method="post" action="/network/bond/new" x-data="{ ipMode: 'dhcp' }">
+      <div class="card">
+        <label for="bond_name">Nom de l'agregat</label>
+        <input type="text" id="bond_name" name="bond_name" pattern="[a-z][a-z0-9-]{0,14}" placeholder="ex: bond0" required>
+
+        <label>Cartes a agreger</label>
+        {% for iface in available %}
+        <label class="checkbox-row"><input type="checkbox" name="members" value="{{ iface.name }}"> {{ iface.name }} ({{ iface.mac or "MAC inconnue" }})</label>
+        {% endfor %}
+
+        <label for="mode" style="margin-top:1rem;">Mode</label>
+        <select id="mode" name="mode">
+          {% for key, label in bond_modes.items() %}
+          <option value="{{ key }}">{{ label.split(" - ")[0] }}</option>
+          {% endfor %}
+        </select>
+        <div class="info-panel">
+          {% for key, label in bond_modes.items() %}
+          <strong>{{ label.split(" - ")[0] }}</strong> : {{ label.split(" - ", 1)[1] }}<br><br>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="card">
+        <label class="checkbox-row"><input type="radio" name="ip_mode" value="dhcp" x-model="ipMode"> DHCP</label>
+        <label class="checkbox-row"><input type="radio" name="ip_mode" value="static" x-model="ipMode"> Adresse IP fixe</label>
+        <div x-show="ipMode === 'static'" style="margin-top:1rem;">
+          <label for="address">Adresse IP (CIDR)</label>
+          <input type="text" id="address" name="address" placeholder="192.168.1.60/24">
+          <label for="gateway4">Passerelle</label>
+          <input type="text" id="gateway4" name="gateway4" placeholder="192.168.1.1">
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="btn btn-primary">Continuer vers le recapitulatif</button>
+        <a class="btn btn-cancel" href="/network">Annuler</a>
+      </div>
+    </form>
+    {% endif %}
+{% endblock %}

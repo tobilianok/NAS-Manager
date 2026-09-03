@@ -16,6 +16,11 @@ ENV_FILE="${INSTALL_DIR}/.env"
 SSL_DIR="/etc/nas-manager/ssl"
 
 echo "==> [1/14] Mise a jour du systeme et installation des dependances"
+# netplan.io : deja present par defaut sur Ubuntu Server, mais on le liste
+# explicitement (idempotent) - c'est le moteur de la configuration reseau
+# (IP/DNS/agregats/wifi) geree depuis l'interface. iw + wpasupplicant :
+# necessaires pour le scan et la connexion wifi (WPA2) si une carte wifi est
+# presente ; sans effet sur une machine sans carte wifi.
 apt-get update
 apt-get install -y \
     python3 python3-venv python3-pip \
@@ -23,6 +28,7 @@ apt-get install -y \
     samba nfs-kernel-server acl \
     openssl ufw \
     lm-sensors \
+    netplan.io iw wpasupplicant \
     git curl unzip
 
 echo "==> [2/14] Detection des capteurs materiels (lm-sensors)"
