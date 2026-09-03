@@ -16,7 +16,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app import (
     auth, disks, zfs, sysstats, smart as smart_module, replace_workflow, shares,
-    nasusers, dockerstacks, netstats, health, netconfig, dockerconsole,
+    nasusers, dockerstacks, netstats, health, netconfig, dockerconsole, sysaccounts,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -1500,3 +1500,200 @@ def network_apply_cancel(request: Request, username: str = Depends(require_login
     except netconfig.NetworkApplyError:
         pass
     return _apply_status_partial(request)
+
+
+# ---------------------------------------------------------------------------
+# Comptes systeme / sudo & groupes Linux (Phase 8b) - zone la plus sensible
+# du projet : voir les commentaires en tete de app/sysaccounts.py pour le
+# detail des garde-fous (auto-verrouillage, dernier admin+sudo,
+# reconfirmation de mot de passe sur les actions sensibles).
+# ---------------------------------------------------------------------------
+
+def _render_admin_accounts(
+    request: Request, username: str,
+    error: str | None = None, message: str | None = None, status_code: int = 200,
+):
+    accounts = sysaccounts.list_system_accounts()
+    all_groups = sysaccounts.list_groups()
+    groups = [
+        {"name": g, "members": sysaccounts.group_members(g), "protected": sysaccounts.is_protected_group(g)}
+        for g in all_groups
+    ]
+    assignable_groups = sysaccounts.list_assignable_extra_groups()
+    return templates.TemplateResponse(
+        "admin_accounts.html",
+        {
+            "request": request, "username": username, "session_username": username,
+            "accounts": accounts, "groups": groups, "assignable_groups": assignable_groups,
+            "password_requirements": nasusers.PASSWORD_REQUIREMENTS_LABEL,
+            "error": error, "message": message,
+        },
+        status_code=status_code,
+    )
+
+
+@app.get("/admin-accounts", response_class=HTMLResponse)
+def admin_accounts_page(request: Request, username: str = Depends(require_login)):
+    return _render_admin_accounts(request, username)
+
+
+@app.post("/admin-accounts", response_class=HTMLResponse)
+def admin_accounts_create(
+    request: Request, username: str = Depends(require_login),
+    new_username: str = Form(...), password: str = Form(...), confirm_password: str = Form(...),
+    full_name: str = Form(""), grant_sudo: str = Form(""), grant_nasadmin: str = Form(""),
+):
+    if password != confirm_password:
+        return _render_admin_accounts(request, username, error="Les deux mots de passe saisis ne correspondent pas.", status_code=400)
+    try:
+        sysaccounts.create_system_account(
+            new_username, password, full_name=full_name,
+            grant_sudo=bool(grant_sudo), grant_nasadmin=bool(grant_nasadmin),
+        )
+    except sysaccounts.SysAccountError as exc:
+        return _render_admin_accounts(request, username, error=str(exc), status_code=400)
+    return RedirectResponse("/admin-accounts", status_code=302)
+
+
+@app.post("/admin-accounts/{name}/profile", response_class=HTMLResponse)
+def admin_accounts_update_profile(
+    request: Request, name: str, username: str = Depends(require_login),
+    full_name: str = Form(""), extra_groups: list[str] = Form([]),
+):
+    try:
+        sysaccounts.set_full_name(name, full_name)
+        sysaccounts.set_extra_groups(name, extra_groups)
+    except sysaccounts.SysAccountError as exc:
+        return _render_admin_accounts(request, username, error=str(exc), status_code=400)
+    return RedirectResponse("/admin-accounts", status_code=302)
+
+
+@app.post("/admin-accounts/{name}/password", response_class=HTMLResponse)
+def admin_accounts_set_password(
+    request: Request, name: str, username: str = Depends(require_login),
+    password: str = Form(...), confirm_password: str = Form(...),
+):
+    if password != confirm_password:
+        return _render_admin_accounts(request, username, error="Les deux mots de passe saisis ne correspondent pas.", status_code=400)
+    try:
+        sysaccounts.set_account_password(name, password)
+    except sysaccounts.SysAccountError as exc:
+        return _render_admin_accounts(request, username, error=str(exc), status_code=400)
+    return RedirectResponse("/admin-accounts", status_code=302)
+
+
+@app.post("/admin-accounts/{name}/lock", response_class=HTMLResponse)
+def admin_accounts_lock(request: Request, name: str, username: str = Depends(require_login)):
+    try:
+        sysaccounts.lock_account(name)
+    except sysaccounts.SysAccountError as exc:
+        return _render_admin_accounts(request, username, error=str(exc), status_code=400)
+    return RedirectResponse("/admin-accounts", status_code=302)
+
+
+@app.post("/admin-accounts/{name}/unlock", response_class=HTMLResponse)
+def admin_accounts_unlock(request: Request, name: str, username: str = Depends(require_login)):
+    try:
+        sysaccounts.unlock_account(name)
+    except sysaccounts.SysAccountError as exc:
+        return _render_admin_accounts(request, username, error=str(exc), status_code=400)
+    return RedirectResponse("/admin-accounts", status_code=302)
+
+
+@app.post("/admin-accounts/{name}/sudo/grant", response_class=HTMLResponse)
+def admin_accounts_grant_sudo(request: Request, name: str, username: str = Depends(require_login)):
+    try:
+        sysaccounts.grant_sudo(name)
+    except sysaccounts.SysAccountError as exc:
+        return _render_admin_accounts(request, username, error=str(exc), status_code=400)
+    return RedirectResponse("/admin-accounts", status_code=302)
+
+
+@app.post("/admin-accounts/{name}/sudo/revoke", response_class=HTMLResponse)
+def admin_accounts_revoke_sudo(
+    request: Request, name: str, username: str = Depends(require_login), confirm_password: str = Form(...),
+):
+    try:
+        sysaccounts.revoke_sudo(name, username, confirm_password)
+    except sysaccounts.SysAccountError as exc:
+        return _render_admin_accounts(request, username, error=str(exc), status_code=400)
+    return RedirectResponse("/admin-accounts", status_code=302)
+
+
+@app.post("/admin-accounts/{name}/nasadmin/grant", response_class=HTMLResponse)
+def admin_accounts_grant_nasadmin(request: Request, name: str, username: str = Depends(require_login)):
+    try:
+        sysaccounts.grant_nasadmin(name)
+    except sysaccounts.SysAccountError as exc:
+        return _render_admin_accounts(request, username, error=str(exc), status_code=400)
+    return RedirectResponse("/admin-accounts", status_code=302)
+
+
+@app.post("/admin-accounts/{name}/nasadmin/revoke", response_class=HTMLResponse)
+def admin_accounts_revoke_nasadmin(
+    request: Request, name: str, username: str = Depends(require_login), confirm_password: str = Form(...),
+):
+    try:
+        sysaccounts.revoke_nasadmin(name, username, confirm_password)
+    except sysaccounts.SysAccountError as exc:
+        return _render_admin_accounts(request, username, error=str(exc), status_code=400)
+    return RedirectResponse("/admin-accounts", status_code=302)
+
+
+@app.get("/admin-accounts/{name}/delete", response_class=HTMLResponse)
+def admin_accounts_delete_form(request: Request, name: str, username: str = Depends(require_login)):
+    account = sysaccounts.get_system_account(name)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Compte '{name}' introuvable.")
+    return templates.TemplateResponse(
+        "admin_account_delete.html",
+        {"request": request, "username": username, "account": account, "error": None},
+    )
+
+
+@app.post("/admin-accounts/{name}/delete", response_class=HTMLResponse)
+def admin_accounts_delete_submit(
+    request: Request, name: str, username: str = Depends(require_login),
+    confirm_name: str = Form(...), confirm_password: str = Form(...), remove_home: str = Form(""),
+):
+    account = sysaccounts.get_system_account(name)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Compte '{name}' introuvable.")
+
+    if confirm_name.strip() != name.strip():
+        return templates.TemplateResponse(
+            "admin_account_delete.html",
+            {
+                "request": request, "username": username, "account": account,
+                "error": "Le nom tape ne correspond pas au nom du compte - rien n'a ete supprime.",
+            },
+            status_code=400,
+        )
+
+    try:
+        sysaccounts.delete_system_account(name, username, confirm_password, remove_home=bool(remove_home))
+    except sysaccounts.SysAccountError as exc:
+        return templates.TemplateResponse(
+            "admin_account_delete.html",
+            {"request": request, "username": username, "account": account, "error": str(exc)},
+            status_code=400,
+        )
+    return RedirectResponse("/admin-accounts", status_code=302)
+
+
+@app.post("/admin-accounts/groups", response_class=HTMLResponse)
+def admin_groups_create(request: Request, username: str = Depends(require_login), groupname: str = Form(...)):
+    try:
+        sysaccounts.create_group(groupname)
+    except sysaccounts.SysAccountError as exc:
+        return _render_admin_accounts(request, username, error=str(exc), status_code=400)
+    return RedirectResponse("/admin-accounts", status_code=302)
+
+
+@app.post("/admin-accounts/groups/{groupname}/delete", response_class=HTMLResponse)
+def admin_groups_delete(request: Request, groupname: str, username: str = Depends(require_login)):
+    try:
+        sysaccounts.delete_group(groupname)
+    except sysaccounts.SysAccountError as exc:
+        return _render_admin_accounts(request, username, error=str(exc), status_code=400)
+    return RedirectResponse("/admin-accounts", status_code=302)

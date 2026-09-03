@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Supprimer {{ account.username }} - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/admin-accounts">← Comptes système</a>{% endblock %}
+{% block content %}
+    <h1>Supprimer le compte "{{ account.username }}"</h1>
+    <div class="confirm-box">
+      <p>
+        <strong>Cette action va supprimer DEFINITIVEMENT le compte système "{{ account.username }}".</strong>
+        C'est irreversible - il n'y a pas de corbeille, pas d'annulation possible une fois lance.
+        Si tu coches "Supprimer aussi le repertoire personnel", tous les fichiers de
+        <code>/home/{{ account.username }}</code> seront detruits en meme temps que le compte.
+      </p>
+      <ul class="recap">
+        {% if account.full_name %}<li>Nom complet : {{ account.full_name }}</li>{% endif %}
+        <li>UID : {{ account.uid }}</li>
+        <li>Sudo : {{ 'oui' if account.is_sudo else 'non' }}</li>
+        <li>Accès à cette interface (nasadmin) : {{ 'oui' if account.is_nasadmin else 'non' }}</li>
+        {% if account.extra_groups %}<li>Groupes supplementaires : {{ account.extra_groups | join(', ') }}</li>{% endif %}
+      </ul>
+
+      <div class="info-box">
+        Protections automatiques : impossible de supprimer ton propre compte, et impossible de
+        supprimer ce compte s'il fait partie du dernier binome sudo + acces admin restant sur le
+        systeme. La suppression exige aussi TON propre mot de passe (celui de la session en cours).
+      </div>
+
+      {% if error %}
+      <div class="msg msg-error">{{ error }}</div>
+      {% endif %}
+
+      <form method="post" action="/admin-accounts/{{ account.username }}/delete">
+        <label for="confirm_name">Pour confirmer, retape le nom exact du compte</label>
+        <input type="text" id="confirm_name" name="confirm_name" placeholder="{{ account.username }}" autocomplete="off" required>
+
+        <label for="confirm_password" style="margin-top:.6rem;">Ton mot de passe (session en cours)</label>
+        <input type="password" id="confirm_password" name="confirm_password" required>
+
+        <label style="display:flex; align-items:center; gap:.4rem; font-weight:normal; margin-top:.8rem;">
+          <input type="checkbox" name="remove_home" value="1"> Supprimer aussi le répertoire personnel (/home/{{ account.username }})
+        </label>
+
+        <div class="actions">
+          <button type="submit" class="btn-solid-danger">Supprimer définitivement</button>
+          <a class="btn btn-cancel" href="/admin-accounts">Annuler</a>
+        </div>
+      </form>
+    </div>
+{% endblock %}

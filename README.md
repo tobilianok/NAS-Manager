@@ -73,6 +73,22 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
   reportées a une phase dédiée avec des garde-fous stricts (impossible de
   se retirer soi-même l'accès admin ou de supprimer le dernier compte
   admin+sudo).
+- Phase 8b : nouvelle page "Comptes système" — gestion des VRAIS comptes
+  systeme Linux (avec shell et repertoire personnel, du type cree a
+  l'installation d'Ubuntu), distincte des comptes de partage (Phase 8a) :
+  creation, profil (nom complet, groupes supplementaires), changement de mot
+  de passe, verrouillage/deverrouillage, octroi/retrait du sudo, octroi/
+  retrait de l'acces a cette interface (groupe `nasadmin`), suppression avec
+  confirmation par re-saisie du nom du compte. Gestion des groupes Linux
+  (creation, suppression, liste des membres) avec `nasadmin`/`nasshares`/
+  `sudo` protegés en permanence. Garde-fous stricts, verifies cote serveur a
+  chaque appel : impossible de se retirer a soi-meme le sudo ou l'acces
+  admin, impossible de supprimer son propre compte, impossible de faire
+  tomber a zero le nombre de comptes ayant a la fois sudo ET l'acces admin
+  (dernier "compte de secours"), et toute action sensible (retrait sudo,
+  retrait acces admin, suppression de compte) exige de re-saisir son PROPRE
+  mot de passe (celui de la session en cours, verifie via PAM) — jamais celui
+  du compte cible — livré, en attente de test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -175,10 +191,11 @@ Optionnel (pas nécessaire pour faire tourner NAS Manager), mais recommandé
 avant de valider une mise à jour manuellement modifiée : la suite couvre la
 détection des disques, la validation des pools ZFS, le remplacement de
 disque, la lecture SMART, les partages SMB/NFS (utilisateurs ET groupes),
-les comptes de partage (profil, avatar), les stacks Docker Compose,
-l'état réseau, la météo de santé/sécurité, la configuration réseau
+les comptes de partage (profil, avatar), les comptes système/sudo et les
+groupes Linux (garde-fous d'auto-verrouillage inclus), les stacks Docker
+Compose, l'état réseau, la météo de santé/sécurité, la configuration réseau
 (netplan, agrégats, wifi, application avec confirmation/retour arrière),
-la console Docker interactive et les routes web (323 tests).
+la console Docker interactive et les routes web (381 tests).
 
 ## Développement
 

@@ -1,0 +1,244 @@
+{% extends "base.html" %}
+{% block title %}Comptes système - NAS Manager{% endblock %}
+{% block breadcrumb %}<span>Comptes système</span>{% endblock %}
+{% block content %}
+<div x-data="{ createOpen: false, profileFor: null, passwordFor: null, revokeSudoFor: null, revokeAdminFor: null }">
+    <h1>Comptes système &amp; groupes</h1>
+    <p class="intro">
+      Comptes systèmes RÉELS (avec shell et répertoire personnel), du type créé à l'installation
+      d'Ubuntu — distincts des <a href="/share-users" style="color:#93c5fd;">comptes de partage</a>.
+      Le groupe <strong>nasadmin</strong> contrôle l'accès à cette interface elle-même : sois prudent.
+    </p>
+
+    <div class="info-box">
+      Protections automatiques toujours actives : impossible de te retirer à toi-même le sudo ou
+      l'accès admin, impossible de supprimer ton propre compte, et impossible de faire tomber à
+      zéro le nombre de comptes ayant à la fois sudo <em>et</em> l'accès admin — le dernier
+      "compte de secours" est toujours préservé. Retirer le sudo/l'accès admin ou supprimer un
+      compte exige de resaisir TON propre mot de passe (celui de la session en cours).
+    </div>
+
+    {% if error %}<div class="msg msg-error">{{ error }}</div>{% endif %}
+    {% if message %}<div class="msg msg-success">{{ message }}</div>{% endif %}
+
+    <h2 class="section-title">Comptes</h2>
+    <table>
+      <thead><tr><th>Compte</th><th>Statut</th><th>Groupes</th><th></th></tr></thead>
+      <tbody>
+        {% for a in accounts %}
+        <tr>
+          <td>
+            <strong>{{ a.username }}</strong>
+            {% if a.full_name %}<div class="user-fullname">{{ a.full_name }}</div>{% endif %}
+          </td>
+          <td>
+            {% if a.is_sudo %}<span class="badge badge-rw">Sudo</span>{% endif %}
+            {% if a.is_nasadmin %}<span class="badge proto-smb">Admin interface</span>{% endif %}
+            {% if a.locked %}<span class="badge badge-ro">Verrouillé</span>{% endif %}
+            {% if a.username == session_username %}<span class="group-chip">toi</span>{% endif %}
+          </td>
+          <td>
+            {% for g in a.extra_groups %}<span class="group-chip">{{ g }}</span>{% endfor %}
+            {% if not a.extra_groups %}<span class="dim">-</span>{% endif %}
+          </td>
+          <td class="actions" style="margin:0; flex-wrap:wrap;">
+            <button type="button" class="btn-muted btn-sm" @click="profileFor = '{{ a.username }}'">Profil</button>
+            <button type="button" class="btn-muted btn-sm" @click="passwordFor = '{{ a.username }}'">Mot de passe</button>
+
+            {% if a.locked %}
+            <form class="inline-form" method="post" action="/admin-accounts/{{ a.username }}/unlock">
+              <button type="submit" class="btn-muted btn-sm">Déverrouiller</button>
+            </form>
+            {% else %}
+            <form class="inline-form" method="post" action="/admin-accounts/{{ a.username }}/lock">
+              <button type="submit" class="btn-muted btn-sm">Verrouiller</button>
+            </form>
+            {% endif %}
+
+            {% if a.is_sudo %}
+            <button type="button" class="btn-muted btn-sm" @click="revokeSudoFor = '{{ a.username }}'">Retirer sudo</button>
+            {% else %}
+            <form class="inline-form" method="post" action="/admin-accounts/{{ a.username }}/sudo/grant">
+              <button type="submit" class="btn-muted btn-sm">Donner sudo</button>
+            </form>
+            {% endif %}
+
+            {% if a.is_nasadmin %}
+            <button type="button" class="btn-muted btn-sm" @click="revokeAdminFor = '{{ a.username }}'">Retirer accès admin</button>
+            {% else %}
+            <form class="inline-form" method="post" action="/admin-accounts/{{ a.username }}/nasadmin/grant">
+              <button type="submit" class="btn-muted btn-sm">Donner accès admin</button>
+            </form>
+            {% endif %}
+
+            <a class="btn-sm btn-danger" href="/admin-accounts/{{ a.username }}/delete">Supprimer</a>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not accounts %}
+        <tr><td colspan="4" class="dim">Aucun compte système géré ici pour l'instant.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+
+    <div class="actions" style="margin-top:1rem;">
+      <button type="button" class="btn-primary" @click="createOpen = true">+ Nouveau compte système</button>
+    </div>
+
+    <h2 class="section-title" style="margin-top:2rem;">Groupes</h2>
+    <div class="info-box">
+      Les groupes <code>nasadmin</code>, <code>nasshares</code> et <code>sudo</code> sont protégés
+      et ne peuvent jamais être supprimés depuis cette interface.
+    </div>
+    <table>
+      <thead><tr><th>Groupe</th><th>Membres</th><th></th></tr></thead>
+      <tbody>
+        {% for g in groups %}
+        <tr>
+          <td>
+            {{ g.name }}
+            {% if g.protected %}<span class="badge badge-ro">protégé</span>{% endif %}
+          </td>
+          <td>
+            {% for m in g.members %}<span class="group-chip">{{ m }}</span>{% endfor %}
+            {% if not g.members %}<span class="dim">-</span>{% endif %}
+          </td>
+          <td>
+            {% if not g.protected %}
+            <form class="inline-form" method="post" action="/admin-accounts/groups/{{ g.name }}/delete">
+              <button type="submit" class="btn-sm btn-danger">Supprimer</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="card" style="margin-top:1rem;">
+      <form class="field-row" method="post" action="/admin-accounts/groups">
+        <input type="text" name="groupname" placeholder="nom du nouveau groupe" pattern="[a-z][a-z0-9_-]{2,31}" required>
+        <button type="submit" class="btn-primary">Créer le groupe</button>
+      </form>
+    </div>
+
+    <!-- Modale : creation de compte -->
+    <div class="modal-overlay" x-show="createOpen" x-cloak @keydown.escape.window="createOpen = false">
+      <div class="modal-box" @click.outside="createOpen = false">
+        <button type="button" class="modal-close" @click="createOpen = false">&times;</button>
+        <h2>Nouveau compte système</h2>
+        <form method="post" action="/admin-accounts"
+              onsubmit="return this.password.value === this.confirm_password.value || (alert('Les deux mots de passe ne correspondent pas.'), false);">
+          <label for="new_username">Nom d'utilisateur</label>
+          <input type="text" id="new_username" name="new_username" placeholder="ex: marie" pattern="[a-z][a-z0-9_-]{2,31}" required>
+
+          <label for="new_full_name" style="margin-top:.6rem;">Nom complet (facultatif)</label>
+          <input type="text" id="new_full_name" name="full_name" placeholder="Marie Dupont">
+
+          <div class="field-row" style="margin-top:.8rem;">
+            <label style="display:flex; align-items:center; gap:.4rem; font-weight:normal;">
+              <input type="checkbox" name="grant_sudo" value="1"> Accès sudo
+            </label>
+            <label style="display:flex; align-items:center; gap:.4rem; font-weight:normal;">
+              <input type="checkbox" name="grant_nasadmin" value="1"> Accès à cette interface (nasadmin)
+            </label>
+          </div>
+
+          <label for="new_password" style="margin-top:.6rem;">Mot de passe</label>
+          <input type="password" id="new_password" name="password" placeholder="mot de passe" minlength="10" required>
+          <label for="new_confirm_password">Confirmer le mot de passe</label>
+          <input type="password" id="new_confirm_password" name="confirm_password" placeholder="confirmer le mot de passe" minlength="10" required>
+          <div class="info-box">Exigences : {{ password_requirements }}.</div>
+
+          <div class="actions">
+            <button type="submit" class="btn-primary">Créer le compte</button>
+            <button type="button" class="btn-cancel" @click="createOpen = false">Annuler</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    {% for a in accounts %}
+    <!-- Modale : profil -->
+    <div class="modal-overlay" x-show="profileFor === '{{ a.username }}'" x-cloak @keydown.escape.window="profileFor = null">
+      <div class="modal-box" @click.outside="profileFor = null">
+        <button type="button" class="modal-close" @click="profileFor = null">&times;</button>
+        <h2>Profil de {{ a.username }}</h2>
+        <form method="post" action="/admin-accounts/{{ a.username }}/profile">
+          <label>Nom complet</label>
+          <input type="text" name="full_name" value="{{ a.full_name }}">
+          {% if assignable_groups %}
+          <label style="margin-top:.6rem;">Groupes supplémentaires (hors sudo/nasadmin)</label>
+          <select name="extra_groups" multiple size="{{ [assignable_groups | length, 4] | min }}">
+            {% for g in assignable_groups %}
+            <option value="{{ g }}" {% if g in a.extra_groups %}selected{% endif %}>{{ g }}</option>
+            {% endfor %}
+          </select>
+          {% endif %}
+          <div class="actions">
+            <button type="submit" class="btn-primary">Enregistrer</button>
+            <button type="button" class="btn-cancel" @click="profileFor = null">Annuler</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modale : mot de passe -->
+    <div class="modal-overlay" x-show="passwordFor === '{{ a.username }}'" x-cloak @keydown.escape.window="passwordFor = null">
+      <div class="modal-box" @click.outside="passwordFor = null">
+        <button type="button" class="modal-close" @click="passwordFor = null">&times;</button>
+        <h2>Changer le mot de passe de {{ a.username }}</h2>
+        <form method="post" action="/admin-accounts/{{ a.username }}/password"
+              onsubmit="return this.password.value === this.confirm_password.value || (alert('Les deux mots de passe ne correspondent pas.'), false);">
+          <label>Nouveau mot de passe</label>
+          <input type="password" name="password" minlength="10" required>
+          <label>Confirmer le nouveau mot de passe</label>
+          <input type="password" name="confirm_password" minlength="10" required>
+          <div class="actions">
+            <button type="submit" class="btn-primary">Changer le mot de passe</button>
+            <button type="button" class="btn-cancel" @click="passwordFor = null">Annuler</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    {% if a.is_sudo %}
+    <!-- Modale : retirer sudo (reconfirmation du mot de passe de la session en cours) -->
+    <div class="modal-overlay" x-show="revokeSudoFor === '{{ a.username }}'" x-cloak @keydown.escape.window="revokeSudoFor = null">
+      <div class="modal-box" @click.outside="revokeSudoFor = null">
+        <button type="button" class="modal-close" @click="revokeSudoFor = null">&times;</button>
+        <h2>Retirer le sudo à {{ a.username }}</h2>
+        <p class="dim">Confirme avec <strong>ton propre mot de passe</strong> ({{ session_username }}) pour continuer.</p>
+        <form method="post" action="/admin-accounts/{{ a.username }}/sudo/revoke">
+          <label>Ton mot de passe</label>
+          <input type="password" name="confirm_password" required>
+          <div class="actions">
+            <button type="submit" class="btn-solid-danger">Retirer le sudo</button>
+            <button type="button" class="btn-cancel" @click="revokeSudoFor = null">Annuler</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if a.is_nasadmin %}
+    <!-- Modale : retirer l'acces admin (reconfirmation du mot de passe de la session en cours) -->
+    <div class="modal-overlay" x-show="revokeAdminFor === '{{ a.username }}'" x-cloak @keydown.escape.window="revokeAdminFor = null">
+      <div class="modal-box" @click.outside="revokeAdminFor = null">
+        <button type="button" class="modal-close" @click="revokeAdminFor = null">&times;</button>
+        <h2>Retirer l'accès admin à {{ a.username }}</h2>
+        <p class="dim">Confirme avec <strong>ton propre mot de passe</strong> ({{ session_username }}) pour continuer.</p>
+        <form method="post" action="/admin-accounts/{{ a.username }}/nasadmin/revoke">
+          <label>Ton mot de passe</label>
+          <input type="password" name="confirm_password" required>
+          <div class="actions">
+            <button type="submit" class="btn-solid-danger">Retirer l'accès admin</button>
+            <button type="button" class="btn-cancel" @click="revokeAdminFor = null">Annuler</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    {% endif %}
+    {% endfor %}
+</div>
+{% endblock %}
