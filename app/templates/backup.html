@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Sauvegarde de configuration - NAS Manager{% endblock %}
+{% block breadcrumb %}<span>Sauvegarde</span>{% endblock %}
+{% block content %}
+    <h1>Sauvegarde &amp; restauration de la configuration</h1>
+    <p class="intro">
+      De quoi remonter ce NAS depuis une installation fraîche d'Ubuntu + <code>install.sh</code>,
+      sans ressaisir à la main les partages, les comptes, les permissions et les stacks Docker.
+      L'archive est <strong>téléchargée chez toi</strong> : rien n'est conservé sur le NAS — une
+      sauvegarde qui ne vit que sur la machine à restaurer ne sert à rien le jour où cette machine
+      ne démarre plus.
+    </p>
+
+    {% if error %}<div class="msg msg-error">{{ error }}</div>{% endif %}
+
+    {% if report %}
+    <h2 class="section-title">Rapport de restauration</h2>
+    <div class="card">
+      <ul class="recap">
+        {% for line in report %}
+        <li{% if line.startswith('ATTENTION') %} class="report-warn"{% endif %}>{{ line }}</li>
+        {% endfor %}
+      </ul>
+      <div class="info-box">
+        Les stacks Docker restaurées ne sont volontairement <strong>pas démarrées</strong> :
+        vérifie leur configuration puis lance-les une par une depuis
+        <a href="/docker" style="color:#93c5fd;">Docker</a> (le bouton « Up -d » affiche les logs en direct).
+      </div>
+    </div>
+    {% endif %}
+
+    <h2 class="section-title">Télécharger la configuration</h2>
+    <div class="card">
+      <p style="margin-top:0;">L'archive contient :</p>
+      <ul class="recap">
+        <li>les partages déclarés, les stacks Docker, les icônes et les avatars ;</li>
+        <li>les comptes de partage et les comptes système, leurs groupes, et les
+            <strong>empreintes</strong> de leurs mots de passe (système + base Samba) ;</li>
+        <li>la configuration générée (<code>smb.conf</code>, <code>/etc/exports</code>, netplan) ;</li>
+        <li>le <code>docker-compose.yml</code> de chaque stack ;</li>
+        <li>la topologie des pools ZFS, en documentation.</li>
+      </ul>
+
+      <div class="msg msg-warning">
+        <strong>Cette archive est un secret.</strong> Les mots de passe n'y sont pas en clair, mais
+        leurs empreintes s'attaquent hors ligne : range-la comme tu rangerais un trousseau de clés,
+        pas dans un dossier partagé.
+      </div>
+
+      <div class="info-box">
+        Ce qu'elle ne contient <strong>pas</strong>, volontairement : les <strong>données</strong> de
+        tes partages et de tes volumes Docker (c'est le rôle des snapshots ZFS, pas d'un export de
+        configuration), et la clé de session <code>.env</code> (secret propre à une installation,
+        régénéré par <code>install.sh</code>).
+      </div>
+
+      <div class="btn-row">
+        <a class="btn btn-primary" href="/backup/download">⬇ Télécharger l'archive de configuration</a>
+      </div>
+    </div>
+
+    <h2 class="section-title">Restaurer depuis une archive</h2>
+    <div class="card">
+      <p style="margin-top:0;">
+        Charge une archive produite par cette page. Tu verras d'abord <strong>ce qu'elle contient</strong>
+        et tu choisiras quoi restaurer — rien n'est écrit sur le système avant ta confirmation.
+      </p>
+      <div class="info-box">
+        La restauration ne <strong>supprime</strong> jamais rien : elle recrée ce qui manque et complète
+        ce qui existe. Un compte présent ici mais absent de l'archive est laissé tel quel.
+        La configuration <strong>réseau</strong> et la <strong>topologie ZFS</strong> sont archivées mais
+        jamais rejouées automatiquement — réappliquer un réseau à distance est le meilleur moyen de se
+        verrouiller dehors, et recréer un pool détruirait les disques. Elles te sont affichées pour
+        que tu les recopies toi-même en connaissance de cause.
+      </div>
+      <form method="post" action="/backup/restore" enctype="multipart/form-data">
+        <label for="archive">Archive de configuration (.tar.gz)</label>
+        <input type="file" id="archive" name="archive" accept=".gz,.tgz,application/gzip" required>
+        <div class="btn-row">
+          <button type="submit" class="btn-muted">Analyser l'archive</button>
+        </div>
+      </form>
+    </div>
+{% endblock %}

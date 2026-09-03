@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Restaurer une configuration - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/backup">← Sauvegarde</a>{% endblock %}
+{% block content %}
+    <h1>Contenu de l'archive</h1>
+
+    {% if error %}<div class="msg msg-error">{{ error }}</div>{% endif %}
+
+    <div class="card">
+      <ul class="recap">
+        <li>Machine d'origine : <strong>{{ info.manifest.hostname }}</strong></li>
+        <li>Sauvegardée le : <strong>{{ info.manifest.created_at }}</strong></li>
+        {% for line in info.summary %}<li>{{ line }}</li>{% endfor %}
+      </ul>
+    </div>
+
+    <h2 class="section-title">Que veux-tu restaurer ?</h2>
+    <form method="post" action="/backup/restore/apply">
+      <input type="hidden" name="archive_root" value="{{ archive_root }}">
+      <div class="card">
+        {% for section in restorable %}
+        <label style="display:flex; align-items:flex-start; gap:.6rem; font-weight:normal; margin-bottom:.7rem;">
+          <input type="checkbox" name="sections" value="{{ section }}"
+                 {% if info.sections.get(section) %}checked{% else %}disabled{% endif %} style="margin-top:.25rem;">
+          <span>
+            {{ section_labels[section] }}
+            {% if not info.sections.get(section) %}<span class="dim"> — absent de cette archive</span>{% endif %}
+          </span>
+        </label>
+        {% endfor %}
+
+        <div class="info-box">
+          Ordre appliqué : d'abord les comptes et groupes (les partages et les permissions y font
+          référence), puis la configuration, puis les stacks. <code>smb.conf</code> et
+          <code>/etc/exports</code> sont <strong>régénérés</strong> depuis le registre restauré, dans
+          le bloc géré par NAS Manager — le reste de la configuration Samba de cette machine n'est
+          pas touché. Les stacks sont recréées mais <strong>pas démarrées</strong>.
+        </div>
+
+        <label for="confirm_password" style="margin-top:.8rem;">Ton mot de passe ({{ username }}) pour confirmer</label>
+        <input type="password" id="confirm_password" name="confirm_password" required>
+
+        <div class="btn-row">
+          <button type="submit" class="btn-solid-danger">Restaurer maintenant</button>
+          <a class="btn btn-cancel" href="/backup">Annuler</a>
+        </div>
+      </div>
+    </form>
+
+    {% if info.network_config %}
+    <h2 class="section-title">Configuration réseau archivée (non restaurée)</h2>
+    <div class="card">
+      <div class="msg msg-warning">
+        Volontairement jamais rejouée automatiquement : réappliquer une configuration réseau à
+        distance est le moyen le plus sûr de perdre l'accès au NAS. Recopie ces valeurs depuis
+        <a href="/network" style="color:#93c5fd;">Réseau</a>, qui applique avec un retour arrière
+        automatique sous 90 s si tu ne confirmes pas.
+      </div>
+      <pre class="run-log" style="height:auto; max-height:280px;">{{ info.network_config }}</pre>
+    </div>
+    {% endif %}
+
+    {% if info.zfs_topology %}
+    <h2 class="section-title">Topologie ZFS archivée (documentation)</h2>
+    <div class="card">
+      <div class="info-box">
+        Jamais rejouée : recréer un pool <strong>détruit</strong> les disques concernés. C'est ici
+        pour te rappeler quelle était la structure (types de vdev, disques, caches) si tu dois la
+        reconstruire à la main depuis la page Pools ZFS.
+      </div>
+      <pre class="run-log" style="height:auto; max-height:340px;">{{ info.zfs_topology }}</pre>
+    </div>
+    {% endif %}
+{% endblock %}

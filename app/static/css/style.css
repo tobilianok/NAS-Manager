@@ -640,6 +640,8 @@ tr.worrying td { color: var(--warning-text); }
 .run-ok { color: #86efac; font-weight: 600; }
 .run-err { color: #fca5a5; font-weight: 600; }
 
+.report-warn { color: var(--warning-text); }
+
 .run-foot { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: .9rem; flex-wrap: wrap; }
 .run-hint { font-size: .78rem; color: var(--text-muted); }
 
