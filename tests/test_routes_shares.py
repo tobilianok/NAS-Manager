@@ -37,7 +37,10 @@ def test_share_users_page(client, monkeypatch):
 
 def test_share_users_create_and_error(client, monkeypatch):
     created = []
-    monkeypatch.setattr(nasusers, "create_share_user", lambda u, p: created.append((u, p)))
+    monkeypatch.setattr(
+        nasusers, "create_share_user",
+        lambda u, p, full_name="", extra_groups=None: created.append((u, p)),
+    )
     monkeypatch.setattr(nasusers, "list_share_users", lambda: [])
     resp = client.post(
         "/share-users",
@@ -47,7 +50,7 @@ def test_share_users_create_and_error(client, monkeypatch):
     assert resp.status_code == 302
     assert created == [("alice", "longenoughpass")]
 
-    def raise_error(u, p):
+    def raise_error(u, p, full_name="", extra_groups=None):
         raise nasusers.ShareUserError("nom invalide")
     monkeypatch.setattr(nasusers, "create_share_user", raise_error)
     resp = client.post(
@@ -60,7 +63,10 @@ def test_share_users_create_and_error(client, monkeypatch):
 
 def test_share_users_create_rejects_mismatched_confirmation(client, monkeypatch):
     created = []
-    monkeypatch.setattr(nasusers, "create_share_user", lambda u, p: created.append((u, p)))
+    monkeypatch.setattr(
+        nasusers, "create_share_user",
+        lambda u, p, full_name="", extra_groups=None: created.append((u, p)),
+    )
     monkeypatch.setattr(nasusers, "list_share_users", lambda: [])
     resp = client.post(
         "/share-users",
@@ -91,6 +97,65 @@ def test_share_users_delete(client, monkeypatch):
     resp = client.post("/share-users/alice/delete", follow_redirects=False)
     assert resp.status_code == 302
     assert deleted == ["alice"]
+
+
+def test_share_users_create_with_profile_and_groups(client, monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        nasusers, "create_share_user",
+        lambda u, p, full_name="", extra_groups=None: created.append((u, p, full_name, extra_groups)),
+    )
+    monkeypatch.setattr(nasusers, "list_share_users", lambda: [])
+    monkeypatch.setattr(nasusers, "list_assignable_groups", lambda: ["famille"])
+    resp = client.post(
+        "/share-users",
+        data={
+            "new_username": "alice", "password": "longenoughpass", "confirm_password": "longenoughpass",
+            "prenom": "Alice", "nom": "Dupont", "extra_groups": ["famille"],
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert created == [("alice", "longenoughpass", "Alice Dupont", ["famille"])]
+
+
+def test_share_users_update_profile(client, monkeypatch):
+    updated = []
+    monkeypatch.setattr(
+        nasusers, "set_share_user_profile",
+        lambda u, full_name="", extra_groups=None: updated.append((u, full_name, extra_groups)),
+    )
+    monkeypatch.setattr(nasusers, "list_share_users", lambda: [])
+    resp = client.post(
+        "/share-users/alice/profile",
+        data={"prenom": "Alice", "nom": "Dupont", "extra_groups": ["famille"]},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert updated == [("alice", "Alice Dupont", ["famille"])]
+
+
+def test_share_user_avatar_emoji_route(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(nasusers, "set_avatar_emoji", lambda u, e: calls.append((u, e)))
+    monkeypatch.setattr(nasusers, "list_share_users", lambda: [])
+    resp = client.post("/share-users/alice/avatar/emoji", data={"avatar_emoji": "🙂"}, follow_redirects=False)
+    assert resp.status_code == 302
+    assert calls == [("alice", "🙂")]
+
+
+def test_share_user_avatar_delete_route(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(nasusers, "delete_avatar", lambda u: calls.append(u))
+    resp = client.post("/share-users/alice/avatar/delete", follow_redirects=False)
+    assert resp.status_code == 302
+    assert calls == ["alice"]
+
+
+def test_share_user_avatar_get_404_when_none(client, monkeypatch):
+    monkeypatch.setattr(nasusers, "get_avatar_photo_path", lambda u: None)
+    resp = client.get("/share-users/alice/avatar")
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +231,31 @@ def test_share_detail_and_user_management(client, monkeypatch):
     assert resp.status_code == 200
     share = shares.get_share("photos")
     assert share.users == []
+
+
+def test_share_detail_and_group_management(client, monkeypatch):
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool())
+    monkeypatch.setattr(zfs, "create_dataset", lambda path: "")
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: "/tank/partages/photos")
+    client.post("/shares", data={"name": "photos", "pool": "tank", "protocol_smb": "1"})
+
+    monkeypatch.setattr(nasusers, "list_assignable_groups", lambda: ["famille"])
+
+    resp = client.get("/shares/photos")
+    assert resp.status_code == 200
+    assert "famille" in resp.text
+
+    resp = client.post("/shares/photos/groups", data={"share_groupname": "famille", "access": "rw"})
+    assert resp.status_code == 200
+    assert "famille" in resp.text
+    share = shares.get_share("photos")
+    assert share.groups[0].groupname == "famille"
+    assert share.groups[0].access == "rw"
+
+    resp = client.post("/shares/photos/groups/famille/delete")
+    assert resp.status_code == 200
+    share = shares.get_share("photos")
+    assert share.groups == []
 
 
 def test_share_nfs_networks_update(client, monkeypatch):

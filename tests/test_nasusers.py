@@ -12,9 +12,10 @@ class FakeGroup:
 
 
 class FakePwEntry:
-    def __init__(self, pw_name, pw_gid):
+    def __init__(self, pw_name, pw_gid, pw_gecos=""):
         self.pw_name = pw_name
         self.pw_gid = pw_gid
+        self.pw_gecos = pw_gecos
 
 
 def _patch_group_and_users(monkeypatch, gid, usernames):
@@ -23,6 +24,7 @@ def _patch_group_and_users(monkeypatch, gid, usernames):
 
     monkeypatch.setattr(grp, "getgrnam", lambda name: FakeGroup(gid))
     monkeypatch.setattr(pwd, "getpwall", lambda: [FakePwEntry(u, gid) for u in usernames])
+    monkeypatch.setattr(grp, "getgrall", lambda: [])
 
 
 def test_list_share_users_uses_primary_group(monkeypatch):
@@ -169,3 +171,132 @@ def test_delete_share_user_success(monkeypatch):
     nasusers.delete_share_user("alice")
     assert ["smbpasswd", "-x", "alice"] in calls
     assert ["userdel", "alice"] in calls
+
+
+# ---------------------------------------------------------------------------
+# Profil enrichi (nom complet, groupes) et avatar - Phase 8a
+# ---------------------------------------------------------------------------
+
+class FakeGroupNamed:
+    def __init__(self, gid, name, members=None):
+        self.gr_gid = gid
+        self.gr_name = name
+        self.gr_mem = members or []
+
+
+def test_list_assignable_groups_excludes_nasadmin_nasshares_and_low_gid(monkeypatch):
+    import grp
+    fake_groups = [
+        FakeGroupNamed(27, "sudo"),
+        FakeGroupNamed(1000, "nasadmin"),
+        FakeGroupNamed(1001, "nasshares"),
+        FakeGroupNamed(1002, "famille"),
+    ]
+    monkeypatch.setattr(grp, "getgrall", lambda: fake_groups)
+    assert nasusers.list_assignable_groups() == ["famille"]
+
+
+def test_sanitize_extra_groups_filters_unknown(monkeypatch):
+    monkeypatch.setattr(nasusers, "list_assignable_groups", lambda: ["famille", "invites"])
+    assert nasusers._sanitize_extra_groups(["famille", "nasadmin", "ghost"]) == ["famille"]
+    assert nasusers._sanitize_extra_groups(None) == []
+
+
+def test_create_share_user_with_full_name_and_groups(monkeypatch):
+    import pwd
+    monkeypatch.setattr(pwd, "getpwnam", lambda name: (_ for _ in ()).throw(KeyError()))
+    monkeypatch.setattr(nasusers, "list_assignable_groups", lambda: ["famille"])
+
+    calls = []
+
+    def fake_run(cmd, input=None, capture_output=True, text=True, check=False):
+        calls.append(cmd)
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    nasusers.create_share_user("alice", "Longenough1Password!", full_name="Alice Dupont", extra_groups=["famille"])
+
+    assert [
+        "useradd", "--no-create-home", "--shell", "/usr/sbin/nologin", "--gid", "nasshares",
+        "-c", "Alice Dupont", "-G", "famille", "alice",
+    ] in calls
+
+
+def test_set_share_user_profile_rejects_non_share_user(monkeypatch):
+    _patch_group_and_users(monkeypatch, gid=5000, usernames=["alice"])
+    with pytest.raises(nasusers.ShareUserError, match="pas un compte de partage"):
+        nasusers.set_share_user_profile("mallory", full_name="X")
+
+
+def test_set_share_user_profile_updates_usermod(monkeypatch):
+    _patch_group_and_users(monkeypatch, gid=5000, usernames=["alice"])
+    monkeypatch.setattr(nasusers, "list_assignable_groups", lambda: ["famille"])
+
+    calls = []
+
+    def fake_run(cmd, input=None, capture_output=True, text=True, check=False):
+        calls.append(cmd)
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    nasusers.set_share_user_profile("alice", full_name="Alice Dupont", extra_groups=["famille", "nasadmin"])
+    assert ["usermod", "-c", "Alice Dupont", "-G", "famille", "alice"] in calls
+
+
+@pytest.fixture
+def avatar_dirs(monkeypatch, tmp_path):
+    monkeypatch.setattr(nasusers, "AVATAR_DIR", tmp_path / "avatars")
+    monkeypatch.setattr(nasusers, "AVATAR_EMOJI_FILE", tmp_path / "avatar_emojis.json")
+    monkeypatch.setattr(nasusers, "is_share_user", lambda u: u == "alice")
+
+
+def test_set_avatar_photo_rejects_non_share_user(avatar_dirs):
+    with pytest.raises(nasusers.ShareUserError, match="pas un compte de partage"):
+        nasusers.set_avatar_photo("mallory", "photo.png", b"data")
+
+
+def test_set_avatar_photo_rejects_bad_extension(avatar_dirs):
+    with pytest.raises(nasusers.ShareUserError, match="non supporte"):
+        nasusers.set_avatar_photo("alice", "photo.gif", b"data")
+
+
+def test_set_avatar_photo_rejects_empty(avatar_dirs):
+    with pytest.raises(nasusers.ShareUserError, match="vide"):
+        nasusers.set_avatar_photo("alice", "photo.png", b"")
+
+
+def test_set_avatar_photo_rejects_too_large(avatar_dirs):
+    with pytest.raises(nasusers.ShareUserError, match="volumineuse"):
+        nasusers.set_avatar_photo("alice", "photo.png", b"x" * (nasusers.AVATAR_MAX_BYTES + 1))
+
+
+def test_set_avatar_photo_saves_and_clears_emoji(avatar_dirs):
+    nasusers.set_avatar_emoji("alice", "🙂")
+    nasusers.set_avatar_photo("alice", "photo.png", b"fake-png-bytes")
+    assert nasusers.get_avatar_photo_path("alice") is not None
+    assert nasusers._load_avatar_emojis().get("alice") is None
+
+
+def test_set_avatar_emoji_clears_photo(avatar_dirs):
+    nasusers.set_avatar_photo("alice", "photo.png", b"fake-png-bytes")
+    nasusers.set_avatar_emoji("alice", "😀")
+    assert nasusers.get_avatar_photo_path("alice") is None
+    assert nasusers._load_avatar_emojis()["alice"] == "😀"
+
+
+def test_delete_avatar_removes_both(avatar_dirs):
+    nasusers.set_avatar_emoji("alice", "🙂")
+    nasusers.delete_avatar("alice")
+    assert nasusers._load_avatar_emojis().get("alice") is None
+
+    nasusers.set_avatar_photo("alice", "photo.png", b"fake-png-bytes")
+    nasusers.delete_avatar("alice")
+    assert nasusers.get_avatar_photo_path("alice") is None

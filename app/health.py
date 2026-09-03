@@ -3,10 +3,18 @@ Vue d'ensemble "meteo" de la sante et de la securite du systeme.
 
 Agrege plusieurs sources independantes (etat SMART des disques, sante des
 pools ZFS, cartes reseau physiques, temperatures materielles, pare-feu
-ufw, etat des containers Docker, politique de mot de passe) en un seul
-statut global avec une icone "meteo" (beau temps / nuageux / orageux), et
-conserve le detail de chaque verification pour comprendre POURQUOI - le
-statut global seul ne dit jamais a Louis quoi corriger.
+ufw, etat des containers Docker) en un seul statut global avec une icone
+"meteo" (beau temps / nuageux / orageux), et conserve le detail de
+chaque verification pour comprendre POURQUOI - le statut global seul ne
+dit jamais a Louis quoi corriger.
+
+Volontairement PAS de verification de la politique de mot de passe : un
+mot de passe deja enregistre est stocke sous forme de hash irreversible,
+impossible a evaluer a posteriori. Une case verte en permanence sur ce
+point induirait Louis en erreur (illusion de securite non verifiable) -
+la politique de complexite reste appliquee a la creation/modification
+des comptes de partage (cf. app.nasusers), simplement sans "meteo"
+dediee sur le tableau de bord.
 
 Chaque verification degrade proprement vers "inconnu" si sa source n'est
 pas disponible (ex : aucun capteur materiel sur une VM) - jamais
@@ -218,20 +226,6 @@ def check_docker() -> HealthCheck:
                         f"{len(stacks)} stack(s) geree(s), aucun container en echec detecte.")
 
 
-def check_password_policy() -> HealthCheck:
-    """Ne peut PAS evaluer la robustesse d'un mot de passe deja enregistre
-    (stocke sous forme de hash irreversible, jamais accessible en clair) -
-    indique seulement si la politique de complexite est active pour toute
-    creation ou modification a venir."""
-    return HealthCheck(
-        "password_policy", "Politique de mot de passe", LEVEL_OK,
-        "Mot de passe complexe (10+ caracteres, majuscule/minuscule/chiffre/caractere "
-        "special) et confirmation exiges pour tout compte de partage cree ou modifie "
-        "via l'interface. Ne peut pas evaluer les mots de passe deja enregistres "
-        "(stockes sous forme de hash irreversible).",
-    )
-
-
 def get_report() -> HealthReport:
     """Execute toutes les verifications. Peut prendre quelques secondes
     (smartctl par disque, sensors, docker compose ps par stack) - a
@@ -244,6 +238,5 @@ def get_report() -> HealthReport:
         check_temperatures(),
         check_firewall(),
         check_docker(),
-        check_password_policy(),
     ]
     return HealthReport(checks=checks)

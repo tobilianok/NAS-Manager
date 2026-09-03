@@ -2,6 +2,7 @@
 {% block title %}Comptes de partage - NAS Manager{% endblock %}
 {% block breadcrumb %}<span>Comptes de partage</span>{% endblock %}
 {% block content %}
+<div x-data="{ createOpen: false, profileFor: null, passwordFor: null, avatarFor: null }">
     <h1>Comptes de partage</h1>
     <p class="intro">
       Ces comptes servent UNIQUEMENT a s'authentifier sur les partages SMB/NFS -
@@ -16,21 +17,37 @@
     <div class="info-box">Exigences de mot de passe : {{ password_requirements }}.</div>
 
     <table>
-      <thead><tr><th>Compte</th><th>Changer le mot de passe</th><th></th></tr></thead>
+      <thead><tr><th>Compte</th><th>Groupes</th><th></th></tr></thead>
       <tbody>
         {% for u in users %}
         <tr>
-          <td>{{ u.username }}</td>
           <td>
-            <form class="field-row" method="post" action="/share-users/{{ u.username }}/password">
-              <input type="password" name="password" placeholder="Nouveau mot de passe" minlength="10" required>
-              <input type="password" name="confirm_password" placeholder="Confirmer" minlength="10" required>
-              <button type="submit" class="btn-primary">Changer</button>
-            </form>
+            <div class="user-cell">
+              <span class="avatar">
+                {% if u.has_avatar_photo %}
+                <img src="/share-users/{{ u.username }}/avatar" alt="">
+                {% elif u.avatar_emoji %}
+                {{ u.avatar_emoji }}
+                {% else %}
+                {{ u.username[0] | upper }}
+                {% endif %}
+              </span>
+              <span class="user-names">
+                <strong>{{ u.username }}</strong>
+                {% if u.full_name %}<span class="user-fullname">{{ u.full_name }}</span>{% endif %}
+              </span>
+            </div>
           </td>
           <td>
+            {% for g in u.extra_groups %}<span class="group-chip">{{ g }}</span>{% endfor %}
+            {% if not u.extra_groups %}<span class="dim">-</span>{% endif %}
+          </td>
+          <td class="actions" style="margin:0;">
+            <button type="button" class="btn-muted btn-sm" @click="avatarFor = '{{ u.username }}'">Avatar</button>
+            <button type="button" class="btn-muted btn-sm" @click="profileFor = '{{ u.username }}'">Modifier</button>
+            <button type="button" class="btn-muted btn-sm" @click="passwordFor = '{{ u.username }}'">Mot de passe</button>
             <form class="inline-form" method="post" action="/share-users/{{ u.username }}/delete">
-              <button type="submit" class="btn-danger">Supprimer</button>
+              <button type="submit" class="btn-danger btn-sm">Supprimer</button>
             </form>
           </td>
         </tr>
@@ -41,15 +58,134 @@
       </tbody>
     </table>
 
-    <div class="card" style="margin-top:1.5rem;">
-      <strong>Nouveau compte de partage</strong>
-      <form method="post" action="/share-users" onsubmit="return this.password.value === this.confirm_password.value || (alert('Les deux mots de passe ne correspondent pas.'), false);">
-        <div class="field-row" style="margin-top:.6rem;">
-          <input type="text" name="new_username" placeholder="nom d'utilisateur" pattern="[a-z][a-z0-9_-]{2,31}" required>
-          <input type="password" name="password" placeholder="mot de passe" minlength="10" required>
-          <input type="password" name="confirm_password" placeholder="confirmer le mot de passe" minlength="10" required>
-          <button type="submit" class="btn-primary">Creer</button>
-        </div>
-      </form>
+    <div class="actions" style="margin-top:1.5rem;">
+      <button type="button" class="btn-primary" @click="createOpen = true">+ Nouveau compte de partage</button>
     </div>
+
+    <!-- Modale : creation de compte -->
+    <div class="modal-overlay" x-show="createOpen" x-cloak @keydown.escape.window="createOpen = false">
+      <div class="modal-box" @click.outside="createOpen = false">
+        <button type="button" class="modal-close" @click="createOpen = false">&times;</button>
+        <h2>Nouveau compte de partage</h2>
+        <form method="post" action="/share-users" enctype="multipart/form-data"
+              onsubmit="return this.password.value === this.confirm_password.value || (alert('Les deux mots de passe ne correspondent pas.'), false);">
+          <label for="new_username">Pseudo (nom d'utilisateur)</label>
+          <input type="text" id="new_username" name="new_username" placeholder="ex: jdupont" pattern="[a-z][a-z0-9_-]{2,31}" required>
+
+          <div class="field-row" style="margin-top:.6rem;">
+            <input type="text" name="prenom" placeholder="Prenom" style="flex:1;">
+            <input type="text" name="nom" placeholder="Nom" style="flex:1;">
+          </div>
+
+          {% if assignable_groups %}
+          <label for="new_extra_groups" style="margin-top:.6rem;">Groupe(s) (facultatif)</label>
+          <select id="new_extra_groups" name="extra_groups" multiple size="{{ [assignable_groups | length, 4] | min }}">
+            {% for g in assignable_groups %}
+            <option value="{{ g }}">{{ g }}</option>
+            {% endfor %}
+          </select>
+          <div class="info-box">
+            Un partage pourra ensuite etre ouvert a tout un groupe d'un coup plutot qu'utilisateur par utilisateur.
+          </div>
+          {% endif %}
+
+          <label style="margin-top:.6rem;">Avatar (facultatif)</label>
+          <div class="field-row">
+            <input type="text" name="avatar_emoji" placeholder="emoji, ex: 🙂" maxlength="8" style="max-width:120px;">
+            <input type="file" name="avatar_photo" accept=".png,.jpg,.jpeg,.webp">
+          </div>
+          <div class="info-box">Une photo ou un emoji, pas les deux - la photo est prioritaire si les deux sont fournis.</div>
+
+          <label for="new_password" style="margin-top:.6rem;">Mot de passe</label>
+          <input type="password" id="new_password" name="password" placeholder="mot de passe" minlength="10" required>
+          <label for="new_confirm_password">Confirmer le mot de passe</label>
+          <input type="password" id="new_confirm_password" name="confirm_password" placeholder="confirmer le mot de passe" minlength="10" required>
+
+          <div class="actions">
+            <button type="submit" class="btn-primary">Creer le compte</button>
+            <button type="button" class="btn-cancel" @click="createOpen = false">Annuler</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modales : modification du profil (une par utilisateur) -->
+    {% for u in users %}
+    <div class="modal-overlay" x-show="profileFor === '{{ u.username }}'" x-cloak @keydown.escape.window="profileFor = null">
+      <div class="modal-box" @click.outside="profileFor = null">
+        <button type="button" class="modal-close" @click="profileFor = null">&times;</button>
+        <h2>Modifier {{ u.username }}</h2>
+        <form method="post" action="/share-users/{{ u.username }}/profile">
+          <div class="field-row">
+            <input type="text" name="prenom" placeholder="Prenom" value="{{ u.full_name.split(' ')[0] if u.full_name else '' }}" style="flex:1;">
+            <input type="text" name="nom" placeholder="Nom" value="{{ u.full_name.split(' ', 1)[1] if u.full_name and ' ' in u.full_name else '' }}" style="flex:1;">
+          </div>
+          {% if assignable_groups %}
+          <label style="margin-top:.6rem;">Groupe(s)</label>
+          <select name="extra_groups" multiple size="{{ [assignable_groups | length, 4] | min }}">
+            {% for g in assignable_groups %}
+            <option value="{{ g }}" {% if g in u.extra_groups %}selected{% endif %}>{{ g }}</option>
+            {% endfor %}
+          </select>
+          {% endif %}
+          <div class="actions">
+            <button type="submit" class="btn-primary">Enregistrer</button>
+            <button type="button" class="btn-cancel" @click="profileFor = null">Annuler</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="modal-overlay" x-show="passwordFor === '{{ u.username }}'" x-cloak @keydown.escape.window="passwordFor = null">
+      <div class="modal-box" @click.outside="passwordFor = null">
+        <button type="button" class="modal-close" @click="passwordFor = null">&times;</button>
+        <h2>Changer le mot de passe de {{ u.username }}</h2>
+        <form method="post" action="/share-users/{{ u.username }}/password"
+              onsubmit="return this.password.value === this.confirm_password.value || (alert('Les deux mots de passe ne correspondent pas.'), false);">
+          <label>Nouveau mot de passe</label>
+          <input type="password" name="password" minlength="10" required>
+          <label>Confirmer le nouveau mot de passe</label>
+          <input type="password" name="confirm_password" minlength="10" required>
+          <div class="actions">
+            <button type="submit" class="btn-primary">Changer le mot de passe</button>
+            <button type="button" class="btn-cancel" @click="passwordFor = null">Annuler</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="modal-overlay" x-show="avatarFor === '{{ u.username }}'" x-cloak @keydown.escape.window="avatarFor = null">
+      <div class="modal-box" @click.outside="avatarFor = null">
+        <button type="button" class="modal-close" @click="avatarFor = null">&times;</button>
+        <h2>Avatar de {{ u.username }}</h2>
+        <div style="display:flex; align-items:center; gap:1rem; margin-bottom:1rem;">
+          <span class="avatar avatar-lg">
+            {% if u.has_avatar_photo %}<img src="/share-users/{{ u.username }}/avatar" alt="">
+            {% elif u.avatar_emoji %}{{ u.avatar_emoji }}
+            {% else %}{{ u.username[0] | upper }}{% endif %}
+          </span>
+          {% if u.has_avatar_photo or u.avatar_emoji %}
+          <form method="post" action="/share-users/{{ u.username }}/avatar/delete">
+            <button type="submit" class="btn-muted btn-sm">Retirer l'avatar</button>
+          </form>
+          {% endif %}
+        </div>
+        <form method="post" action="/share-users/{{ u.username }}/avatar/emoji">
+          <label>Definir un emoji</label>
+          <div class="field-row">
+            <input type="text" name="avatar_emoji" placeholder="🙂" maxlength="8" style="max-width:120px;">
+            <button type="submit" class="btn-muted">Utiliser cet emoji</button>
+          </div>
+        </form>
+        <form method="post" action="/share-users/{{ u.username }}/avatar" enctype="multipart/form-data" style="margin-top:.8rem;">
+          <label>Ou envoyer une photo</label>
+          <div class="field-row">
+            <input type="file" name="avatar_photo" accept=".png,.jpg,.jpeg,.webp" required>
+            <button type="submit" class="btn-muted">Envoyer</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+</div>
 {% endblock %}

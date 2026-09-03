@@ -56,6 +56,22 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
   fonctionnalités étaient volontairement exclues de la Phase 7a vu leur
   sensibilité (risque de coupure d'accès au NAS pour le réseau).
 
+- Phase 8a : retrait de la verification "politique de mot de passe" de la
+  météo de santé (impossible d'evaluer la robustesse d'un mot de passe deja
+  enregistre - la case verte permanente induisait en erreur), icone de
+  stack Docker selectionnable des la creation (en plus de l'ajout/
+  changement apres coup), favicon, et refonte complete des comptes de
+  partage : creation et changement de mot de passe via des fenetres
+  modales (au lieu de champs inline), profils enrichis (prenom/nom via le
+  champ GECOS, avatar photo ou emoji), et partages desormais assignables a
+  un groupe Linux entier en plus des utilisateurs individuels (permissions
+  SMB `@groupe` + ACL POSIX de groupe) — livré, en attente de test réel.
+  La création de groupes (y compris `nasadmin`) et la gestion des comptes
+  système/sudo restent volontairement hors perimetre de cette phase,
+  reportées a une phase dédiée avec des garde-fous stricts (impossible de
+  se retirer soi-même l'accès admin ou de supprimer le dernier compte
+  admin+sudo).
+
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
 
@@ -156,10 +172,11 @@ pytest tests/ -v
 Optionnel (pas nécessaire pour faire tourner NAS Manager), mais recommandé
 avant de valider une mise à jour manuellement modifiée : la suite couvre la
 détection des disques, la validation des pools ZFS, le remplacement de
-disque, la lecture SMART, les partages SMB/NFS, les stacks Docker Compose,
+disque, la lecture SMART, les partages SMB/NFS (utilisateurs ET groupes),
+les comptes de partage (profil, avatar), les stacks Docker Compose,
 l'état réseau, la météo de santé/sécurité, la configuration réseau
 (netplan, agrégats, wifi, application avec confirmation/retour arrière),
-la console Docker interactive et les routes web (300 tests).
+la console Docker interactive et les routes web (323 tests).
 
 ## Développement
 

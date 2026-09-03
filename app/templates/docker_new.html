@@ -8,7 +8,7 @@
     <div class="msg msg-error">{{ error }}</div>
     {% endif %}
 
-    <form method="post" action="/docker">
+    <form method="post" action="/docker" enctype="multipart/form-data">
       <div class="card">
         <label for="name">Nom de la stack</label>
         <input type="text" id="name" name="name" value="{{ name }}" pattern="[a-z][a-z0-9_-]{0,31}" placeholder="ex: paperless" required>
@@ -23,6 +23,12 @@
         {% if not pools %}
         <div class="info-box">Aucun pool ZFS disponible - <a href="/pools/new" style="color:#93c5fd;">crees-en un d'abord</a>.</div>
         {% endif %}
+
+        <label for="icon">Icone (facultatif)</label>
+        <input type="file" id="icon" name="icon" accept=".png,.svg,.jpg,.jpeg,.webp">
+        <div class="info-box">
+          PNG, SVG, JPEG ou WebP, 2 Mo maximum. Modifiable a tout moment ensuite depuis le detail de la stack.
+        </div>
 
         <label for="compose">Contenu du docker-compose.yml</label>
         <textarea id="compose" name="compose_content" spellcheck="false" placeholder="services:

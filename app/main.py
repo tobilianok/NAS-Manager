@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 import mimetypes
 import os
 import subprocess
@@ -19,6 +20,7 @@ from app import (
 )
 
 BASE_DIR = os.path.dirname(__file__)
+logger = logging.getLogger("nas_manager.main")
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -617,6 +619,7 @@ def share_users_list(request: Request, username: str = Depends(require_login), e
         {
             "request": request, "username": username, "users": nasusers.list_share_users(), "error": error,
             "password_requirements": nasusers.PASSWORD_REQUIREMENTS_LABEL,
+            "assignable_groups": nasusers.list_assignable_groups(),
         },
     )
 
@@ -627,20 +630,51 @@ def _render_share_users(request: Request, username: str, error: str, status_code
         {
             "request": request, "username": username, "users": nasusers.list_share_users(), "error": error,
             "password_requirements": nasusers.PASSWORD_REQUIREMENTS_LABEL,
+            "assignable_groups": nasusers.list_assignable_groups(),
         },
         status_code=status_code,
     )
 
 
 @app.post("/share-users", response_class=HTMLResponse)
-def share_users_create(
+async def share_users_create(
     request: Request, username: str = Depends(require_login),
     new_username: str = Form(...), password: str = Form(...), confirm_password: str = Form(...),
+    prenom: str = Form(""), nom: str = Form(""), extra_groups: list[str] = Form([]),
+    avatar_emoji: str = Form(""), avatar_photo: UploadFile | None = File(None),
 ):
     if password != confirm_password:
         return _render_share_users(request, username, "Les deux mots de passe saisis ne correspondent pas.")
+    full_name = f"{prenom.strip()} {nom.strip()}".strip()
     try:
-        nasusers.create_share_user(new_username, password)
+        nasusers.create_share_user(new_username, password, full_name=full_name, extra_groups=extra_groups)
+    except nasusers.ShareUserError as exc:
+        return _render_share_users(request, username, str(exc))
+    # L'avatar (photo ou emoji) est facultatif : un probleme dessus ne doit
+    # jamais faire echouer la creation du compte, deja reussie a ce stade -
+    # meme principe que l'icone Docker facultative a la creation d'une stack.
+    if avatar_photo is not None and avatar_photo.filename:
+        content = await avatar_photo.read()
+        try:
+            nasusers.set_avatar_photo(new_username, avatar_photo.filename, content)
+        except nasusers.ShareUserError as exc:
+            logger.warning("Avatar photo ignoree a la creation du compte de partage '%s' : %s", new_username, exc)
+    elif avatar_emoji.strip():
+        try:
+            nasusers.set_avatar_emoji(new_username, avatar_emoji.strip())
+        except nasusers.ShareUserError as exc:
+            logger.warning("Avatar emoji ignore a la creation du compte de partage '%s' : %s", new_username, exc)
+    return RedirectResponse("/share-users", status_code=302)
+
+
+@app.post("/share-users/{name}/profile", response_class=HTMLResponse)
+def share_users_update_profile(
+    request: Request, name: str, username: str = Depends(require_login),
+    prenom: str = Form(""), nom: str = Form(""), extra_groups: list[str] = Form([]),
+):
+    full_name = f"{prenom.strip()} {nom.strip()}".strip()
+    try:
+        nasusers.set_share_user_profile(name, full_name=full_name, extra_groups=extra_groups)
     except nasusers.ShareUserError as exc:
         return _render_share_users(request, username, str(exc))
     return RedirectResponse("/share-users", status_code=302)
@@ -660,6 +694,44 @@ def share_users_password(
     return RedirectResponse("/share-users", status_code=302)
 
 
+@app.get("/share-users/{name}/avatar")
+def share_user_avatar(name: str, username: str = Depends(require_login)):
+    path = nasusers.get_avatar_photo_path(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Aucune photo d'avatar pour ce compte.")
+    content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    return Response(content=path.read_bytes(), media_type=content_type)
+
+
+@app.post("/share-users/{name}/avatar", response_class=HTMLResponse)
+async def share_user_avatar_upload(
+    request: Request, name: str, username: str = Depends(require_login), avatar_photo: UploadFile = File(...),
+):
+    content = await avatar_photo.read()
+    try:
+        nasusers.set_avatar_photo(name, avatar_photo.filename or "avatar", content)
+    except nasusers.ShareUserError as exc:
+        return _render_share_users(request, username, str(exc))
+    return RedirectResponse("/share-users", status_code=302)
+
+
+@app.post("/share-users/{name}/avatar/emoji", response_class=HTMLResponse)
+def share_user_avatar_emoji(
+    request: Request, name: str, username: str = Depends(require_login), avatar_emoji: str = Form(...),
+):
+    try:
+        nasusers.set_avatar_emoji(name, avatar_emoji)
+    except nasusers.ShareUserError as exc:
+        return _render_share_users(request, username, str(exc))
+    return RedirectResponse("/share-users", status_code=302)
+
+
+@app.post("/share-users/{name}/avatar/delete", response_class=HTMLResponse)
+def share_user_avatar_delete(request: Request, name: str, username: str = Depends(require_login)):
+    nasusers.delete_avatar(name)
+    return RedirectResponse("/share-users", status_code=302)
+
+
 @app.post("/share-users/{name}/delete", response_class=HTMLResponse)
 def share_users_delete(request: Request, name: str, username: str = Depends(require_login)):
     try:
@@ -667,7 +739,11 @@ def share_users_delete(request: Request, name: str, username: str = Depends(requ
     except nasusers.ShareUserError as exc:
         return templates.TemplateResponse(
             "share_users.html",
-            {"request": request, "username": username, "users": nasusers.list_share_users(), "error": str(exc)},
+            {
+                "request": request, "username": username, "users": nasusers.list_share_users(), "error": str(exc),
+                "password_requirements": nasusers.PASSWORD_REQUIREMENTS_LABEL,
+                "assignable_groups": nasusers.list_assignable_groups(),
+            },
             status_code=400,
         )
     return RedirectResponse("/share-users", status_code=302)
@@ -726,12 +802,15 @@ def _render_share_detail(
 
     used_usernames = {u.username for u in share.users}
     available_users = [u for u in nasusers.list_share_users() if u.username not in used_usernames]
+    used_groups = {g.groupname for g in share.groups}
+    available_groups = [g for g in nasusers.list_assignable_groups() if g not in used_groups]
 
     return templates.TemplateResponse(
         "share_detail.html",
         {
             "request": request, "username": username, "share": share,
-            "available_users": available_users, "error": error, "warnings": warnings or [],
+            "available_users": available_users, "available_groups": available_groups,
+            "error": error, "warnings": warnings or [],
         },
         status_code=status_code,
     )
@@ -760,6 +839,27 @@ def share_add_user(
 def share_remove_user(request: Request, name: str, share_username: str, username: str = Depends(require_login)):
     try:
         warnings = shares.remove_user_from_share(name, share_username)
+    except shares.ShareError as exc:
+        return _render_share_detail(request, username, name, error=str(exc), status_code=400)
+    return _render_share_detail(request, username, name, warnings=warnings)
+
+
+@app.post("/shares/{name}/groups", response_class=HTMLResponse)
+def share_add_group(
+    request: Request, name: str, username: str = Depends(require_login),
+    share_groupname: str = Form(...), access: str = Form(...),
+):
+    try:
+        warnings = shares.add_group_to_share(name, share_groupname, access)
+    except shares.ShareError as exc:
+        return _render_share_detail(request, username, name, error=str(exc), status_code=400)
+    return _render_share_detail(request, username, name, warnings=warnings)
+
+
+@app.post("/shares/{name}/groups/{share_groupname}/delete", response_class=HTMLResponse)
+def share_remove_group(request: Request, name: str, share_groupname: str, username: str = Depends(require_login)):
+    try:
+        warnings = shares.remove_group_from_share(name, share_groupname)
     except shares.ShareError as exc:
         return _render_share_detail(request, username, name, error=str(exc), status_code=400)
     return _render_share_detail(request, username, name, warnings=warnings)
@@ -850,9 +950,10 @@ def docker_new_form(request: Request, username: str = Depends(require_login)):
 
 
 @app.post("/docker", response_class=HTMLResponse)
-def docker_create(
+async def docker_create(
     request: Request, username: str = Depends(require_login),
     name: str = Form(...), pool: str = Form(...), compose_content: str = Form(...),
+    icon: UploadFile | None = File(None),
 ):
     try:
         stack, output = dockerstacks.create_stack(name, pool, compose_content)
@@ -865,6 +966,17 @@ def docker_create(
             },
             status_code=400,
         )
+    # L'icone est facultative des la creation : un probleme dessus (format
+    # invalide, fichier vide...) ne doit jamais faire echouer la creation de
+    # la stack elle-meme, qui a deja reussi a ce stade - on l'ignore juste
+    # silencieusement, l'utilisateur pourra toujours en ajouter/changer une
+    # depuis le detail de la stack.
+    if icon is not None and icon.filename:
+        content = await icon.read()
+        try:
+            dockerstacks.save_icon(stack.name, icon.filename, content)
+        except dockerstacks.DockerIconError as exc:
+            logger.warning("Icone ignoree a la creation de la stack '%s' : %s", stack.name, exc)
     return RedirectResponse(f"/docker/{stack.name}", status_code=302)
 
 

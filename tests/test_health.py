@@ -170,10 +170,6 @@ def test_check_docker_all_running(monkeypatch):
     assert health.check_docker().level == health.LEVEL_OK
 
 
-def test_check_password_policy_is_always_ok():
-    assert health.check_password_policy().level == health.LEVEL_OK
-
-
 def test_get_report_smoke(monkeypatch):
     """Ne doit jamais lever d'exception, meme sans aucune source disponible
     (systeme minimal / VM de test)."""
@@ -186,18 +182,19 @@ def test_get_report_smoke(monkeypatch):
     monkeypatch.setattr(health.shutil, "which", lambda name: None)
 
     report = health.get_report()
-    assert len(report.checks) == 7
-    # La politique de mot de passe est toujours "OK" (verification statique) -
-    # meme avec toutes les autres sources indisponibles, le rapport global
-    # doit donc etre "OK" et non "inconnu" (cf. HealthReport.overall_level).
-    assert report.overall_level == health.LEVEL_OK
+    assert len(report.checks) == 6
+    # Plus aucune verification "toujours OK" (la politique de mot de passe a
+    # ete retiree, cf. commentaire dans health.py) - quand toutes les sources
+    # sont indisponibles, le rapport global doit donc etre "inconnu" et non
+    # "OK" (cf. HealthReport.overall_level).
+    assert report.overall_level == health.LEVEL_INCONNU
 
 
 def test_get_report_real_system_smoke():
     """Test de fumee sur le vrai systeme (sandbox) : ne doit jamais lever
     d'exception, meme sans zfs/docker/ufw/sensors installes."""
     report = health.get_report()
-    assert len(report.checks) == 7
+    assert len(report.checks) == 6
     assert report.overall_level in (
         health.LEVEL_OK, health.LEVEL_ATTENTION, health.LEVEL_CRITIQUE, health.LEVEL_INCONNU,
     )

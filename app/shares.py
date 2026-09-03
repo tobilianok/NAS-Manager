@@ -79,6 +79,12 @@ class ShareAccess:
 
 
 @dataclass
+class GroupAccess:
+    groupname: str
+    access: str  # "rw" | "ro"
+
+
+@dataclass
 class Share:
     name: str
     pool: str
@@ -86,6 +92,7 @@ class Share:
     mountpoint: str
     protocols: list[str] = field(default_factory=list)
     users: list[ShareAccess] = field(default_factory=list)
+    groups: list[GroupAccess] = field(default_factory=list)
     nfs_networks: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -94,10 +101,11 @@ class Share:
     @staticmethod
     def from_dict(d: dict) -> "Share":
         users = [ShareAccess(**u) for u in d.get("users", [])]
+        groups = [GroupAccess(**g) for g in d.get("groups", [])]
         return Share(
             name=d["name"], pool=d["pool"], dataset=d["dataset"],
             mountpoint=d["mountpoint"], protocols=d.get("protocols", []),
-            users=users, nfs_networks=d.get("nfs_networks", []),
+            users=users, groups=groups, nfs_networks=d.get("nfs_networks", []),
         )
 
 
@@ -168,8 +176,14 @@ def _replace_managed_block(file_path: Path, new_block_lines: list[str]) -> None:
 def _smb_block_for_share(share: Share) -> list[str]:
     if "smb" not in share.protocols:
         return []
-    valid_users = [u.username for u in share.users]
-    write_users = [u.username for u in share.users if u.access == "rw"]
+    # La syntaxe '@nomdegroupe' de Samba designe un groupe systeme plutot
+    # qu'un utilisateur - c'est ce qui permet d'autoriser tout un groupe
+    # d'un coup en plus des comptes individuels.
+    valid_users = [u.username for u in share.users] + [f"@{g.groupname}" for g in share.groups]
+    write_users = (
+        [u.username for u in share.users if u.access == "rw"]
+        + [f"@{g.groupname}" for g in share.groups if g.access == "rw"]
+    )
 
     lines = [
         f"[{share.name}]",
@@ -307,6 +321,10 @@ def _apply_filesystem_acl(share: Share) -> None:
         perm = "rwx" if u.access == "rw" else "r-x"
         _run(["setfacl", "-R", "-m", f"u:{u.username}:{perm}", share.mountpoint])
         _run(["setfacl", "-R", "-d", "-m", f"u:{u.username}:{perm}", share.mountpoint])
+    for g in share.groups:
+        perm = "rwx" if g.access == "rw" else "r-x"
+        _run(["setfacl", "-R", "-m", f"g:{g.groupname}:{perm}", share.mountpoint])
+        _run(["setfacl", "-R", "-d", "-m", f"g:{g.groupname}:{perm}", share.mountpoint])
 
 
 def add_user_to_share(share_name: str, username: str, access: str) -> list[str]:
@@ -339,6 +357,40 @@ def remove_user_from_share(share_name: str, username: str) -> list[str]:
 
     _run(["setfacl", "-R", "-x", f"u:{username}", share.mountpoint])
     _run(["setfacl", "-R", "-d", "-x", f"u:{username}", share.mountpoint])
+
+    return _apply_config(shares)
+
+
+def add_group_to_share(share_name: str, groupname: str, access: str) -> list[str]:
+    if access not in ("rw", "ro"):
+        raise ShareError("Type d'acces invalide (attendu : lecture/ecriture ou lecture seule).")
+    if groupname not in nasusers.list_assignable_groups():
+        raise ShareError(f"'{groupname}' n'est pas un groupe assignable.")
+
+    shares = _load_registry()
+    share = next((s for s in shares if s.name == share_name), None)
+    if share is None:
+        raise ShareError(f"Le partage '{share_name}' n'existe pas.")
+
+    share.groups = [g for g in share.groups if g.groupname != groupname]
+    share.groups.append(GroupAccess(groupname=groupname, access=access))
+    _save_registry(shares)
+
+    _apply_filesystem_acl(share)
+    return _apply_config(shares)
+
+
+def remove_group_from_share(share_name: str, groupname: str) -> list[str]:
+    shares = _load_registry()
+    share = next((s for s in shares if s.name == share_name), None)
+    if share is None:
+        raise ShareError(f"Le partage '{share_name}' n'existe pas.")
+
+    share.groups = [g for g in share.groups if g.groupname != groupname]
+    _save_registry(shares)
+
+    _run(["setfacl", "-R", "-x", f"g:{groupname}", share.mountpoint])
+    _run(["setfacl", "-R", "-d", "-x", f"g:{groupname}", share.mountpoint])
 
     return _apply_config(shares)
 

@@ -232,3 +232,50 @@ def test_smb_only_share_has_no_exports_line(isolated_paths, monkeypatch):
 
     exports_content = exports.read_text()
     assert "/tank/partages/docs" not in exports_content
+
+
+# ---------------------------------------------------------------------------
+# Groupes (Phase 8a) - acces a un partage pour tout un groupe Linux d'un coup
+# ---------------------------------------------------------------------------
+
+def test_add_group_to_share_rejects_unassignable_group(isolated_paths, monkeypatch):
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool())
+    monkeypatch.setattr(zfs, "create_dataset", lambda path: "")
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: "/tank/partages/photos")
+    shares.create_share("photos", "tank", ["smb"])
+
+    monkeypatch.setattr(nasusers, "list_assignable_groups", lambda: ["famille"])
+    with pytest.raises(shares.ShareError, match="pas un groupe assignable"):
+        shares.add_group_to_share("photos", "nasadmin", "rw")
+
+
+def test_add_group_to_share_success_generates_smb_at_group(isolated_paths, monkeypatch):
+    registry, smb_conf, exports = isolated_paths
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool())
+    monkeypatch.setattr(zfs, "create_dataset", lambda path: "")
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: "/tank/partages/photos")
+    shares.create_share("photos", "tank", ["smb"])
+
+    monkeypatch.setattr(nasusers, "list_assignable_groups", lambda: ["famille"])
+    shares.add_group_to_share("photos", "famille", "rw")
+
+    share = shares.get_share("photos")
+    assert {g.groupname: g.access for g in share.groups} == {"famille": "rw"}
+
+    smb_content = smb_conf.read_text()
+    assert "@famille" in smb_content
+    assert "valid users = @famille" in smb_content
+    assert "write list = @famille" in smb_content
+
+
+def test_remove_group_from_share(isolated_paths, monkeypatch):
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool())
+    monkeypatch.setattr(zfs, "create_dataset", lambda path: "")
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: "/tank/partages/photos")
+    shares.create_share("photos", "tank", ["smb"])
+    monkeypatch.setattr(nasusers, "list_assignable_groups", lambda: ["famille"])
+    shares.add_group_to_share("photos", "famille", "rw")
+
+    shares.remove_group_from_share("photos", "famille")
+    share = shares.get_share("photos")
+    assert share.groups == []

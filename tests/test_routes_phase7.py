@@ -157,3 +157,55 @@ def test_docker_icon_delete(client, monkeypatch, tmp_path):
     resp = client.post("/docker/myapp/icon/delete", follow_redirects=False)
     assert resp.status_code == 200
     assert client.get("/docker/myapp/icon").status_code == 404
+
+
+def test_docker_create_with_icon_at_creation(client, tmp_path, monkeypatch):
+    """Phase 8a : l'icone peut desormais etre fournie directement a la
+    creation, en plus de pouvoir etre ajoutee/changee apres coup."""
+    mountpoint = tmp_path / "mnt" / "myapp"
+    mountpoint.mkdir(parents=True)
+    monkeypatch.setattr(zfs, "get_pool", lambda pn: _fake_pool())
+    monkeypatch.setattr(zfs, "create_dataset", lambda path: None)
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: str(mountpoint))
+    monkeypatch.setattr(dockerstacks, "_run", lambda cmd, input_text=None, timeout=None: (0, "", ""))
+
+    resp = client.post(
+        "/docker",
+        data={"name": "myapp", "pool": "tank", "compose_content": COMPOSE_YAML},
+        files={"icon": ("logo.png", io.BytesIO(b"fake-png-bytes"), "image/png")},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+
+    resp = client.get("/docker/myapp/icon")
+    assert resp.status_code == 200
+    assert resp.content == b"fake-png-bytes"
+
+
+def test_docker_create_without_icon_still_works(client, tmp_path, monkeypatch):
+    """L'icone reste totalement facultative a la creation - aucune
+    regression sur le flux existant sans fichier joint."""
+    _create_stack_via_route(client, tmp_path, monkeypatch, name="myapp")
+    resp = client.get("/docker/myapp/icon")
+    assert resp.status_code == 404
+
+
+def test_docker_create_ignores_invalid_icon_but_keeps_stack(client, tmp_path, monkeypatch):
+    """Un probleme sur l'icone (format invalide) ne doit jamais faire
+    echouer la creation de la stack elle-meme."""
+    mountpoint = tmp_path / "mnt" / "myapp"
+    mountpoint.mkdir(parents=True)
+    monkeypatch.setattr(zfs, "get_pool", lambda pn: _fake_pool())
+    monkeypatch.setattr(zfs, "create_dataset", lambda path: None)
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: str(mountpoint))
+    monkeypatch.setattr(dockerstacks, "_run", lambda cmd, input_text=None, timeout=None: (0, "", ""))
+
+    resp = client.post(
+        "/docker",
+        data={"name": "myapp", "pool": "tank", "compose_content": COMPOSE_YAML},
+        files={"icon": ("virus.exe", io.BytesIO(b"x"), "application/octet-stream")},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert dockerstacks.get_stack("myapp") is not None
+    assert client.get("/docker/myapp/icon").status_code == 404

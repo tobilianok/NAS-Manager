@@ -58,6 +58,55 @@
     </p>
     {% endif %}
 
+    <h2 class="section-title">Groupes autorises</h2>
+    <div class="info-box">
+      Donne acces au partage a tout un groupe Linux d'un coup, en plus des utilisateurs individuels
+      ci-dessus. Le groupe "nasadmin" n'est jamais proposable ici (acces admin a l'interface).
+    </div>
+    <table>
+      <thead><tr><th>Groupe</th><th>Acces</th><th></th></tr></thead>
+      <tbody>
+        {% for g in share.groups %}
+        <tr>
+          <td>{{ g.groupname }}</td>
+          <td>
+            {% if g.access == 'rw' %}<span class="badge badge-rw">Lecture/ecriture</span>
+            {% else %}<span class="badge badge-ro">Lecture seule</span>{% endif %}
+          </td>
+          <td>
+            <form class="inline-form" method="post" action="/shares/{{ share.name }}/groups/{{ g.groupname }}/delete">
+              <button type="submit" class="btn-sm btn-danger">Retirer</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not share.groups %}
+        <tr><td colspan="3" class="dim">Aucun groupe autorise pour l'instant.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+
+    {% if available_groups %}
+    <div class="card">
+      <form class="field-row" method="post" action="/shares/{{ share.name }}/groups">
+        <select name="share_groupname" required>
+          {% for g in available_groups %}
+          <option value="{{ g }}">{{ g }}</option>
+          {% endfor %}
+        </select>
+        <select name="access">
+          <option value="rw">Lecture/ecriture</option>
+          <option value="ro">Lecture seule</option>
+        </select>
+        <button type="submit" class="btn-primary">Ajouter</button>
+      </form>
+    </div>
+    {% else %}
+    <p class="dim">
+      Aucun groupe supplementaire disponible pour l'instant (au-dela de nasshares/nasadmin, toujours exclus).
+    </p>
+    {% endif %}
+
     {% if 'nfs' in share.protocols %}
     <h2 class="section-title">Reseaux autorises (NFS)</h2>
     <div class="card">
