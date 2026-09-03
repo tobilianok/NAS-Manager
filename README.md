@@ -1,3 +1,6 @@
+<img width="1898" height="948" alt="image" src="https://github.com/user-attachments/assets/599e305b-b675-4cc1-8add-3b2e71d16e50" />
+
+
 # NAS Manager
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
@@ -74,6 +77,7 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
+
 
 ## Stack
 
