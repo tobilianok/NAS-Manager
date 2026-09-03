@@ -16,6 +16,8 @@
       Type : {{ pool.main_vdev_type }}
     </div>
 
+    {% if expansion %}{% include "_expansion_partial.html" with context %}{% endif %}
+
     {% for group_name, group_disks in [('Pool principal', pool.main_disks), ('Special VDEV', pool.special_disks), ('SLOG', pool.log_disks), ('L2ARC (cache)', pool.cache_disks)] %}
       {% if group_disks %}
       <h2 class="section-title">{{ group_name }}</h2>
@@ -38,6 +40,14 @@
       </table>
       {% endif %}
     {% endfor %}
+
+    <div class="btn-row">
+      <a class="btn btn-primary" href="/pools/{{ pool.name }}/expand">+ Agrandir ce pool</a>
+    </div>
+    <div class="meta" style="margin-top:.5rem;">
+      Ajouter un disque à un groupe RAIDZ existant, ou ajouter un groupe complet au pool. Les données
+      en place ne sont jamais réécrites ni déplacées, et le pool reste utilisable pendant l'opération.
+    </div>
 
     <div class="actions">
       <a class="btn-link" style="color:#fca5a5;" href="/pools/{{ pool.name }}/delete">Supprimer ce pool</a>

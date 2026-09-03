@@ -1,0 +1,33 @@
+{# Fragment HTMX - pas de doctype/head/body. Progression de l'agrandissement
+   d'un pool (Phase 10), meme principe que le suivi de resilver. #}
+{% if expansion.in_progress %}
+<div class="card"
+     hx-get="/partials/pools/{{ pool_name }}/expansion"
+     hx-trigger="every 5s" hx-swap="outerHTML">
+  <h2 style="margin-top:0;">Agrandissement en cours{% if expansion.vdev %} — {{ expansion.vdev }}{% endif %}</h2>
+  <p class="dim" style="margin-top:.2rem;">
+    Le pool reste utilisable : tes partages et tes stacks continuent de fonctionner. Un redémarrage
+    n'annule rien, ZFS reprend où il en était. Cette zone se rafraîchit toute seule.
+  </p>
+
+  {% if expansion.percent_done is not none %}
+  <div class="bar-bg"><div class="bar-fill" style="width: {{ expansion.percent_done }}%;"></div></div>
+  <p>{{ expansion.percent_done }}% terminé
+    {% if expansion.copied and expansion.total %} · {{ expansion.copied }} / {{ expansion.total }} copiés{% endif %}
+    {% if expansion.speed %} · {{ expansion.speed }}{% endif %}
+    {% if expansion.eta %} · temps restant estimé : {{ expansion.eta }}{% endif %}
+  </p>
+  {% else %}
+  <p>Opération lancée, progression pas encore disponible…</p>
+  {% endif %}
+</div>
+{% elif expansion.finished_at %}
+<div class="card">
+  <h2 style="margin-top:0;">Dernier agrandissement terminé</h2>
+  <p class="dim" style="margin-top:.2rem;">
+    {% if expansion.vdev %}{{ expansion.vdev }} — {% endif %}terminé le {{ expansion.finished_at }}.
+    Rappel : l'espace utile se libère progressivement, à mesure que les anciennes données sont
+    réécrites avec le nouveau ratio de parité.
+  </p>
+</div>
+{% endif %}

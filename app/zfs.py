@@ -63,6 +63,28 @@ class VdevDisk:
 
 
 @dataclass
+class VdevGroup:
+    """Un groupe de disques du pool, tel que ZFS le nomme lui-meme
+    ('raidz1-0', 'mirror-1'...). Indispensable pour l'extension (Phase 10) :
+    'zpool attach' s'applique a un VDEV precis, pas au pool, et un pool peut
+    parfaitement contenir plusieurs groupes de tailles differentes.
+    Un disque nu rattache directement au pool (grappe sans redondance) est
+    represente comme un groupe de type 'single' portant son propre chemin."""
+    name: str                                  # "raidz1-0", "mirror-0", ou /dev/... si nu
+    type: str                                  # raidz1|raidz2|raidz3|mirror|single
+    disks: list[str] = field(default_factory=list)
+
+    @property
+    def redundancy(self) -> int:
+        """Nombre de disques qu'on peut perdre dans CE groupe sans perdre le
+        pool. Sert a interdire d'affaiblir un pool en lui ajoutant un groupe
+        moins redondant que l'existant."""
+        if self.type == "mirror":
+            return max(len(self.disks) - 1, 0)
+        return {"raidz1": 1, "raidz2": 2, "raidz3": 3}.get(self.type, 0)
+
+
+@dataclass
 class Pool:
     name: str
     size_bytes: int
@@ -78,6 +100,8 @@ class Pool:
     # UNAVAIL/OFFLINE/REMOVED...), quel que soit son role (main/special/log).
     # Utilise pour le workflow de remplacement de disque.
     disk_states: dict[str, str] = field(default_factory=dict)
+    # Composition detaillee de la section principale, groupe par groupe.
+    vdev_groups: list[VdevGroup] = field(default_factory=list)
 
     @property
     def used_percent(self) -> float:
@@ -125,6 +149,9 @@ def _fill_pool_layout(pool: Pool) -> None:
     section = "main"
     vdev_type = "single"
     disk_re = re.compile(r"^(/dev/\S+)\s+(\S+)")
+    # Nom de groupe tel que ZFS l'ecrit : raidz1-0, mirror-2, draid2:4d:8c:1s-0...
+    group_re = re.compile(r"^((?:raidz[123]|mirror|draid[^\s-]*)-\d+)\s+(\S+)")
+    current_group: VdevGroup | None = None
 
     for raw_line in out.splitlines():
         line = raw_line.rstrip()
@@ -132,22 +159,34 @@ def _fill_pool_layout(pool: Pool) -> None:
 
         if stripped.startswith("special"):
             section = "special"
+            current_group = None
             continue
         if stripped.startswith("logs"):
             section = "log"
+            current_group = None
             continue
         if stripped.startswith("cache"):
             section = "cache"
+            current_group = None
             continue
         if stripped.startswith("spares"):
             section = "spare"
+            current_group = None
             continue
 
-        if section == "main":
-            for vtype in ("raidz3", "raidz2", "raidz1", "mirror"):
-                if stripped.startswith(vtype):
-                    vdev_type = vtype
-                    break
+        m_group = group_re.match(stripped)
+        if m_group:
+            group_name = m_group.group(1)
+            group_type = group_name.rsplit("-", 1)[0]
+            if group_type.startswith("draid"):
+                group_type = "draid"
+            if section == "main":
+                vdev_type = group_type if group_type != "draid" else vdev_type
+                current_group = VdevGroup(name=group_name, type=group_type)
+                pool.vdev_groups.append(current_group)
+            else:
+                current_group = None
+            continue
 
         m = disk_re.match(stripped)
         if not m:
@@ -158,6 +197,12 @@ def _fill_pool_layout(pool: Pool) -> None:
 
         if section == "main":
             pool.main_disks.append(disk_path)
+            if current_group is not None:
+                current_group.disks.append(disk_path)
+            else:
+                # Disque nu rattache directement au pool : c'est un groupe a
+                # lui tout seul, sans aucune redondance.
+                pool.vdev_groups.append(VdevGroup(name=disk_path, type="single", disks=[disk_path]))
         elif section == "special":
             pool.special_disks.append(disk_path)
         elif section == "log":

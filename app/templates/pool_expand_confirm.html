@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Agrandir {{ pool_name }} - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/pools/{{ pool_name }}/expand">← Agrandir {{ pool_name }}</a>{% endblock %}
+{% block content %}
+    <h1>Récapitulatif avant d'agrandir "{{ pool_name }}"</h1>
+
+    <div class="confirm-box">
+      <p>
+        {% if plan.mode == 'raidz_expand' %}
+        <strong>{{ plan.disks | join(', ') }} va être intégré au groupe {{ plan.target_vdev }}</strong>,
+        qui deviendra plus large. Le pool reste utilisable pendant toute l'opération, et ZFS reprend
+        où il en était si le serveur redémarre.
+        {% else %}
+        <strong>Un nouveau groupe {{ plan.new_type }} composé de {{ plan.disks | join(', ') }} va être
+        ajouté au pool.</strong> Sa capacité s'ajoute à celle du pool.
+        {% endif %}
+      </p>
+
+      <ul class="recap">
+        <li>Pool : {{ pool_name }}</li>
+        {% if plan.target_vdev %}<li>Groupe visé : {{ plan.target_vdev }}</li>{% endif %}
+        {% if plan.new_type %}<li>Type du nouveau groupe : {{ plan.new_type }}</li>{% endif %}
+        <li>Disque(s) : {{ plan.disks | join(', ') }}</li>
+        <li>Commande exacte : <code>{{ plan.command | join(' ') }}</code></li>
+      </ul>
+
+      {% for warning in plan.warnings %}
+      <div class="msg msg-warning">{{ warning }}</div>
+      {% endfor %}
+
+      <div class="info-box">
+        <strong>Essai à blanc ZFS :</strong>
+        {% if plan.dry_run_supported %}
+        ZFS a examiné la commande sans rien modifier et n'a pas d'objection.
+        {% if plan.dry_run_output and plan.dry_run_output != '(aucune objection de ZFS)' %}
+        <pre class="run-log" style="height:auto; max-height:200px; margin-top:.6rem;">{{ plan.dry_run_output }}</pre>
+        {% endif %}
+        {% else %}
+        {{ plan.dry_run_output }}
+        {% endif %}
+      </div>
+
+      <div class="info-box">
+        Tes données ne sont pas déplacées ni réécrites par cette opération : ZFS travaille en ligne,
+        les partages et les stacks Docker continuent de fonctionner. Le seul effet visible pendant
+        l'opération est un disque plus sollicité, donc des performances un peu réduites.
+      </div>
+
+      <form method="post" action="/pools/{{ pool_name }}/expand/apply">
+        <input type="hidden" name="mode" value="{{ plan.mode }}">
+        <input type="hidden" name="target_vdev" value="{{ plan.target_vdev or '' }}">
+        <input type="hidden" name="new_type" value="{{ plan.new_type or '' }}">
+        <input type="hidden" name="selected_disks" value="{{ plan.disks | join(',') }}">
+        <div class="actions">
+          <button type="submit" class="btn-solid-danger">Lancer l'agrandissement</button>
+          <a class="btn btn-cancel" href="/pools/{{ pool_name }}/expand">Annuler</a>
+        </div>
+      </form>
+    </div>
+{% endblock %}
