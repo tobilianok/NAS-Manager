@@ -155,13 +155,26 @@ def format_bitrate(bytes_per_sec: float | None) -> str:
     return f"{value:.1f} Gbit/s"
 
 
-def sparkline_points(values: list[float], width: int = 100, height: int = 24) -> str:
+def shared_max(*series: list[float]) -> float:
+    """Echelle verticale COMMUNE a plusieurs series. Indispensable des qu'on
+    superpose deux courbes dans le meme cadre : normalisee chacune sur son
+    propre maximum, une courbe a 2 Kbit/s et une a 200 Kbit/s auraient la
+    meme allure - la comparaison visuelle serait mensongere."""
+    values = [v for s in series for v in (s or [])]
+    top = max(values) if values else 0.0
+    return top if top > 0 else 1.0
+
+
+def sparkline_points(
+    values: list[float], width: int = 100, height: int = 24, vmax: float | None = None,
+) -> str:
     """Construit l'attribut 'points' d'une <polyline> SVG a partir d'une
     serie de valeurs (debit reseau par exemple), normalisee entre 0 et le
-    maximum de la serie. Chaine vide si moins de 2 valeurs (rien a tracer)."""
+    maximum de la serie - ou entre 0 et 'vmax' si une echelle commune est
+    imposee. Chaine vide si moins de 2 valeurs (rien a tracer)."""
     if len(values) < 2:
         return ""
-    vmax = max(values) or 1.0
+    vmax = vmax if vmax and vmax > 0 else (max(values) or 1.0)
     step = width / (len(values) - 1)
     points = []
     for i, v in enumerate(values):
@@ -169,3 +182,17 @@ def sparkline_points(values: list[float], width: int = 100, height: int = 24) ->
         y = round(height - (v / vmax) * height, 1)
         points.append(f"{x},{y}")
     return " ".join(points)
+
+
+def sparkline_area(
+    values: list[float], width: int = 100, height: int = 24, vmax: float | None = None,
+) -> str:
+    """Meme trace, referme vers le bas : sert de <polygon> rempli sous la
+    courbe. Une courbe seule sur un cadre large se lit mal ; avec un aplat
+    en dessous, l'oeil percoit le volume de trafic d'un coup."""
+    line = sparkline_points(values, width, height, vmax)
+    if not line:
+        return ""
+    first_x = line.split(" ", 1)[0].split(",")[0]
+    last_x = line.rsplit(" ", 1)[-1].split(",")[0]
+    return f"{first_x},{height} {line} {last_x},{height}"

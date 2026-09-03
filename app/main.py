@@ -184,6 +184,8 @@ def partial_network(request: Request, username: str = Depends(require_login)):
             "request": request, "interfaces": interfaces,
             "format_bitrate": netstats.format_bitrate,
             "sparkline_points": netstats.sparkline_points,
+            "sparkline_area": netstats.sparkline_area,
+            "shared_max": netstats.shared_max,
         },
     )
 

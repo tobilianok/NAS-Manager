@@ -504,17 +504,31 @@ tr.worrying td { color: var(--warning-text); }
 .net-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-top: .5rem; }
 .net-card { background: var(--surface); border-radius: var(--radius); padding: 1rem 1.2rem; border: 1px solid transparent; }
 .net-card.net-down { border-color: var(--danger-bg); }
-.net-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: .6rem; }
-.net-speeds { display: flex; flex-direction: column; gap: .5rem; }
-.net-speed { display: flex; align-items: center; gap: .5rem; font-size: .85rem; font-weight: 600; position: relative; }
-.net-arrow { color: var(--text-muted); font-weight: 700; width: 1rem; flex-shrink: 0; }
-/* Largeur fixe pour la valeur : sans ca les deux courbes (descendant /
-   montant) ne demarrent pas au meme x selon le debit affiche. */
-.net-value { min-width: 6.2rem; flex-shrink: 0; }
-/* La courbe occupe TOUTE la place restante de la carte (avant : 90px figes
-   pousses a droite par margin-left:auto, donc un graphe minuscule colle au
-   bord des qu'une seule carte occupait toute la ligne). */
-.sparkline { flex: 1 1 auto; width: 100%; min-width: 60px; height: 28px; display: block; }
+.net-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: .7rem; }
+
+/* Une seule zone de graphe par carte, avec les deux courbes superposees a
+   echelle commune. Avant : deux traits de 24px etires sur toute la largeur -
+   un rapport largeur/hauteur de 40:1 qui ecrasait completement le signal. */
+.net-body { display: flex; align-items: stretch; gap: 1.2rem; }
+.net-speeds { display: flex; flex-direction: column; justify-content: center; gap: .45rem; flex-shrink: 0; min-width: 8.5rem; }
+.net-speed { display: flex; align-items: baseline; gap: .45rem; font-size: .85rem; font-weight: 600; }
+.net-arrow { font-weight: 700; width: .9rem; flex-shrink: 0; }
+.net-speed-rx .net-arrow { color: #60a5fa; }
+.net-speed-tx .net-arrow { color: #4ade80; }
+.net-value { white-space: nowrap; }
+
+.net-chart { position: relative; flex: 1 1 auto; min-width: 0; }
+.net-chart svg {
+  display: block; width: 100%; height: 104px;
+  background: linear-gradient(180deg, transparent 0%, rgba(59,130,246,.04) 100%);
+  border-bottom: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+.net-peak {
+  position: absolute; top: .25rem; right: .5rem;
+  font-size: .68rem; color: var(--text-dim); letter-spacing: .02em;
+}
+
 .net-card-detail { margin-top: .6rem; font-size: .78rem; color: var(--danger-text); }
 
 /* ---------------------------------------------------------------------

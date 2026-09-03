@@ -4,6 +4,10 @@
 {% else %}
 <div class="net-grid">
   {% for iface in interfaces %}
+  {# Echelle verticale COMMUNE aux deux courbes : superposees dans le meme
+     cadre, deux normalisations separees donneraient la meme allure a 2 Kbit/s
+     et a 200 Kbit/s. #}
+  {% set peak = shared_max(iface.rx_history, iface.tx_history) %}
   <div class="net-card {{ 'net-down' if not iface.healthy }}">
     <div class="net-card-top">
       <strong>{{ iface.name }}</strong>
@@ -13,20 +17,36 @@
         <span class="badge badge-danger">Hors service</span>
       {% endif %}
     </div>
-    <div class="net-speeds">
-      <div class="net-speed">
-        <span class="net-arrow">↓</span> <span class="net-value">{{ format_bitrate(iface.rx_bps) }}</span>
-        <svg class="sparkline" viewBox="0 0 100 24" preserveAspectRatio="none">
-          <polyline points="{{ sparkline_points(iface.rx_history) }}" fill="none" stroke="#3b82f6" stroke-width="2"/>
-        </svg>
+
+    <div class="net-body">
+      <div class="net-speeds">
+        <div class="net-speed net-speed-rx">
+          <span class="net-arrow">↓</span>
+          <span class="net-value">{{ format_bitrate(iface.rx_bps) }}</span>
+        </div>
+        <div class="net-speed net-speed-tx">
+          <span class="net-arrow">↑</span>
+          <span class="net-value">{{ format_bitrate(iface.tx_bps) }}</span>
+        </div>
       </div>
-      <div class="net-speed">
-        <span class="net-arrow">↑</span> <span class="net-value">{{ format_bitrate(iface.tx_bps) }}</span>
-        <svg class="sparkline" viewBox="0 0 100 24" preserveAspectRatio="none">
-          <polyline points="{{ sparkline_points(iface.tx_history) }}" fill="none" stroke="#22c55e" stroke-width="2"/>
+
+      <div class="net-chart">
+        {# vector-effect : sans lui, l'etirement horizontal du viewBox
+           epaissirait le trait de facon incoherente selon sa pente. #}
+        <svg viewBox="0 0 100 52" preserveAspectRatio="none" aria-hidden="true">
+          <polygon points="{{ sparkline_area(iface.rx_history, 100, 52, peak) }}" fill="#3b82f6" opacity=".16"/>
+          <polygon points="{{ sparkline_area(iface.tx_history, 100, 52, peak) }}" fill="#22c55e" opacity=".16"/>
+          <polyline points="{{ sparkline_points(iface.rx_history, 100, 52, peak) }}"
+                    fill="none" stroke="#3b82f6" stroke-width="1.6"
+                    stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+          <polyline points="{{ sparkline_points(iface.tx_history, 100, 52, peak) }}"
+                    fill="none" stroke="#22c55e" stroke-width="1.6"
+                    stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
         </svg>
+        <span class="net-peak">pic {{ format_bitrate(peak) }}</span>
       </div>
     </div>
+
     {% if not iface.healthy %}
     <div class="net-card-detail">
       {% if iface.operstate == 'down' %}

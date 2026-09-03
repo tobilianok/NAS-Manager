@@ -119,3 +119,49 @@ def test_list_interfaces_real_system_smoke():
     for iface in interfaces:
         assert isinstance(iface.name, str)
         assert iface.operstate in ("up", "down", "unknown", "dormant", "lowerlayerdown", "notpresent")
+
+
+# ---------------------------------------------------------------------------
+# Echelle commune et aplat sous la courbe (Phase 10a)
+# ---------------------------------------------------------------------------
+
+def test_shared_max_spans_every_series():
+    assert netstats.shared_max([1.0, 5.0], [2.0, 9.0]) == 9.0
+
+
+def test_shared_max_never_returns_zero():
+    """Un maximum nul ferait une division par zero dans le trace."""
+    assert netstats.shared_max([0.0, 0.0], []) == 1.0
+    assert netstats.shared_max() == 1.0
+
+
+def test_shared_scale_keeps_curves_comparable():
+    """Deux series superposees doivent etre tracees sur la MEME echelle :
+    normalisee chacune sur son propre maximum, une courbe a 10 et une a 1000
+    auraient la meme allure - la comparaison visuelle serait mensongere."""
+    small, big = [0.0, 10.0], [0.0, 1000.0]
+    peak = netstats.shared_max(small, big)
+
+    small_pts = netstats.sparkline_points(small, 100, 40, peak)
+    big_pts = netstats.sparkline_points(big, 100, 40, peak)
+
+    small_y = float(small_pts.split(" ")[1].split(",")[1])
+    big_y = float(big_pts.split(" ")[1].split(",")[1])
+    assert big_y == 0.0          # le maximum touche le haut du cadre
+    assert small_y > 39.0        # la petite serie reste ecrasee en bas, a l'echelle
+
+    # Sans echelle commune, les deux atteindraient le haut : ce serait faux.
+    assert netstats.sparkline_points(small, 100, 40).split(" ")[1].split(",")[1] == "0.0"
+
+
+def test_sparkline_area_closes_the_shape_on_the_baseline():
+    area = netstats.sparkline_area([0.0, 10.0, 5.0], 100, 40)
+    points = area.split(" ")
+    assert points[0] == "0.0,40"     # depart au ras du bas
+    assert points[-1] == "100.0,40"  # retour au bas a droite
+    assert len(points) == 5          # 3 points de donnees + 2 coins
+
+
+def test_sparkline_area_empty_when_nothing_to_draw():
+    assert netstats.sparkline_area([]) == ""
+    assert netstats.sparkline_area([1.0]) == ""
