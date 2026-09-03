@@ -514,3 +514,245 @@ def test_run_handles_timeout(isolated_registry, monkeypatch):
     code, out, err = dockerstacks._run(["docker", "pull", "x"], timeout=5)
     assert code == 124
     assert "delai" in err
+
+
+# ---------------------------------------------------------------------------
+# Nettoyage automatique du dataset quand la creation echoue (correctif
+# "dataset orphelin qui bloque le nom")
+# ---------------------------------------------------------------------------
+
+def _patch_zfs_for_create(monkeypatch, tmp_path, existing=False):
+    mountpoint = tmp_path / "mnt" / "myapp"
+    mountpoint.mkdir(parents=True)
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool())
+    monkeypatch.setattr(zfs, "dataset_exists", lambda path: existing)
+    created, destroyed = [], []
+    monkeypatch.setattr(zfs, "create_dataset", lambda path: created.append(path))
+    monkeypatch.setattr(zfs, "destroy_dataset", lambda path: destroyed.append(path))
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: str(mountpoint))
+    return mountpoint, created, destroyed
+
+
+def test_create_stack_rejects_reserved_names(isolated_registry, monkeypatch):
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool())
+    for reserved in ("new", "storage"):
+        with pytest.raises(dockerstacks.DockerStackError, match="reserve"):
+            dockerstacks.create_stack(reserved, "tank", COMPOSE_YAML)
+
+
+def test_create_stack_refuses_preexisting_orphan_dataset(isolated_registry, tmp_path, monkeypatch):
+    _, created, destroyed = _patch_zfs_for_create(monkeypatch, tmp_path, existing=True)
+    with pytest.raises(dockerstacks.DockerStackError, match="orphelin"):
+        dockerstacks.create_stack("myapp", "tank", COMPOSE_YAML)
+    # On ne cree rien et surtout on ne detruit JAMAIS un dataset preexistant
+    # en silence : il peut contenir des donnees.
+    assert created == []
+    assert destroyed == []
+
+
+def test_create_stack_dry_run_failure_cleans_up_dataset(isolated_registry, tmp_path, monkeypatch):
+    _, created, destroyed = _patch_zfs_for_create(monkeypatch, tmp_path)
+
+    def fake_run(cmd, input_text=None, timeout=None):
+        if "config" in cmd:
+            return 1, "", "yaml invalide"
+        return 0, "", ""
+    monkeypatch.setattr(dockerstacks, "_run", fake_run)
+
+    with pytest.raises(dockerstacks.DockerStackError, match="nettoye automatiquement"):
+        dockerstacks.create_stack("myapp", "tank", COMPOSE_YAML)
+    assert created == ["tank/docker/myapp"]
+    assert destroyed == ["tank/docker/myapp"]
+    assert dockerstacks.get_stack("myapp") is None
+
+
+def test_create_stack_startup_failure_runs_down_then_cleans_up_dataset(isolated_registry, tmp_path, monkeypatch):
+    _, created, destroyed = _patch_zfs_for_create(monkeypatch, tmp_path)
+    run_calls = []
+
+    def fake_run(cmd, input_text=None, timeout=None):
+        run_calls.append(cmd)
+        if "up" in cmd:
+            return 1, "", "port deja utilise"
+        return 0, "", ""
+    monkeypatch.setattr(dockerstacks, "_run", fake_run)
+
+    with pytest.raises(dockerstacks.DockerStackError, match="port deja utilise"):
+        dockerstacks.create_stack("myapp", "tank", COMPOSE_YAML)
+    # 'down -v' pour retirer ce que 'up' a pu creer partiellement, PUIS
+    # destruction du dataset.
+    assert any("down" in c for c in run_calls)
+    assert destroyed == ["tank/docker/myapp"]
+    assert dockerstacks.get_stack("myapp") is None
+
+
+def test_create_stack_cleanup_failure_is_reported_not_hidden(isolated_registry, tmp_path, monkeypatch):
+    _patch_zfs_for_create(monkeypatch, tmp_path)
+
+    def failing_destroy(path):
+        raise zfs.DatasetError("dataset occupe")
+    monkeypatch.setattr(zfs, "destroy_dataset", failing_destroy)
+    monkeypatch.setattr(
+        dockerstacks, "_run",
+        lambda cmd, input_text=None, timeout=None: (1, "", "yaml invalide") if "config" in cmd else (0, "", ""),
+    )
+
+    with pytest.raises(dockerstacks.DockerStackError) as excinfo:
+        dockerstacks.create_stack("myapp", "tank", COMPOSE_YAML)
+    # L'erreur d'origine reste visible, ET on previent que le nettoyage a rate.
+    assert "yaml invalide" in str(excinfo.value)
+    assert "n'a pas pu etre nettoye" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Inventaire du stockage : datasets, dossiers, orphelins, fantomes
+# ---------------------------------------------------------------------------
+
+def _patch_storage(monkeypatch, tmp_path, children, plain_dirs=(), parent_exists=True):
+    """children : {basename: used_bytes} datasets enfants de tank/docker,
+    plain_dirs : dossiers simples a creer sous le point de montage parent."""
+    parent_mp = tmp_path / "tank" / "docker"
+    parent_mp.mkdir(parents=True)
+    for basename in children:
+        (parent_mp / basename).mkdir()
+    for basename in plain_dirs:
+        (parent_mp / basename).mkdir()
+
+    monkeypatch.setattr(zfs, "list_pools", lambda: [_fake_pool("tank")])
+    monkeypatch.setattr(zfs, "dataset_exists", lambda path: parent_exists and (
+        path == "tank/docker" or path.split("/")[-1] in children
+    ))
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: str(parent_mp) if path == "tank/docker" else str(parent_mp / path.split("/")[-1]))
+    monkeypatch.setattr(dockerstacks, "_dataset_used_bytes", lambda ds: 12345)
+    monkeypatch.setattr(
+        dockerstacks, "_zfs_children",
+        lambda parent: {b: (str(parent_mp / b), used) for b, used in children.items()} if parent_exists else {},
+    )
+    monkeypatch.setattr(dockerstacks, "_du_sizes", lambda root: {})
+    return parent_mp
+
+
+def test_list_docker_storage_classifies_ok_orphan_ghost(isolated_registry, tmp_path, monkeypatch):
+    parent_mp = _patch_storage(monkeypatch, tmp_path, children={"nginx": 100, "leftover": 200}, plain_dirs=["stray"])
+    dockerstacks._save_registry([
+        dockerstacks.Stack(name="nginx", pool="tank", dataset="tank/docker/nginx", directory=str(parent_mp / "nginx")),
+        dockerstacks.Stack(name="gone", pool="tank", dataset="tank/docker/gone", directory=str(parent_mp / "gone")),
+    ])
+
+    pools = dockerstacks.list_docker_storage()
+    assert len(pools) == 1
+    ps = pools[0]
+    assert ps.pool == "tank" and ps.parent_exists and ps.used_bytes == 12345
+    by_name = {e.name: e for e in ps.entries}
+    assert by_name["nginx"].status == "ok" and by_name["nginx"].kind == "dataset"
+    assert by_name["leftover"].status == "orphan" and by_name["leftover"].kind == "dataset"
+    assert by_name["leftover"].used_bytes == 200
+    assert by_name["stray"].status == "orphan" and by_name["stray"].kind == "directory"
+    assert by_name["gone"].status == "ghost" and by_name["gone"].kind == "missing"
+
+    assert dockerstacks.count_storage_anomalies() == (2, 1)
+
+
+def test_list_docker_storage_reports_ghost_on_unknown_pool(isolated_registry, tmp_path, monkeypatch):
+    _patch_storage(monkeypatch, tmp_path, children={})
+    dockerstacks._save_registry([
+        dockerstacks.Stack(name="old", pool="vanished", dataset="vanished/docker/old", directory="/vanished/docker/old"),
+    ])
+    pools = dockerstacks.list_docker_storage()
+    ghost_pools = [ps for ps in pools if ps.pool == "vanished"]
+    assert ghost_pools and ghost_pools[0].entries[0].status == "ghost"
+
+
+def test_storage_tree_lists_subdirectories_with_sizes(isolated_registry, tmp_path, monkeypatch):
+    parent_mp = _patch_storage(monkeypatch, tmp_path, children={"app": 10})
+    (parent_mp / "app" / "data").mkdir()
+    (parent_mp / "app" / "data" / "db").mkdir()
+    (parent_mp / "app" / "docker-compose.yml").write_text(COMPOSE_YAML)
+    monkeypatch.setattr(
+        dockerstacks, "_du_sizes",
+        lambda root: {str(parent_mp / "app" / "data"): 4096, str(parent_mp / "app" / "data" / "db"): 2048},
+    )
+
+    entry = dockerstacks.list_docker_storage()[0].entries[0]
+    assert entry.has_compose is True
+    names = [n.name for n in entry.tree]
+    assert names[0] == "data"  # dossiers d'abord
+    assert "docker-compose.yml" in names
+    data_node = entry.tree[0]
+    assert data_node.size_bytes == 4096
+    assert data_node.children[0].name == "db" and data_node.children[0].size_bytes == 2048
+
+
+def test_delete_orphan_dataset_destroys_only_orphans(isolated_registry, tmp_path, monkeypatch):
+    parent_mp = _patch_storage(monkeypatch, tmp_path, children={"nginx": 100, "leftover": 200})
+    dockerstacks._save_registry([
+        dockerstacks.Stack(name="nginx", pool="tank", dataset="tank/docker/nginx", directory=str(parent_mp / "nginx")),
+    ])
+    destroyed = []
+    monkeypatch.setattr(zfs, "destroy_dataset", lambda path: destroyed.append(path))
+    run_calls = []
+    monkeypatch.setattr(dockerstacks, "_run", lambda cmd, input_text=None, timeout=None: (run_calls.append(cmd), (0, "", ""))[1])
+
+    with pytest.raises(dockerstacks.DockerStackError, match="stack enregistree"):
+        dockerstacks.delete_orphan("tank", "nginx")
+    with pytest.raises(dockerstacks.DockerStackError, match="Aucune entree"):
+        dockerstacks.delete_orphan("tank", "nope")
+    with pytest.raises(dockerstacks.DockerStackError, match="invalide"):
+        dockerstacks.delete_orphan("tank", "../etc")
+    assert destroyed == []
+
+    msg = dockerstacks.delete_orphan("tank", "leftover")
+    assert destroyed == ["tank/docker/leftover"]
+    assert "leftover" in msg
+    # Pas de docker-compose.yml dans ce dataset -> pas de 'down' tente.
+    assert not any("down" in c for c in run_calls)
+
+
+def test_delete_orphan_dataset_runs_compose_down_when_compose_present(isolated_registry, tmp_path, monkeypatch):
+    parent_mp = _patch_storage(monkeypatch, tmp_path, children={"leftover": 200})
+    (parent_mp / "leftover" / "docker-compose.yml").write_text(COMPOSE_YAML)
+    destroyed = []
+    monkeypatch.setattr(zfs, "destroy_dataset", lambda path: destroyed.append(path))
+    run_calls = []
+    monkeypatch.setattr(dockerstacks, "_run", lambda cmd, input_text=None, timeout=None: (run_calls.append(cmd), (0, "", ""))[1])
+
+    dockerstacks.delete_orphan("tank", "leftover")
+    assert any("down" in c and "-p" in c and "leftover" in c for c in run_calls)
+    assert destroyed == ["tank/docker/leftover"]
+
+
+def test_delete_orphan_directory_removes_plain_folder_only(isolated_registry, tmp_path, monkeypatch):
+    parent_mp = _patch_storage(monkeypatch, tmp_path, children={}, plain_dirs=["stray"])
+    (parent_mp / "stray" / "junk.txt").write_text("x")
+    monkeypatch.setattr(dockerstacks, "_run", lambda cmd, input_text=None, timeout=None: (0, "", ""))
+
+    msg = dockerstacks.delete_orphan("tank", "stray")
+    assert not (parent_mp / "stray").exists()
+    assert "stray" in msg
+
+
+def test_delete_orphan_directory_refuses_mountpoints(isolated_registry, tmp_path, monkeypatch):
+    parent_mp = _patch_storage(monkeypatch, tmp_path, children={}, plain_dirs=["stray"])
+    monkeypatch.setattr(dockerstacks, "_run", lambda cmd, input_text=None, timeout=None: (0, "", ""))
+    import os
+    monkeypatch.setattr(os.path, "ismount", lambda p: True)
+    with pytest.raises(dockerstacks.DockerStackError, match="point de montage"):
+        dockerstacks.delete_orphan("tank", "stray")
+    assert (parent_mp / "stray").exists()
+
+
+def test_forget_ghost_stack(isolated_registry, isolated_icons, monkeypatch):
+    dockerstacks._save_registry([
+        dockerstacks.Stack(name="gone", pool="tank", dataset="tank/docker/gone", directory="/tank/docker/gone"),
+        dockerstacks.Stack(name="alive", pool="tank", dataset="tank/docker/alive", directory="/tank/docker/alive"),
+    ])
+    monkeypatch.setattr(zfs, "dataset_exists", lambda path: path == "tank/docker/alive")
+
+    with pytest.raises(dockerstacks.DockerStackError, match="n'existe pas"):
+        dockerstacks.forget_ghost_stack("nope")
+    with pytest.raises(dockerstacks.DockerStackError, match="existe toujours"):
+        dockerstacks.forget_ghost_stack("alive")
+
+    dockerstacks.forget_ghost_stack("gone")
+    assert dockerstacks.get_stack("gone") is None
+    assert dockerstacks.get_stack("alive") is not None

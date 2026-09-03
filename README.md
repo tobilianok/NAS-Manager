@@ -89,6 +89,22 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
   retrait acces admin, suppression de compte) exige de re-saisir son PROPRE
   mot de passe (celui de la session en cours, verifie via PAM) — jamais celui
   du compte cible — livré, en attente de test réel.
+- Phase 8c : stockage Docker. Correctif de la cause racine des "datasets
+  orphelins" : quand la création d'une stack échoue (compose invalide, port
+  déjà pris…), le dataset créé pour l'occasion est désormais nettoyé
+  automatiquement (`down -v` puis destruction), donc le nom reste
+  réutilisable ; et si un dataset préexiste déjà sans stack enregistrée, la
+  création refuse explicitement en pointant vers la page de nettoyage
+  plutôt que d'échouer avec un message cryptique. Nouvelle page
+  Docker → "Stockage & arborescence" : inventaire lu en direct de tout ce
+  qui vit sous `<pool>/docker` (datasets ZFS, simples dossiers, tailles),
+  arborescence dépliable par stack, classement stack enregistrée / orphelin
+  / stack fantôme (enregistrée mais dataset disparu), suppression des
+  orphelins avec confirmation par re-saisie du nom (revérification serveur
+  que la cible est bien un orphelin confiné sous `<pool>/docker`, jamais une
+  stack enregistrée) et retrait du registre des fantômes. Bandeau d'alerte
+  sur la liste des stacks quand des orphelins existent — livré, en attente
+  de test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -193,9 +209,10 @@ détection des disques, la validation des pools ZFS, le remplacement de
 disque, la lecture SMART, les partages SMB/NFS (utilisateurs ET groupes),
 les comptes de partage (profil, avatar), les comptes système/sudo et les
 groupes Linux (garde-fous d'auto-verrouillage inclus), les stacks Docker
-Compose, l'état réseau, la météo de santé/sécurité, la configuration réseau
+Compose (y compris le nettoyage automatique en cas d'échec de création), l'état réseau, la météo de santé/sécurité, la configuration réseau
 (netplan, agrégats, wifi, application avec confirmation/retour arrière),
-la console Docker interactive et les routes web (381 tests).
+la console Docker interactive, le stockage Docker (orphelins, arborescence)
+et les routes web (404 tests).
 
 ## Développement
 

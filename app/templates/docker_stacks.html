@@ -4,8 +4,19 @@
 {% block content %}
     <div class="top-row">
       <h1>Stacks Docker Compose</h1>
-      <a class="btn btn-primary" href="/docker/new">+ Nouvelle stack</a>
+      <div class="actions" style="margin:0;">
+        <a class="btn btn-muted" href="/docker/storage">Stockage &amp; arborescence</a>
+        <a class="btn btn-primary" href="/docker/new">+ Nouvelle stack</a>
+      </div>
     </div>
+
+    {% if orphans or ghosts %}
+    <div class="msg msg-warning">
+      {% if orphans %}{{ orphans }} dataset(s)/dossier(s) orphelin(s) sous <code>&lt;pool&gt;/docker</code> (reliquats de creations echouees) — ils bloquent les noms et occupent de l'espace.{% endif %}
+      {% if ghosts %}{% if orphans %}<br>{% endif %}{{ ghosts }} stack(s) fantome(s) dont le dataset n'existe plus.{% endif %}
+      <a href="/docker/storage" style="margin-left:.4rem;">Voir et nettoyer →</a>
+    </div>
+    {% endif %}
 
     {% if not rows %}
     <div class="empty-state">Aucune stack pour l'instant. Clique sur "Nouvelle stack" pour en creer une.</div>

@@ -225,3 +225,127 @@ def test_docker_delete_failure_keeps_stack_registered(client, tmp_path, monkeypa
     resp = client.post("/docker/myapp/delete", data={"confirm_name": "myapp"})
     assert resp.status_code == 500
     assert dockerstacks.get_stack("myapp") is not None
+
+
+# ---------------------------------------------------------------------------
+# Stockage Docker : inventaire, suppression d'orphelins, stacks fantomes
+# ---------------------------------------------------------------------------
+
+def _fake_storage(monkeypatch, status="orphan", kind="dataset"):
+    entry = dockerstacks.StorageEntry(
+        pool="tank", name="leftover", kind=kind, status=status,
+        dataset="tank/docker/leftover" if kind == "dataset" else None,
+        directory="/tank/docker/leftover", used_bytes=2048, stack=None,
+        tree=[dockerstacks.TreeNode(name="data", path="/tank/docker/leftover/data", is_dir=True, size_bytes=1024)],
+    )
+    pools = [dockerstacks.PoolStorage(
+        pool="tank", parent_dataset="tank/docker", parent_mountpoint="/tank/docker",
+        parent_exists=True, used_bytes=4096, entries=[entry],
+    )]
+    monkeypatch.setattr(dockerstacks, "list_docker_storage", lambda with_tree=True: pools)
+    monkeypatch.setattr(dockerstacks, "get_storage_entry", lambda pool, name: entry if (pool, name) == ("tank", "leftover") else None)
+    return entry
+
+
+def test_docker_list_shows_orphan_banner(client, monkeypatch):
+    monkeypatch.setattr(dockerstacks, "count_storage_anomalies", lambda: (2, 1))
+    resp = client.get("/docker")
+    assert resp.status_code == 200
+    assert "orphelin" in resp.text
+    assert "/docker/storage" in resp.text
+
+
+def test_docker_list_survives_inventory_failure(client, monkeypatch):
+    def boom():
+        raise RuntimeError("zfs indisponible")
+    monkeypatch.setattr(dockerstacks, "count_storage_anomalies", boom)
+    resp = client.get("/docker")
+    assert resp.status_code == 200
+
+
+def test_docker_storage_page_renders_tree_and_orphan(client, monkeypatch):
+    _fake_storage(monkeypatch)
+    resp = client.get("/docker/storage")
+    assert resp.status_code == 200
+    assert "leftover" in resp.text
+    assert "orphelin" in resp.text
+    assert "data" in resp.text  # arborescence
+    assert "/docker/storage/tank/leftover/delete" in resp.text
+
+
+def test_docker_storage_route_not_shadowed_by_stack_detail(client, monkeypatch):
+    # Sans stack nommee 'storage', /docker/storage doit rendre la page de
+    # stockage et non un 404 'Stack introuvable'.
+    monkeypatch.setattr(dockerstacks, "list_docker_storage", lambda with_tree=True: [])
+    resp = client.get("/docker/storage")
+    assert resp.status_code == 200
+    assert "Stockage Docker" in resp.text
+
+
+def test_docker_storage_delete_form_and_wrong_name(client, monkeypatch):
+    _fake_storage(monkeypatch)
+    resp = client.get("/docker/storage/tank/leftover/delete")
+    assert resp.status_code == 200
+    assert "tank/docker/leftover" in resp.text
+
+    deleted = []
+    monkeypatch.setattr(dockerstacks, "delete_orphan", lambda pool, name: deleted.append((pool, name)) or "ok")
+    resp = client.post("/docker/storage/tank/leftover/delete", data={"confirm_name": "wrong"})
+    assert resp.status_code == 400
+    assert deleted == []
+
+
+def test_docker_storage_delete_form_refuses_non_orphan(client, monkeypatch):
+    _fake_storage(monkeypatch, status="ok")
+    resp = client.get("/docker/storage/tank/leftover/delete")
+    assert resp.status_code == 400
+    assert "pas un orphelin" in resp.text
+
+
+def test_docker_storage_delete_404_when_unknown(client, monkeypatch):
+    _fake_storage(monkeypatch)
+    resp = client.get("/docker/storage/tank/nope/delete")
+    assert resp.status_code == 404
+
+
+def test_docker_storage_delete_success_and_error(client, monkeypatch):
+    _fake_storage(monkeypatch)
+    deleted = []
+    monkeypatch.setattr(dockerstacks, "delete_orphan", lambda pool, name: deleted.append((pool, name)) or "Dataset orphelin supprime.")
+    resp = client.post("/docker/storage/tank/leftover/delete", data={"confirm_name": "leftover"})
+    assert resp.status_code == 200
+    assert deleted == [("tank", "leftover")]
+    assert "supprime" in resp.text
+
+    def refuse(pool, name):
+        raise zfs.DatasetError("dataset occupe")
+    monkeypatch.setattr(dockerstacks, "delete_orphan", refuse)
+    resp = client.post("/docker/storage/tank/leftover/delete", data={"confirm_name": "leftover"})
+    assert resp.status_code == 400
+    assert "dataset occupe" in resp.text
+
+
+def test_docker_storage_forget_ghost(client, monkeypatch):
+    monkeypatch.setattr(dockerstacks, "list_docker_storage", lambda with_tree=True: [])
+    forgotten = []
+    monkeypatch.setattr(dockerstacks, "forget_ghost_stack", lambda name: forgotten.append(name) or "retiree")
+    resp = client.post("/docker/storage/ghost/gone/forget")
+    assert resp.status_code == 200
+    assert forgotten == ["gone"]
+
+    def refuse(name):
+        raise dockerstacks.DockerStackError("existe toujours")
+    monkeypatch.setattr(dockerstacks, "forget_ghost_stack", refuse)
+    resp = client.post("/docker/storage/ghost/alive/forget")
+    assert resp.status_code == 400
+    assert "existe toujours" in resp.text
+
+
+def test_docker_create_reports_orphan_hint(client, monkeypatch):
+    monkeypatch.setattr(zfs, "list_pools", lambda: [_fake_pool()])
+    def refuse(name, pool, compose):
+        raise dockerstacks.DockerStackError("dataset orphelin - va dans Docker → Stockage")
+    monkeypatch.setattr(dockerstacks, "create_stack", refuse)
+    resp = client.post("/docker", data={"name": "myapp", "pool": "tank", "compose_content": COMPOSE_YAML})
+    assert resp.status_code == 400
+    assert "Stockage" in resp.text

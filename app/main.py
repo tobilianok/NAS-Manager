@@ -935,10 +935,100 @@ def docker_list(request: Request, username: str = Depends(require_login)):
             "stack": s, "containers": containers,
             "has_icon": dockerstacks.get_icon_path(s.name) is not None,
         })
+    # Bandeau leger si des reliquats trainent sous <pool>/docker : c'est
+    # invisible depuis la liste des stacks sinon, et ca bloque les noms.
+    try:
+        orphans, ghosts = dockerstacks.count_storage_anomalies()
+    except Exception:  # noqa: BLE001 - jamais bloquer la liste pour un souci d'inventaire
+        logger.exception("Inventaire du stockage Docker impossible")
+        orphans, ghosts = 0, 0
     return templates.TemplateResponse(
         "docker_stacks.html",
-        {"request": request, "username": username, "rows": rows},
+        {"request": request, "username": username, "rows": rows, "orphans": orphans, "ghosts": ghosts},
     )
+
+
+# ---------------------------------------------------------------------------
+# Stockage Docker : arborescence des datasets/dossiers, nettoyage des
+# orphelins (IMPORTANT : routes fixes declarees AVANT /docker/{name}).
+# ---------------------------------------------------------------------------
+
+def _render_docker_storage(
+    request: Request, username: str,
+    error: str | None = None, message: str | None = None, status_code: int = 200,
+):
+    pools = dockerstacks.list_docker_storage()
+    orphans = sum(1 for ps in pools for e in ps.entries if e.status == "orphan")
+    ghosts = sum(1 for ps in pools for e in ps.entries if e.status == "ghost")
+    return templates.TemplateResponse(
+        "docker_storage.html",
+        {
+            "request": request, "username": username, "pools": pools,
+            "orphans": orphans, "ghosts": ghosts,
+            "error": error, "message": message, "format_bytes": sysstats.format_bytes,
+        },
+        status_code=status_code,
+    )
+
+
+@app.get("/docker/storage", response_class=HTMLResponse)
+def docker_storage(request: Request, username: str = Depends(require_login)):
+    return _render_docker_storage(request, username)
+
+
+@app.get("/docker/storage/{pool}/{name}/delete", response_class=HTMLResponse)
+def docker_storage_delete_form(request: Request, pool: str, name: str, username: str = Depends(require_login)):
+    entry = dockerstacks.get_storage_entry(pool, name)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Entree '{name}' introuvable sous {pool}/docker.")
+    if entry.status != "orphan":
+        return _render_docker_storage(
+            request, username,
+            error=f"'{name}' n'est pas un orphelin (statut : {entry.status}) - rien a nettoyer ici.",
+            status_code=400,
+        )
+    return templates.TemplateResponse(
+        "docker_storage_delete.html",
+        {"request": request, "username": username, "entry": entry, "error": None, "format_bytes": sysstats.format_bytes},
+    )
+
+
+@app.post("/docker/storage/{pool}/{name}/delete", response_class=HTMLResponse)
+def docker_storage_delete_submit(
+    request: Request, pool: str, name: str, username: str = Depends(require_login),
+    confirm_name: str = Form(...),
+):
+    entry = dockerstacks.get_storage_entry(pool, name)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Entree '{name}' introuvable sous {pool}/docker.")
+    if confirm_name.strip() != name:
+        return templates.TemplateResponse(
+            "docker_storage_delete.html",
+            {
+                "request": request, "username": username, "entry": entry,
+                "error": "Le nom tape ne correspond pas - rien n'a ete supprime.",
+                "format_bytes": sysstats.format_bytes,
+            },
+            status_code=400,
+        )
+    try:
+        message = dockerstacks.delete_orphan(pool, name)
+    except (dockerstacks.DockerStackError, zfs.DatasetError) as exc:
+        return templates.TemplateResponse(
+            "docker_storage_delete.html",
+            {"request": request, "username": username, "entry": entry, "error": str(exc), "format_bytes": sysstats.format_bytes},
+            status_code=400,
+        )
+    return _render_docker_storage(request, username, message=message)
+
+
+@app.post("/docker/storage/ghost/{name}/forget", response_class=HTMLResponse)
+def docker_storage_forget_ghost(request: Request, name: str, username: str = Depends(require_login)):
+    try:
+        message = dockerstacks.forget_ghost_stack(name)
+    except dockerstacks.DockerStackError as exc:
+        return _render_docker_storage(request, username, error=str(exc), status_code=400)
+    return _render_docker_storage(request, username, message=message)
 
 
 @app.get("/docker/new", response_class=HTMLResponse)
