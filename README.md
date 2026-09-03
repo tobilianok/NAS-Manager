@@ -1,3 +1,5 @@
+![Tableau de bord NAS Manager](docs/screenshots/dashboard.png)
+
 # NAS Manager
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
