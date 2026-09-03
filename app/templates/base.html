@@ -43,6 +43,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l1.6-4 3 8 1.8-4H21"/></svg>
           SMART
         </a>
+        <a href="/backup" class="{{ 'active' if request.url.path.startswith('/backup') else '' }}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h17A1.5 1.5 0 0 1 22 4.5V8H2z"/><path d="M12 12v5"/><path d="M9.5 14.5 12 12l2.5 2.5"/></svg>
+          Sauvegarde
+        </a>
         <a href="/admin-accounts" class="{{ 'active' if request.url.path.startswith('/admin-accounts') else '' }}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3.6v5.4c0 5-3.4 8.8-8 10-4.6-1.2-8-5-8-10V5.6z"/><path d="M9 12l2 2 4-4.5"/></svg>
           Comptes système

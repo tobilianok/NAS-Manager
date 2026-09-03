@@ -5,19 +5,24 @@ import datetime
 import logging
 import mimetypes
 import os
+import shutil
 import subprocess
+import tempfile
+import urllib.parse
 from dataclasses import asdict
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Form, Depends, HTTPException, File, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.background import BackgroundTask
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import (
     auth, disks, zfs, sysstats, smart as smart_module, replace_workflow, shares,
     nasusers, dockerstacks, netstats, health, netconfig, dockerconsole, dockerops,
-    sysaccounts,
+    sysaccounts, configbackup,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -1656,6 +1661,137 @@ def network_apply_cancel(request: Request, username: str = Depends(require_login
     except netconfig.NetworkApplyError:
         pass
     return _apply_status_partial(request)
+
+
+# ---------------------------------------------------------------------------
+# Sauvegarde / restauration de la configuration (Phase 9c)
+# ---------------------------------------------------------------------------
+
+@app.get("/backup", response_class=HTMLResponse)
+def backup_page(request: Request, username: str = Depends(require_login),
+                error: str | None = None, report: list[str] | None = None):
+    return templates.TemplateResponse(
+        "backup.html",
+        {
+            "request": request, "username": username, "error": error, "report": report,
+            "section_labels": configbackup.SECTION_LABELS,
+        },
+    )
+
+
+@app.get("/backup/download")
+def backup_download(username: str = Depends(require_login)):
+    """Genere l'archive puis la renvoie en telechargement. Le dossier
+    temporaire est supprime APRES l'envoi (background task) : l'archive
+    contient des empreintes de mots de passe, elle n'a rien a faire sur le
+    disque du NAS une seconde de plus que necessaire."""
+    try:
+        archive = configbackup.create_archive()
+    except configbackup.ConfigBackupError as exc:
+        return RedirectResponse(f"/backup?error={urllib.parse.quote(str(exc))}", status_code=302)
+    return FileResponse(
+        path=str(archive), filename=archive.name, media_type="application/gzip",
+        background=BackgroundTask(shutil.rmtree, archive.parent, True),
+    )
+
+
+@app.post("/backup/restore", response_class=HTMLResponse)
+async def backup_restore_preview(
+    request: Request, username: str = Depends(require_login),
+    archive: UploadFile = File(...),
+):
+    """Etape 1 : on lit l'archive et on montre ce qu'elle contient. AUCUNE
+    ecriture sur le systeme a ce stade."""
+    content = await archive.read()
+    if not content:
+        return templates.TemplateResponse(
+            "backup.html",
+            {"request": request, "username": username, "error": "Fichier vide.",
+             "report": None, "section_labels": configbackup.SECTION_LABELS},
+            status_code=400,
+        )
+    if len(content) > configbackup.MAX_ARCHIVE_BYTES:
+        return templates.TemplateResponse(
+            "backup.html",
+            {"request": request, "username": username,
+             "error": "Fichier trop volumineux pour une archive de configuration.",
+             "report": None, "section_labels": configbackup.SECTION_LABELS},
+            status_code=400,
+        )
+
+    workdir = Path(tempfile.mkdtemp(prefix="nas-manager-restore-"))
+    upload_path = workdir / "upload.tar.gz"
+    upload_path.write_bytes(content)
+    try:
+        info = configbackup.inspect_archive(upload_path, workdir / "content")
+    except configbackup.ConfigBackupError as exc:
+        shutil.rmtree(workdir, ignore_errors=True)
+        return templates.TemplateResponse(
+            "backup.html",
+            {"request": request, "username": username, "error": str(exc),
+             "report": None, "section_labels": configbackup.SECTION_LABELS},
+            status_code=400,
+        )
+    finally:
+        upload_path.unlink(missing_ok=True)
+
+    return templates.TemplateResponse(
+        "backup_restore.html",
+        {
+            "request": request, "username": username, "info": info,
+            "archive_root": info.path, "error": None,
+            "section_labels": configbackup.SECTION_LABELS,
+            "restorable": configbackup.RESTORABLE_SECTIONS,
+        },
+    )
+
+
+@app.post("/backup/restore/apply", response_class=HTMLResponse)
+def backup_restore_apply(
+    request: Request, username: str = Depends(require_login),
+    archive_root: str = Form(...), sections: list[str] = Form([]),
+    confirm_password: str = Form(...),
+):
+    """Etape 2 : application effective, apres reconfirmation du mot de passe
+    de l'admin connecte (meme regle que les autres actions sensibles)."""
+    root = Path(archive_root)
+    # Le chemin vient d'un champ de formulaire : on verifie qu'il pointe bien
+    # vers une archive extraite par nous, et pas ailleurs sur le disque.
+    if not root.name == "content" or not root.parent.name.startswith("nas-manager-restore-"):
+        raise HTTPException(status_code=400, detail="Chemin d'archive invalide.")
+    if not (root / configbackup.MANIFEST_NAME).is_file():
+        raise HTTPException(status_code=400, detail="Archive expiree ou introuvable - recharge le fichier.")
+
+    if not auth.authenticate(username, confirm_password):
+        return templates.TemplateResponse(
+            "backup_restore.html",
+            {
+                "request": request, "username": username,
+                "info": configbackup.describe_root(root), "archive_root": archive_root,
+                "error": "Mot de passe incorrect - rien n'a ete restaure.",
+                "section_labels": configbackup.SECTION_LABELS,
+                "restorable": configbackup.RESTORABLE_SECTIONS,
+            },
+            status_code=400,
+        )
+
+    try:
+        report = configbackup.restore(root, sections)
+    except configbackup.ConfigBackupError as exc:
+        return templates.TemplateResponse(
+            "backup.html",
+            {"request": request, "username": username, "error": str(exc), "report": None,
+             "section_labels": configbackup.SECTION_LABELS},
+            status_code=400,
+        )
+    finally:
+        shutil.rmtree(root.parent, ignore_errors=True)
+
+    return templates.TemplateResponse(
+        "backup.html",
+        {"request": request, "username": username, "error": None, "report": report,
+         "section_labels": configbackup.SECTION_LABELS},
+    )
 
 
 # ---------------------------------------------------------------------------

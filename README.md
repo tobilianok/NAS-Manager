@@ -137,6 +137,27 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
   compte (`usermod -G` remplace tous les groupes secondaires) retirait
   silencieusement son appartenance à `nasadmin` — livré, en attente de test
   réel.
+- Phase 9c : nouveau menu « Sauvegarde » — export et restauration de la
+  configuration, sous forme d'une **archive `.tar.gz` téléchargée** (rien
+  n'est conservé sur le NAS : une sauvegarde qui ne vit que sur la machine
+  à restaurer ne sert à rien le jour où elle ne démarre plus). L'archive
+  contient les registres NAS Manager (partages, stacks, icônes, avatars),
+  les comptes de partage et système avec leurs groupes et les
+  **empreintes** de leurs mots de passe (système + base Samba), la
+  configuration générée (`smb.conf`, `/etc/exports`, netplan), le
+  `docker-compose.yml` de chaque stack et la topologie ZFS en
+  documentation ; jamais le `.env` (secret vivant) ni les données des
+  partages/volumes (rôle des snapshots ZFS). La restauration passe par un
+  **aperçu** de ce que contient l'archive avant toute écriture, avec choix
+  des sections et re-saisie du mot de passe de l'admin connecté ; elle ne
+  supprime jamais rien (crée ce qui manque, complète ce qui existe,
+  `usermod -aG` et non `-G`). `smb.conf` et `/etc/exports` sont régénérés
+  depuis le registre restauré (bloc géré uniquement) plutôt qu'écrasés. La
+  configuration réseau et la topologie ZFS sont archivées et affichées mais
+  **jamais rejouées** (se verrouiller dehors, détruire des disques) ; les
+  stacks sont recréées mais pas démarrées. Extraction protégée contre les
+  chemins absolus, les `..`, les liens symboliques et les archives
+  anormalement volumineuses — livré, en attente de test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -246,7 +267,9 @@ Compose (y compris le nettoyage automatique en cas d'échec de création), l'ét
 la console Docker interactive, le stockage Docker (orphelins, arborescence),
 les actions Docker diffusées en direct (liste blanche, étapes, codes de
 sortie), l'accès admin des comptes de partage (garde-fous, reconfirmation
-de mot de passe) et les routes web (442 tests).
+de mot de passe), la sauvegarde/restauration de configuration (contenu de
+l'archive, refus des archives piégées, restauration sélective) et les
+routes web (475 tests).
 
 ## Développement
 
