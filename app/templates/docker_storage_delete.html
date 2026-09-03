@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Supprimer l'orphelin {{ entry.name }} - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/docker/storage">← Stockage Docker</a>{% endblock %}
+{% block content %}
+    <h1>Supprimer l'orphelin "{{ entry.name }}"</h1>
+    <div class="confirm-box">
+      <p>
+        {% if entry.kind == 'dataset' %}
+        <strong>Cette action va detruire DEFINITIVEMENT le dataset ZFS "{{ entry.dataset }}" et tout ce
+        qu'il contient</strong> (fichiers, sous-dossiers, snapshots eventuels).
+        {% else %}
+        <strong>Cette action va supprimer DEFINITIVEMENT le dossier "{{ entry.directory }}" et tout ce
+        qu'il contient.</strong>
+        {% endif %}
+        C'est irreversible - il n'y a pas de corbeille, pas d'annulation possible une fois lance.
+        {% if entry.has_compose %}
+        Un <code>docker-compose.yml</code> est present : les containers/volumes/reseaux Docker eventuellement
+        laisses par une tentative de demarrage seront retires d'abord (<code>docker compose down -v</code>).
+        {% endif %}
+      </p>
+      <ul class="recap">
+        <li>Pool ZFS : {{ entry.pool }}</li>
+        {% if entry.dataset %}<li>Dataset detruit : {{ entry.dataset }}</li>{% endif %}
+        {% if entry.directory %}<li>Dossier : {{ entry.directory }}</li>{% endif %}
+        {% if entry.used_bytes is not none %}<li>Espace libere : environ {{ format_bytes(entry.used_bytes) }}</li>{% endif %}
+        <li>Statut verifie en direct : orphelin (aucune stack enregistree sous ce nom)</li>
+      </ul>
+
+      <div class="info-box">
+        Le serveur reverifie au moment de supprimer que cette entree est TOUJOURS un orphelin et
+        qu'elle est bien confinee sous <code>{{ entry.pool }}/docker</code> - une stack enregistree ne
+        peut jamais etre supprimee par ce chemin.
+      </div>
+
+      {% if error %}
+      <div class="msg msg-error">{{ error }}</div>
+      {% endif %}
+
+      <form method="post" action="/docker/storage/{{ entry.pool }}/{{ entry.name }}/delete">
+        <label for="confirm_name">Pour confirmer, retape le nom exact</label>
+        <input type="text" id="confirm_name" name="confirm_name" placeholder="{{ entry.name }}" autocomplete="off" required>
+        <div class="actions">
+          <button type="submit" class="btn-solid-danger">Supprimer definitivement</button>
+          <a class="btn btn-cancel" href="/docker/storage">Annuler</a>
+        </div>
+      </form>
+    </div>
+{% endblock %}

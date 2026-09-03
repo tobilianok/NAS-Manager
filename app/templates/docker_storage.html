@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Stockage Docker - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/docker">← Docker</a> <span>/ Stockage</span>{% endblock %}
+{% block content %}
+    <div class="top-row">
+      <h1>Stockage Docker &amp; arborescence</h1>
+      <a class="btn btn-muted" href="/docker/storage">Rafraîchir</a>
+    </div>
+    <p class="intro">
+      Tout ce qui vit sous <code>&lt;pool&gt;/docker</code>, lu en direct sur les pools ZFS et croisé
+      avec la liste des stacks enregistrées. Chaque stack = un dataset ZFS dédié ; ce qui n'est
+      rattaché à aucune stack est un <strong>orphelin</strong> (reliquat d'une création qui a échoué,
+      ou d'une manipulation manuelle) : il occupe de l'espace pour rien et bloque le nom.
+    </p>
+
+    {% if error %}<div class="msg msg-error">{{ error }}</div>{% endif %}
+    {% if message %}<div class="msg msg-success">{{ message }}</div>{% endif %}
+
+    {% if orphans or ghosts %}
+    <div class="msg msg-warning">
+      {% if orphans %}<strong>{{ orphans }}</strong> élément(s) orphelin(s) détecté(s) — à supprimer ci-dessous si tu n'en as plus besoin.{% endif %}
+      {% if ghosts %}{% if orphans %}<br>{% endif %}<strong>{{ ghosts }}</strong> stack(s) fantôme(s) : enregistrée(s) mais dont le dataset n'existe plus sur le disque.{% endif %}
+    </div>
+    {% else %}
+    <div class="msg msg-success">Aucun orphelin : tout ce qui est sur le disque correspond à une stack enregistrée, et inversement.</div>
+    {% endif %}
+
+    {% if not pools %}
+    <div class="empty-state">Aucun pool ZFS pour l'instant.</div>
+    {% endif %}
+
+    {% macro render_tree(nodes, depth) %}
+      <ul class="tree{% if depth > 0 %} tree-nested{% endif %}">
+        {% for n in nodes %}
+        <li>
+          <span class="tree-icon">{{ '📁' if n.is_dir else '📄' }}</span>
+          <span class="tree-name">{{ n.name }}</span>
+          <span class="tree-size">{{ format_bytes(n.size_bytes) if n.size_bytes is not none else '?' }}</span>
+          {% if n.children %}{{ render_tree(n.children, depth + 1) }}{% endif %}
+          {% if n.truncated %}<ul class="tree tree-nested"><li class="dim">… (liste tronquée)</li></ul>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    {% endmacro %}
+
+    {% for ps in pools %}
+    <div class="card" style="margin-top:1.2rem;">
+      <h2 style="margin-bottom:.2rem;">
+        <span class="badge badge-pool">pool</span> {{ ps.pool }}
+        <span class="dim" style="font-weight:normal; font-size:.9rem;">&nbsp;·&nbsp; <code>{{ ps.parent_dataset }}</code></span>
+      </h2>
+      <div class="meta">
+        {% if ps.parent_exists %}
+          Point de montage : <code>{{ ps.parent_mountpoint or '—' }}</code>
+          &nbsp;·&nbsp; Espace utilisé (total Docker sur ce pool) : {{ format_bytes(ps.used_bytes) if ps.used_bytes is not none else '?' }}
+        {% else %}
+          Le dataset parent <code>{{ ps.parent_dataset }}</code> n'existe pas (aucune stack n'a encore été créée sur ce pool
+          {% if ps.entries %}— mais des stacks enregistrées y font référence, voir ci-dessous{% endif %}).
+        {% endif %}
+      </div>
+
+      {% if not ps.entries and ps.parent_exists %}
+      <div class="empty-state" style="margin-top:.8rem;">Rien sous <code>{{ ps.parent_dataset }}</code>.</div>
+      {% endif %}
+
+      {% for e in ps.entries %}
+      <div class="storage-entry storage-{{ e.status }}">
+        <div class="storage-head">
+          <div>
+            <span class="storage-name">{{ e.name }}</span>
+            {% if e.kind == 'dataset' %}<span class="badge badge-neutral">dataset ZFS</span>
+            {% elif e.kind == 'directory' %}<span class="badge badge-neutral">simple dossier</span>
+            {% else %}<span class="badge badge-neutral">absent du disque</span>{% endif %}
+
+            {% if e.status == 'ok' %}
+              <span class="badge badge-ok">stack enregistrée</span>
+            {% elif e.status == 'orphan' %}
+              <span class="badge badge-danger">orphelin</span>
+              {% if e.has_compose %}<span class="badge badge-warn">docker-compose.yml présent</span>{% endif %}
+            {% else %}
+              <span class="badge badge-warn">stack fantôme</span>
+            {% endif %}
+            <div class="meta" style="margin-top:.25rem;">
+              {% if e.dataset %}<code>{{ e.dataset }}</code>{% endif %}
+              {% if e.directory %} &nbsp;·&nbsp; <code>{{ e.directory }}</code>{% endif %}
+              {% if e.used_bytes is not none %} &nbsp;·&nbsp; {{ format_bytes(e.used_bytes) }}{% endif %}
+            </div>
+          </div>
+          <div class="actions" style="margin:0;">
+            {% if e.status == 'ok' %}
+              <a class="btn-muted btn-sm" href="/docker/{{ e.name }}">Ouvrir la stack</a>
+            {% elif e.status == 'orphan' %}
+              <a class="btn btn-sm btn-danger" href="/docker/storage/{{ ps.pool }}/{{ e.name }}/delete">Supprimer l'orphelin</a>
+            {% else %}
+              <form class="inline-form" method="post" action="/docker/storage/ghost/{{ e.name }}/forget"
+                    onsubmit="return confirm('Retirer la stack fantôme « {{ e.name }} » du registre ? Aucune donnée ne sera touchée (le dataset n\'existe déjà plus).');">
+                <button type="submit" class="btn-muted btn-sm">Retirer du registre</button>
+              </form>
+            {% endif %}
+          </div>
+        </div>
+
+        {% if e.status == 'ghost' %}
+        <div class="info-box" style="margin-top:.6rem;">
+          Cette stack est dans le registre mais son dataset <code>{{ e.dataset }}</code> n'existe plus
+          (supprimé à la main avec <code>zfs destroy</code>, pool exporté…). Elle ne peut plus fonctionner :
+          retire-la du registre pour libérer le nom, puis recrée-la si besoin.
+        </div>
+        {% elif e.tree %}
+        <details>
+          <summary>Arborescence ({{ e.tree | length }} entrée(s) à la racine{% if e.tree_truncated %}, liste tronquée{% endif %})</summary>
+          {{ render_tree(e.tree, 0) }}
+        </details>
+        {% elif e.kind != 'missing' %}
+        <div class="meta" style="margin-top:.5rem;">Dossier vide.</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+
+    <details class="glossary">
+      <summary>Comment lire cette page</summary>
+      <p><strong>Stack enregistrée</strong> : cas normal — un dataset ZFS sous <code>&lt;pool&gt;/docker/&lt;nom&gt;</code> qui correspond à une stack connue de NAS Manager. Rien à faire.</p>
+      <p><strong>Orphelin</strong> : un dataset (ou un simple dossier) présent sur le disque mais rattaché à aucune stack. Typiquement le reste d'une création qui a échoué (avant la correction qui nettoie automatiquement) ou d'une manipulation faite à la main. Tant qu'il est là, impossible de recréer une stack avec ce nom. Sa suppression est définitive : vérifie l'arborescence avant, au cas où il contiendrait des données que tu veux garder.</p>
+      <p><strong>Stack fantôme</strong> : l'inverse — NAS Manager connaît une stack, mais son dataset a disparu. Retirer du registre ne détruit rien (il n'y a plus rien), ça libère juste le nom.</p>
+      <p>Les tailles des dossiers sont calculées avec <code>du</code> (limité à 20 s par stack) : sur un très gros volume, elles peuvent apparaître comme « ? » plutôt que de bloquer la page.</p>
+    </details>
+{% endblock %}
