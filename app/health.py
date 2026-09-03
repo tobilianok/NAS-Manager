@@ -3,7 +3,8 @@ Vue d'ensemble "meteo" de la sante et de la securite du systeme.
 
 Agrege plusieurs sources independantes (etat SMART des disques, sante des
 pools ZFS, cartes reseau physiques, temperatures materielles, pare-feu
-ufw, etat des containers Docker) en un seul statut global avec une icone
+ufw, etat des containers Docker, comptes de partage ayant l'acces admin)
+en un seul statut global avec une icone
 "meteo" (beau temps / nuageux / orageux), et conserve le detail de
 chaque verification pour comprendre POURQUOI - le statut global seul ne
 dit jamais a Louis quoi corriger.
@@ -226,6 +227,38 @@ def check_docker() -> HealthCheck:
                         f"{len(stacks)} stack(s) geree(s), aucun container en echec detecte.")
 
 
+def check_share_admins() -> HealthCheck:
+    """Signale les comptes de PARTAGE qui ont recu l'acces admin a
+    l'interface (groupe nasadmin, cf. Phase 9b). Ce n'est pas une erreur -
+    c'est un choix delibere - mais ca merite de rester visible : le mot de
+    passe d'un compte de partage circule beaucoup plus facilement que
+    celui d'un compte d'administration."""
+    from app import nasusers  # import local : evite un cycle a l'import du module
+
+    try:
+        share_users = nasusers.list_share_users()
+        admins = [u.username for u in share_users if u.is_nasadmin]
+    except Exception:  # noqa: BLE001 - jamais faire tomber le tableau de bord
+        logger.exception("Lecture des comptes de partage impossible")
+        return HealthCheck("share_admins", "Comptes de partage admin", LEVEL_INCONNU,
+                            "Impossible de lire la liste des comptes de partage.")
+
+    if not share_users:
+        # Rien a evaluer : on ne renvoie surtout pas un OK permanent (meme
+        # raisonnement que le retrait du controle de mot de passe en 8a),
+        # mais "inconnu", comme les pools ou Docker quand il n'y a rien.
+        return HealthCheck("share_admins", "Comptes de partage admin", LEVEL_INCONNU,
+                            "Aucun compte de partage cree pour l'instant.")
+    if not admins:
+        return HealthCheck("share_admins", "Comptes de partage admin", LEVEL_OK,
+                            f"Aucun des {len(share_users)} compte(s) de partage n'a acces a l'administration.")
+    return HealthCheck(
+        "share_admins", "Comptes de partage admin", LEVEL_ATTENTION,
+        f"{len(admins)} compte(s) de partage ont l'acces admin complet a cette interface "
+        f"({', '.join(admins)}) - verifie que c'est toujours voulu.",
+    )
+
+
 def get_report() -> HealthReport:
     """Execute toutes les verifications. Peut prendre quelques secondes
     (smartctl par disque, sensors, docker compose ps par stack) - a
@@ -238,5 +271,6 @@ def get_report() -> HealthReport:
         check_temperatures(),
         check_firewall(),
         check_docker(),
+        check_share_admins(),
     ]
     return HealthReport(checks=checks)

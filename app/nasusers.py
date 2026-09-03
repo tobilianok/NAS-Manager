@@ -24,9 +24,17 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app import auth
+
 logger = logging.getLogger("nas_manager.nasusers")
 
 SHARE_GROUP = "nasshares"
+# Groupe qui donne acces a CETTE interface d'administration. Un compte de
+# partage peut y etre ajoute (Phase 9b, demande explicite de Louis) mais
+# JAMAIS par un simple reglage de profil : ca passe par une action dediee
+# avec avertissement et reconfirmation du mot de passe de l'admin connecte
+# (cf. grant_admin_access / revoke_admin_access plus bas).
+ADMIN_GROUP = auth.ADMIN_GROUP
 USERNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{2,31}$")
 
 # Filet de securite : noms qu'on refuse de toucher meme en cas de scenario
@@ -119,6 +127,7 @@ class ShareUser:
     extra_groups: list[str] = field(default_factory=list)
     avatar_emoji: str | None = None
     has_avatar_photo: bool = False
+    is_nasadmin: bool = False   # acces admin a l'interface (cf. ADMIN_GROUP)
 
 
 def list_assignable_groups() -> list[str]:
@@ -150,6 +159,15 @@ def _extra_groups_for(username: str) -> list[str]:
         g.gr_name for g in grp.getgrall()
         if username in g.gr_mem and g.gr_name not in _ALWAYS_EXCLUDED_GROUPS
     )
+
+
+def _is_nasadmin(username: str) -> bool:
+    """Appartenance SECONDAIRE au groupe nasadmin (le groupe primaire d'un
+    compte de partage est toujours nasshares)."""
+    try:
+        return username in grp.getgrnam(ADMIN_GROUP).gr_mem
+    except KeyError:
+        return False
 
 
 def _full_name_for(pw_gecos: str) -> str:
@@ -206,6 +224,7 @@ def list_share_users() -> list[ShareUser]:
             extra_groups=_extra_groups_for(u.pw_name),
             avatar_emoji=emojis.get(u.pw_name),
             has_avatar_photo=_avatar_photo_path(u.pw_name) is not None,
+            is_nasadmin=_is_nasadmin(u.pw_name),
         )
         for u in pwd.getpwall() if u.pw_gid == gid
     ]
@@ -284,9 +303,15 @@ def set_share_user_profile(username: str, full_name: str = "", extra_groups: lis
     # usermod -G REMPLACE l'integralite des groupes SUPPLEMENTAIRES (jamais
     # le groupe primaire, defini a part via -g/--gid) - une liste vide est
     # donc parfaitement valide et retire simplement tous les groupes
-    # supplementaires existants.
+    # supplementaires existants. MAIS nasadmin n'apparait jamais dans cette
+    # liste (il ne se donne/retire que par action dediee) : on le reinjecte
+    # s'il etait deja la, sinon editer un simple nom complet retirerait
+    # silencieusement l'acces admin du compte.
+    groups_to_set = list(sanitized_groups)
+    if _is_nasadmin(username):
+        groups_to_set.append(ADMIN_GROUP)
     code, out, err = _run([
-        "usermod", "-c", full_name.strip(), "-G", ",".join(sanitized_groups), username,
+        "usermod", "-c", full_name.strip(), "-G", ",".join(groups_to_set), username,
     ])
     if code != 0:
         raise ShareUserError(f"Mise a jour du profil impossible : {err or out}")
@@ -310,6 +335,72 @@ def set_share_user_password(username: str, password: str) -> None:
         raise ShareUserError(f"Mise a jour du mot de passe Samba impossible : {err or out}")
 
     logger.info("Mot de passe du compte de partage '%s' modifie", username)
+
+
+# ---------------------------------------------------------------------------
+# Acces admin a l'interface pour un compte de partage (Phase 9b)
+# ---------------------------------------------------------------------------
+#
+# Choix explicite de Louis, en connaissance de cause : mettre un compte de
+# partage dans nasadmin lui donne l'acces admin COMPLET a cette interface
+# (le shell 'nologin' n'empeche pas l'authentification PAM du site, cf.
+# app.auth). Le risque reel n'est pas technique mais humain : un mot de
+# passe de partage circule beaucoup plus facilement (tape sur un telephone,
+# enregistre dans Windows, communique a un proche) qu'un mot de passe
+# d'administration.
+#
+# D'ou les garde-fous, alignes sur ceux de la Phase 8b :
+#   - action DEDIEE (jamais un effet de bord d'une modification de profil) ;
+#   - reconfirmation du mot de passe de l'admin CONNECTE (jamais celui du
+#     compte cible), verifie via PAM ;
+#   - impossible de se retirer l'acces a soi-meme (un compte de partage
+#     ayant nasadmin peut etre le compte de la session en cours) ;
+#   - le compte est ensuite marque visuellement dans l'interface et
+#     signale dans la meteo de sante du tableau de bord (cf. app.health).
+
+def _require_password_confirmation(session_username: str, confirm_password: str) -> None:
+    if not confirm_password or not auth.authenticate(session_username, confirm_password):
+        raise ShareUserError("Mot de passe incorrect - action annulee par securite.")
+
+
+def grant_admin_access(username: str, session_username: str, confirm_password: str) -> None:
+    """Ajoute un compte de partage au groupe nasadmin : il pourra se
+    connecter a cette interface et TOUT y administrer."""
+    if not is_share_user(username):
+        raise ShareUserError(f"'{username}' n'est pas un compte de partage gere par NAS Manager.")
+    if _is_nasadmin(username):
+        return  # deja admin : rien a faire (idempotent)
+    _require_password_confirmation(session_username, confirm_password)
+
+    code, out, err = _run(["usermod", "-aG", ADMIN_GROUP, username])
+    if code != 0:
+        raise ShareUserError(f"Octroi de l'acces admin impossible : {err or out}")
+    logger.warning(
+        "ACCES ADMIN accorde au compte de partage '%s' (confirme par '%s')",
+        username, session_username,
+    )
+
+
+def revoke_admin_access(username: str, session_username: str, confirm_password: str) -> None:
+    """Retire l'acces admin a un compte de partage. Impossible sur son
+    propre compte connecte : ca reviendrait a se verrouiller dehors."""
+    if not is_share_user(username):
+        raise ShareUserError(f"'{username}' n'est pas un compte de partage gere par NAS Manager.")
+    if not _is_nasadmin(username):
+        raise ShareUserError(f"'{username}' n'a pas l'acces admin.")
+    if username == session_username:
+        raise ShareUserError(
+            "Impossible de retirer l'acces admin de ton propre compte actuellement connecte."
+        )
+    _require_password_confirmation(session_username, confirm_password)
+
+    code, out, err = _run(["gpasswd", "-d", username, ADMIN_GROUP])
+    if code != 0:
+        raise ShareUserError(f"Retrait de l'acces admin impossible : {err or out}")
+    logger.warning(
+        "Acces admin retire au compte de partage '%s' (confirme par '%s')",
+        username, session_username,
+    )
 
 
 def delete_share_user(username: str) -> None:

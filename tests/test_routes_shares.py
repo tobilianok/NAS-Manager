@@ -290,3 +290,64 @@ def test_share_delete_flow(client, monkeypatch):
     assert resp.headers["location"] == "/shares"
     assert destroy_calls == ["tank/partages/photos"]
     assert shares.get_share("photos") is None
+
+
+# ---------------------------------------------------------------------------
+# Acces admin des comptes de partage (Phase 9b)
+# ---------------------------------------------------------------------------
+
+def test_share_users_page_shows_admin_badge_and_actions(client, monkeypatch):
+    monkeypatch.setattr(nasusers, "list_share_users", lambda: [
+        nasusers.ShareUser(username="alice"),
+        nasusers.ShareUser(username="bob", is_nasadmin=True),
+    ])
+    monkeypatch.setattr(nasusers, "list_assignable_groups", lambda: [])
+    resp = client.get("/share-users")
+    assert resp.status_code == 200
+    assert "Acces admin" in resp.text
+    assert "grantAdminFor = 'alice'" in resp.text
+    assert "revokeAdminFor = 'bob'" in resp.text
+
+
+def test_share_users_grant_admin_passes_session_user_and_password(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(nasusers, "grant_admin_access", lambda u, s, p: calls.append((u, s, p)))
+    resp = client.post(
+        "/share-users/alice/admin/grant", data={"confirm_password": "mypw"}, follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert calls == [("alice", "testuser", "mypw")]
+
+
+def test_share_users_grant_admin_surfaces_error(client, monkeypatch):
+    def refuse(u, s, p):
+        raise nasusers.ShareUserError("Mot de passe incorrect - action annulee par securite.")
+    monkeypatch.setattr(nasusers, "grant_admin_access", refuse)
+    monkeypatch.setattr(nasusers, "list_share_users", lambda: [])
+    monkeypatch.setattr(nasusers, "list_assignable_groups", lambda: [])
+    resp = client.post("/share-users/alice/admin/grant", data={"confirm_password": "wrong"})
+    assert resp.status_code == 400
+    assert "Mot de passe incorrect" in resp.text
+
+
+def test_share_users_revoke_admin(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(nasusers, "revoke_admin_access", lambda u, s, p: calls.append((u, s, p)))
+    resp = client.post(
+        "/share-users/bob/admin/revoke", data={"confirm_password": "mypw"}, follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert calls == [("bob", "testuser", "mypw")]
+
+
+def test_share_users_revoke_admin_self_blocked(client, monkeypatch):
+    def refuse(u, s, p):
+        raise nasusers.ShareUserError(
+            "Impossible de retirer l'acces admin de ton propre compte actuellement connecte."
+        )
+    monkeypatch.setattr(nasusers, "revoke_admin_access", refuse)
+    monkeypatch.setattr(nasusers, "list_share_users", lambda: [])
+    monkeypatch.setattr(nasusers, "list_assignable_groups", lambda: [])
+    resp = client.post("/share-users/testuser/admin/revoke", data={"confirm_password": "mypw"})
+    assert resp.status_code == 400
+    assert "propre compte" in resp.text

@@ -124,6 +124,21 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
   exécutables sont une liste blanche côté serveur (`app/dockerops.py`) :
   le navigateur envoie une clé d'action, jamais une commande — livré, en
   attente de test réel.
+- Phase 9b : un compte de partage peut désormais recevoir l'accès admin à
+  l'interface (groupe `nasadmin`), avec des garde-fous. C'est une action
+  dédiée, jamais un effet de bord d'une modification de profil : une
+  fenêtre explique que le compte pourra TOUT administrer (le shell
+  `nologin` n'empêche pas l'authentification PAM du site) et rappelle qu'un
+  mot de passe de partage circule plus facilement qu'un mot de passe
+  d'administration, puis exige de re-saisir le mot de passe de l'admin
+  connecté (vérifié via PAM), jamais celui du compte cible. Impossible de
+  retirer l'accès admin de son propre compte connecté. Les comptes
+  concernés portent un badge « ⚠ Accès admin » dans la liste, et une
+  nouvelle vérification de la météo de santé les signale sur le tableau de
+  bord. Corrige au passage un effet de bord : modifier le profil d'un
+  compte (`usermod -G` remplace tous les groupes secondaires) retirait
+  silencieusement son appartenance à `nasadmin` — livré, en attente de test
+  réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -233,7 +248,8 @@ Compose (y compris le nettoyage automatique en cas d'échec de création), l'ét
 (netplan, agrégats, wifi, application avec confirmation/retour arrière),
 la console Docker interactive, le stockage Docker (orphelins, arborescence),
 les actions Docker diffusées en direct (liste blanche, étapes, codes de
-sortie) et les routes web (422 tests).
+sortie), l'accès admin des comptes de partage (garde-fous, reconfirmation
+de mot de passe) et les routes web (442 tests).
 
 ## Développement
 
