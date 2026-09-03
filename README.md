@@ -56,8 +56,6 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
   fonctionnalités étaient volontairement exclues de la Phase 7a vu leur
   sensibilité (risque de coupure d'accès au NAS pour le réseau).
 
-Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
-→ doc `roadmap.md`).
 
 ## Stack
 
