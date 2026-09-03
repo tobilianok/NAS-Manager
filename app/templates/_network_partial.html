@@ -15,13 +15,13 @@
     </div>
     <div class="net-speeds">
       <div class="net-speed">
-        <span class="net-arrow">↓</span> {{ format_bitrate(iface.rx_bps) }}
+        <span class="net-arrow">↓</span> <span class="net-value">{{ format_bitrate(iface.rx_bps) }}</span>
         <svg class="sparkline" viewBox="0 0 100 24" preserveAspectRatio="none">
           <polyline points="{{ sparkline_points(iface.rx_history) }}" fill="none" stroke="#3b82f6" stroke-width="2"/>
         </svg>
       </div>
       <div class="net-speed">
-        <span class="net-arrow">↑</span> {{ format_bitrate(iface.tx_bps) }}
+        <span class="net-arrow">↑</span> <span class="net-value">{{ format_bitrate(iface.tx_bps) }}</span>
         <svg class="sparkline" viewBox="0 0 100 24" preserveAspectRatio="none">
           <polyline points="{{ sparkline_points(iface.tx_history) }}" fill="none" stroke="#22c55e" stroke-width="2"/>
         </svg>

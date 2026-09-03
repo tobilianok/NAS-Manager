@@ -2,6 +2,7 @@
 {% block title %}{{ stack.name }} - Docker - NAS Manager{% endblock %}
 {% block breadcrumb %}<a href="/docker">← Docker</a>{% endblock %}
 {% block content %}
+<div x-data="dockerRun('{{ stack.name }}')">
     <div class="top-row">
       <h1 style="display:flex; align-items:center; gap:.7rem;">
         {% if icon_url %}
@@ -73,15 +74,18 @@
     {% endif %}
 
     <div class="btn-row">
-      <form method="post" action="/docker/{{ stack.name }}/start" class="inline-form">
-        <button type="submit" class="btn-success">▶ Demarrer</button>
-      </form>
-      <form method="post" action="/docker/{{ stack.name }}/stop" class="inline-form">
-        <button type="submit" class="btn-warn">■ Arreter</button>
-      </form>
-      <form method="post" action="/docker/{{ stack.name }}/restart" class="inline-form">
-        <button type="submit" class="btn-muted">↻ Redemarrer</button>
-      </form>
+      <button type="button" class="btn-success" @click="run('start')">▶ Demarrer</button>
+      <button type="button" class="btn-warn" @click="run('stop')">■ Arreter</button>
+      <button type="button" class="btn-muted" @click="run('restart')">↻ Redemarrer</button>
+      <span class="btn-row-sep"></span>
+      <button type="button" class="btn-muted" @click="run('pull')">⬇ Pull</button>
+      <button type="button" class="btn-primary" @click="run('up')">▲ Up -d</button>
+    </div>
+    <div class="meta" style="margin-top:.5rem;">
+      Chaque action ouvre une fenetre avec les logs Docker en direct : elle se ferme toute
+      seule si tout s'est bien passe, et reste ouverte en cas d'erreur.
+      <strong>Pull</strong> telecharge les images sans rien redemarrer ;
+      <strong>Up -d</strong> applique la configuration et ne recree que ce qui a change.
     </div>
 
     <h2 class="section-title">Mises a jour d'image</h2>
@@ -116,10 +120,12 @@
         </tbody>
       </table>
       {% if updates.values() | select('equalto', 'maj_disponible') | list %}
-      <form method="post" action="/docker/{{ stack.name }}/update" style="margin-top:1rem;"
-            onsubmit="return confirm('Telecharger les nouvelles images et recreer les containers concernes ? Les volumes et bind-mounts sont preserves.');">
-        <button type="submit" class="btn-primary">⬇ Telecharger et recreer les containers</button>
-      </form>
+      <div class="btn-row" style="margin-top:1rem;">
+        <button type="button" class="btn-primary"
+                @click="run('update', 'Telecharger les nouvelles images et recreer les containers concernes ? Les volumes et bind-mounts sont preserves.')">
+          ⬇ Telecharger et recreer les containers
+        </button>
+      </div>
       {% endif %}
       {% endif %}
     </div>
@@ -143,4 +149,7 @@
     <div class="card">
       <a class="btn btn-danger" href="/docker/{{ stack.name }}/delete">Supprimer cette stack definitivement</a>
     </div>
+
+    {% include "_docker_run_modal.html" %}
+</div>
 {% endblock %}

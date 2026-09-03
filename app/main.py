@@ -16,7 +16,8 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app import (
     auth, disks, zfs, sysstats, smart as smart_module, replace_workflow, shares,
-    nasusers, dockerstacks, netstats, health, netconfig, dockerconsole, sysaccounts,
+    nasusers, dockerstacks, netstats, health, netconfig, dockerconsole, dockerops,
+    sysaccounts,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -1216,6 +1217,44 @@ def docker_console_page(request: Request, name: str, service: str, username: str
         "docker_console.html",
         {"request": request, "username": username, "stack": stack, "service": service},
     )
+
+
+@app.websocket("/ws/docker/{name}/run/{action}")
+async def docker_run_ws(websocket: WebSocket, name: str, action: str):
+    """Execute une action `docker compose` sur une stack en relayant sa
+    sortie EN DIRECT au navigateur (fenetre de logs). L'action est une cle
+    de liste blanche (cf. app/dockerops.py) : jamais une commande libre."""
+    username = websocket.session.get("username")
+    if not username:
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+
+    try:
+        async for event in dockerops.run_action(name, action):
+            await websocket.send_json(event)
+    except dockerops.DockerOpsError as exc:
+        await websocket.send_json({"type": "done", "ok": False, "code": -1, "text": str(exc)})
+    except WebSocketDisconnect:
+        # Le client a ferme la fenetre : run_action() a deja termine le
+        # processus Docker en cours via son gestionnaire d'annulation.
+        logger.info("Fenetre de logs Docker fermee pendant l'action '%s' sur '%s'", action, name)
+        return
+    except Exception:  # noqa: BLE001 - jamais laisser une exception muette cote client
+        logger.exception("Action Docker '%s' sur '%s' a plante", action, name)
+        try:
+            await websocket.send_json({
+                "type": "done", "ok": False, "code": -1,
+                "text": "Erreur interne pendant l'execution - voir les journaux du service.",
+            })
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        await websocket.close()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @app.websocket("/ws/docker/{name}/console/{service}")
