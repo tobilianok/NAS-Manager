@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}Agrandir {{ pool.name }} - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/pools/{{ pool.name }}">← {{ pool.name }}</a>{% endblock %}
+{% block content %}
+<div x-data="{ mode: '{{ 'raidz_expand' if options.raidz_groups and options.capability.raidz_expansion_ready else 'new_vdev' }}',
+               targetVdev: '{{ options.raidz_groups[0].name if options.raidz_groups else '' }}',
+               newType: '{{ options.allowed_new_types[0] if options.allowed_new_types else '' }}',
+               picked: [],
+               toggle(path) { const i = this.picked.indexOf(path); i === -1 ? this.picked.push(path) : this.picked.splice(i, 1); },
+               get needed() { return this.mode === 'raidz_expand' ? 1 : ({mirror: 2, raidz1: 3, raidz2: 4, raidz3: 5}[this.newType] || 2); } }">
+
+    <h1>Agrandir le pool "{{ pool.name }}"</h1>
+    <p class="intro">
+      Composition actuelle :
+      {% for g in pool.vdev_groups %}<span class="group-chip">{{ g.name }} ({{ g.disks | length }} disques)</span>{% endfor %}
+      &nbsp;— {{ (pool.size_bytes / (1000**3)) | round(1) }} GB au total, {{ pool.used_percent }}% utilisé.
+    </p>
+
+    {% if error %}<div class="msg msg-error">{{ error }}</div>{% endif %}
+
+    {% if expansion.in_progress %}
+    <div class="msg msg-warning">
+      Une extension est déjà en cours sur ce pool
+      {% if expansion.percent_done is not none %}({{ expansion.percent_done }}%){% endif %} —
+      une seule à la fois. <a href="/pools/{{ pool.name }}">Suivre la progression</a>.
+    </div>
+    {% endif %}
+
+    {% for note in options.notes %}
+    <div class="info-box">{{ note }}</div>
+    {% endfor %}
+
+    {% if options.capability.needs_pool_upgrade %}
+    <div class="card" style="border:1px solid var(--warning-bg);">
+      <h2 style="margin-top:0;">Activer l'extension RAIDZ sur ce pool</h2>
+      <p class="dim" style="line-height:1.6;">
+        Ta version de ZFS sait élargir un groupe RAIDZ, mais la fonctionnalité <code>raidz_expansion</code>
+        n'est pas activée sur ce pool (il a été créé avant). <code>zpool upgrade</code> l'active — ainsi
+        que les autres fonctionnalités en attente.
+      </p>
+      <div class="msg msg-warning">
+        <strong>Irréversible.</strong> Une fois mis à niveau, ce pool ne pourra plus être importé par une
+        version de ZFS plus ancienne. Ça n'a d'importance que si tu envisages de déplacer ces disques vers
+        une autre machine (ou un système plus ancien) — sur ce NAS, aucun impact.
+      </div>
+      <form method="post" action="/pools/{{ pool.name }}/upgrade">
+        <label for="confirm_name">Pour confirmer, retape le nom du pool</label>
+        <input type="text" id="confirm_name" name="confirm_name" placeholder="{{ pool.name }}" autocomplete="off" required>
+        <div class="btn-row">
+          <button type="submit" class="btn-warn">Mettre le pool à niveau</button>
+        </div>
+      </form>
+    </div>
+    {% endif %}
+
+    {% if options.blockers %}
+    <div class="card">
+      <h2 style="margin-top:0;">Extension impossible pour l'instant</h2>
+      <ul class="recap">
+        {% for blocker in options.blockers %}<li>{{ blocker }}</li>{% endfor %}
+      </ul>
+    </div>
+    {% else %}
+
+    <form method="post" action="/pools/{{ pool.name }}/expand/plan">
+      <input type="hidden" name="mode" :value="mode">
+      <input type="hidden" name="target_vdev" :value="targetVdev">
+      <input type="hidden" name="new_type" :value="newType">
+      <input type="hidden" name="selected_disks" :value="picked.join(',')">
+
+      <h2 class="section-title">Comment agrandir</h2>
+      <div class="card">
+        {% if options.raidz_groups and options.capability.raidz_expansion_ready %}
+        <label class="expand-choice" :class="mode === 'raidz_expand' ? 'expand-choice-on' : ''">
+          <input type="radio" value="raidz_expand" x-model="mode">
+          <span>
+            <strong>Élargir un groupe RAIDZ existant</strong> — ajoute <strong>un</strong> disque au groupe
+            choisi. Le pool reste utilisable pendant toute l'opération, et ZFS reprend où il en était après
+            un redémarrage.
+            <span class="dim">C'est la façon la plus simple d'agrandir, et celle qui gaspille le moins de disques.</span>
+          </span>
+        </label>
+
+        <div x-show="mode === 'raidz_expand'" style="margin:.6rem 0 1rem 1.8rem;">
+          <label>Groupe à élargir</label>
+          <select x-model="targetVdev">
+            {% for g in options.raidz_groups %}
+            <option value="{{ g.name }}">{{ g.name }} — {{ g.type }}, {{ g.disks | length }} disques</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% endif %}
+
+        {% if options.allowed_new_types %}
+        <label class="expand-choice" :class="mode === 'new_vdev' ? 'expand-choice-on' : ''">
+          <input type="radio" value="new_vdev" x-model="mode">
+          <span>
+            <strong>Ajouter un groupe complet au pool</strong> — un nouveau vdev (paire en miroir, nouveau
+            groupe RAIDZ) qui s'ajoute aux groupes existants.
+            <span class="dim">Nécessaire pour agrandir un pool en miroir, et pratique pour ajouter beaucoup d'espace d'un coup.</span>
+          </span>
+        </label>
+
+        <div x-show="mode === 'new_vdev'" style="margin:.6rem 0 0 1.8rem;">
+          <label>Type du nouveau groupe</label>
+          <select x-model="newType">
+            {% for t in options.allowed_new_types %}
+            <option value="{{ t }}">{{ t }} — {{ {'mirror': '2 disques minimum, tolère 1 panne', 'raidz1': '3 disques minimum, tolère 1 panne', 'raidz2': '4 disques minimum, tolère 2 pannes', 'raidz3': '5 disques minimum, tolère 3 pannes'}[t] }}</option>
+            {% endfor %}
+          </select>
+          <div class="info-box" style="margin-top:.6rem;">
+            Seuls les types au moins aussi résistants que ton pool actuel sont proposés
+            {% if options.min_redundancy %}(il tolère actuellement {{ options.min_redundancy }} panne(s) par groupe){% endif %} :
+            ajouter un groupe plus fragile — ou pire, un disque seul — rendrait <strong>tout</strong> le pool
+            dépendant de ce maillon faible.
+          </div>
+        </div>
+        {% endif %}
+      </div>
+
+      <h2 class="section-title">Disques à ajouter</h2>
+      <div class="card">
+        <p class="dim" style="margin-top:0;">
+          Sélectionne <span x-text="mode === 'raidz_expand' ? 'un disque' : 'les disques'"></span> à intégrer.
+          Seuls les disques libres apparaissent : ceux qui portent le système ou appartiennent déjà à un pool
+          ne sont jamais proposés.
+        </p>
+        <div class="disk-grid">
+          {% for d in options.available_disks %}
+          <label class="disk-card" :class="picked.includes('{{ d.path }}') ? 'disk-card-on' : ''">
+            <input type="checkbox" :checked="picked.includes('{{ d.path }}')" @change="toggle('{{ d.path }}')">
+            <span>
+              <strong>{{ d.path }}</strong>
+              <span class="dim">{{ format_bytes(d.size_bytes) }}{% if d.model %} · {{ d.model }}{% endif %}{% if d.rota == false %} · SSD{% endif %}</span>
+            </span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button type="submit" class="btn-primary" :disabled="picked.length < needed"
+                x-text="picked.length < needed ? ('Sélectionne ' + needed + ' disque(s)') : `Vérifier avant d'agrandir`"></button>
+        <a class="btn btn-cancel" href="/pools/{{ pool.name }}">Annuler</a>
+      </div>
+      <div class="meta" style="margin-top:.6rem;">
+        Rien n'est modifié à cette étape : la prochaine page te montre exactement la commande ZFS qui sera
+        lancée et le résultat de l'essai à blanc.
+      </div>
+    </form>
+    {% endif %}
+
+    <details class="glossary">
+      <summary>Ce qu'il faut savoir avant d'agrandir un pool</summary>
+      <p><strong>Élargir un RAIDZ ne libère pas l'espace d'un coup.</strong> Les données déjà écrites gardent leur ancien ratio de parité : après être passé d'un RAIDZ1 de 3 disques à 4, tu ne retrouves pas immédiatement l'espace utile d'un RAIDZ1 de 4. L'espace se libère progressivement, à mesure que les données sont réécrites. C'est le fonctionnement normal de la fonctionnalité, pas un défaut.</p>
+      <p><strong>C'est irréversible.</strong> On ne retire pas un disque d'un groupe RAIDZ, ni un groupe d'un pool. Réfléchis au type de groupe avant, pas après.</p>
+      <p><strong>Le pool reste utilisable</strong> pendant toute l'opération : tes partages et tes containers continuent de fonctionner. L'extension peut durer plusieurs heures sur un gros pool, et reprend toute seule après un redémarrage.</p>
+      <p><strong>Une sauvegarde reste le vrai filet.</strong> Ces opérations sont conçues pour préserver les données, et NAS Manager refuse d'agir sur un pool qui n'est pas sain, sans jamais forcer ZFS. Mais aucune opération sur un pool n'est à risque strictement nul : si ces données comptent, elles doivent exister ailleurs aussi.</p>
+    </details>
+</div>
+{% endblock %}

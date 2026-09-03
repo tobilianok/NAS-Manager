@@ -158,6 +158,28 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
   stacks sont recréées mais pas démarrées. Extraction protégée contre les
   chemins absolus, les `..`, les liens symboliques et les archives
   anormalement volumineuses — livré, en attente de test réel.
+- Phase 10 : agrandissement d'un pool ZFS existant, sans perte de données.
+  Deux opérations, et deux seulement : **élargir un groupe RAIDZ** en lui
+  ajoutant UN disque (`zpool attach`, extension RAIDZ d'OpenZFS 2.3+ — le
+  pool reste utilisable pendant toute l'opération, et ZFS reprend où il en
+  était après un redémarrage), ou **ajouter un groupe complet** au pool
+  (`zpool add mirror|raidzN ...`, seul moyen d'agrandir un pool en miroir,
+  qui ne grandit pas en recevant un disque de plus). Ce qui n'est **jamais**
+  proposé : ajouter un disque nu à un pool redondant — `zpool add tank
+  /dev/sdX` fonctionne et crée une grappe sans redondance dont la perte
+  emporterait tout le pool ; le module refuse catégoriquement tout groupe
+  moins redondant que l'existant, et aucune commande n'utilise `-f`.
+  Vérifications avant d'agir : pool sain uniquement (jamais pendant un
+  resilver ni une autre extension), disques revalidés en direct (jamais
+  un disque système ni déjà membre d'un pool), taille comparée à celle des
+  disques en place, essai à blanc `zpool -n` quand la version le permet
+  (et signalé honnêtement quand elle ne le permet pas), puis recalcul
+  complet du plan au moment du clic. L'interface dit avant, pas après, que
+  les données déjà écrites conservent leur ancien ratio de parité :
+  l'espace utile se libère progressivement. Suivi de progression en direct
+  sur la page du pool, et bouton de `zpool upgrade` (avec re-saisie du nom)
+  quand la fonctionnalité `raidz_expansion` dort sur un pool créé avant —
+  livré, en attente de test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -269,7 +291,9 @@ les actions Docker diffusées en direct (liste blanche, étapes, codes de
 sortie), l'accès admin des comptes de partage (garde-fous, reconfirmation
 de mot de passe), la sauvegarde/restauration de configuration (contenu de
 l'archive, refus des archives piégées, restauration sélective) et les
-routes web (475 tests).
+routes web, et l'agrandissement de pool (refus des configurations qui
+affaibliraient la redondance, essai à blanc, recalcul avant exécution)
+(521 tests).
 
 ## Développement
 

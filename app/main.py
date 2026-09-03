@@ -22,7 +22,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app import (
     auth, disks, zfs, sysstats, smart as smart_module, replace_workflow, shares,
     nasusers, dockerstacks, netstats, health, netconfig, dockerconsole, dockerops,
-    sysaccounts, configbackup,
+    sysaccounts, configbackup, poolexpand,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -240,8 +240,144 @@ def pool_detail(request: Request, name: str, username: str = Depends(require_log
         {
             "request": request, "username": username, "pool": pool,
             "replacement_state": replacement_state, "step_label": step_label,
+            "expansion": poolexpand.get_expansion_status(name),
+            "capability": poolexpand.get_capability(name),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Agrandissement d'un pool existant (Phase 10)
+# ---------------------------------------------------------------------------
+
+@app.get("/pools/{name}/expand", response_class=HTMLResponse)
+def pool_expand_form(request: Request, name: str, username: str = Depends(require_login)):
+    try:
+        options = poolexpand.get_options(name)
+    except poolexpand.PoolExpandError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return templates.TemplateResponse(
+        "pool_expand.html",
+        {
+            "request": request, "username": username, "options": options,
+            "pool": options.pool, "expansion": poolexpand.get_expansion_status(name),
+            "format_bytes": sysstats.format_bytes, "error": None,
+        },
+    )
+
+
+@app.post("/pools/{name}/expand/plan", response_class=HTMLResponse)
+def pool_expand_plan(
+    request: Request, name: str, username: str = Depends(require_login),
+    mode: str = Form(...), selected_disks: str = Form(""),
+    target_vdev: str = Form(""), new_type: str = Form(""),
+):
+    """Etape de verification : valide tout, tente l'essai a blanc ZFS, et
+    affiche le recapitulatif. Ne touche jamais au pool."""
+    plan = poolexpand.plan_expansion(
+        name, mode, _parse_disk_list(selected_disks),
+        target_vdev=target_vdev or None, new_type=new_type or None,
+    )
+    if not plan.ok:
+        try:
+            options = poolexpand.get_options(name)
+        except poolexpand.PoolExpandError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return templates.TemplateResponse(
+            "pool_expand.html",
+            {
+                "request": request, "username": username, "options": options,
+                "pool": options.pool, "expansion": poolexpand.get_expansion_status(name),
+                "format_bytes": sysstats.format_bytes, "error": " ".join(plan.errors),
+            },
+            status_code=400,
+        )
+    return templates.TemplateResponse(
+        "pool_expand_confirm.html",
+        {"request": request, "username": username, "plan": plan, "pool_name": name},
+    )
+
+
+@app.post("/pools/{name}/expand/apply", response_class=HTMLResponse)
+def pool_expand_apply(
+    request: Request, name: str, username: str = Depends(require_login),
+    mode: str = Form(...), selected_disks: str = Form(""),
+    target_vdev: str = Form(""), new_type: str = Form(""),
+):
+    """Execution. Le plan est INTEGRALEMENT recalcule ici : on ne fait
+    jamais confiance a ce que le formulaire renvoie, et la situation a pu
+    changer depuis l'affichage du recapitulatif."""
+    plan = poolexpand.plan_expansion(
+        name, mode, _parse_disk_list(selected_disks),
+        target_vdev=target_vdev or None, new_type=new_type or None,
+    )
+    error = None
+    if not plan.ok:
+        error = " ".join(plan.errors)
+    else:
+        try:
+            poolexpand.apply_expansion(plan)
+        except poolexpand.PoolExpandError as exc:
+            error = str(exc)
+
+    if error:
+        try:
+            options = poolexpand.get_options(name)
+        except poolexpand.PoolExpandError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return templates.TemplateResponse(
+            "pool_expand.html",
+            {
+                "request": request, "username": username, "options": options,
+                "pool": options.pool, "expansion": poolexpand.get_expansion_status(name),
+                "format_bytes": sysstats.format_bytes, "error": error,
+            },
+            status_code=400,
+        )
+    return RedirectResponse(f"/pools/{name}", status_code=302)
+
+
+@app.get("/partials/pools/{name}/expansion", response_class=HTMLResponse)
+def partial_pool_expansion(request: Request, name: str, username: str = Depends(require_login)):
+    """Progression de l'extension, rafraichie par HTMX (meme principe que le
+    suivi de resilver de la Phase 3)."""
+    return templates.TemplateResponse(
+        "_expansion_partial.html",
+        {"request": request, "expansion": poolexpand.get_expansion_status(name), "pool_name": name},
+    )
+
+
+@app.post("/pools/{name}/upgrade", response_class=HTMLResponse)
+def pool_upgrade(
+    request: Request, name: str, username: str = Depends(require_login),
+    confirm_name: str = Form(...),
+):
+    """Active les fonctionnalites ZFS en attente sur le pool (necessaire
+    pour l'extension RAIDZ sur un pool cree avant). IRREVERSIBLE : retype du
+    nom exige, comme pour les autres operations sans retour arriere."""
+    error = None
+    if confirm_name.strip() != name:
+        error = "Le nom tape ne correspond pas au pool - rien n'a ete modifie."
+    else:
+        try:
+            poolexpand.upgrade_pool(name)
+        except poolexpand.PoolExpandError as exc:
+            error = str(exc)
+    if error:
+        try:
+            options = poolexpand.get_options(name)
+        except poolexpand.PoolExpandError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return templates.TemplateResponse(
+            "pool_expand.html",
+            {
+                "request": request, "username": username, "options": options,
+                "pool": options.pool, "expansion": poolexpand.get_expansion_status(name),
+                "format_bytes": sysstats.format_bytes, "error": error,
+            },
+            status_code=400,
+        )
+    return RedirectResponse(f"/pools/{name}/expand", status_code=302)
 
 
 def _parse_disk_list(raw: str) -> list[str]:
