@@ -507,8 +507,14 @@ tr.worrying td { color: var(--warning-text); }
 .net-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: .6rem; }
 .net-speeds { display: flex; flex-direction: column; gap: .5rem; }
 .net-speed { display: flex; align-items: center; gap: .5rem; font-size: .85rem; font-weight: 600; position: relative; }
-.net-arrow { color: var(--text-muted); font-weight: 700; width: 1rem; }
-.sparkline { width: 90px; height: 24px; margin-left: auto; flex-shrink: 0; }
+.net-arrow { color: var(--text-muted); font-weight: 700; width: 1rem; flex-shrink: 0; }
+/* Largeur fixe pour la valeur : sans ca les deux courbes (descendant /
+   montant) ne demarrent pas au meme x selon le debit affiche. */
+.net-value { min-width: 6.2rem; flex-shrink: 0; }
+/* La courbe occupe TOUTE la place restante de la carte (avant : 90px figes
+   pousses a droite par margin-left:auto, donc un graphe minuscule colle au
+   bord des qu'une seule carte occupait toute la ligne). */
+.sparkline { flex: 1 1 auto; width: 100%; min-width: 60px; height: 28px; display: block; }
 .net-card-detail { margin-top: .6rem; font-size: .78rem; color: var(--danger-text); }
 
 /* ---------------------------------------------------------------------
@@ -601,6 +607,41 @@ tr.worrying td { color: var(--warning-text); }
   display: inline-block; background: var(--surface-alt); border: 1px solid var(--border-soft);
   border-radius: 999px; padding: .1rem .6rem; font-size: .75rem; color: var(--text-muted); margin: 0 .25rem .25rem 0;
 }
+
+/* ---------------------------------------------------------------------
+   Fenetre de logs en direct des actions Docker (Phase 9a)
+   --------------------------------------------------------------------- */
+
+.btn-row-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 .3rem; }
+
+.run-overlay .run-box { max-width: 900px; padding: 1.3rem 1.5rem; display: flex; flex-direction: column; }
+.run-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.run-head h2 { margin: 0; font-size: 1rem; font-family: ui-monospace, monospace; }
+.run-sub { font-size: .8rem; color: var(--text-muted); margin-top: .3rem; max-width: 60ch; line-height: 1.5; }
+.run-state .badge { display: inline-flex; align-items: center; gap: .4rem; white-space: nowrap; }
+
+.run-spinner {
+  width: .7rem; height: .7rem; border-radius: 50%;
+  border: 2px solid currentColor; border-top-color: transparent;
+  display: inline-block; animation: run-spin .8s linear infinite;
+}
+@keyframes run-spin { to { transform: rotate(360deg); } }
+
+.run-log {
+  margin: 1rem 0 0; padding: .9rem 1.1rem; background: #050810;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  height: 48vh; min-height: 220px; overflow-y: auto;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: .8rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+  color: #cbd5e1;
+}
+.run-line { display: block; }
+.run-step { color: #93c5fd; font-weight: 600; }
+.run-ok { color: #86efac; font-weight: 600; }
+.run-err { color: #fca5a5; font-weight: 600; }
+
+.run-foot { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: .9rem; flex-wrap: wrap; }
+.run-hint { font-size: .78rem; color: var(--text-muted); }
 
 /* ---------------------------------------------------------------------
    Stockage Docker : entrees (datasets / dossiers / orphelins) + arborescence

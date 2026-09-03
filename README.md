@@ -107,6 +107,23 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
   stack enregistrée) et retrait du registre des fantômes. Bandeau d'alerte
   sur la liste des stacks quand des orphelins existent — livré, en attente
   de test réel.
+- Phase 9a : correction du graphe de débit réseau (il restait figé à 90 px
+  collé à droite au lieu d'occuper la largeur de la carte ; les deux
+  courbes descendant/montant sont désormais alignées sur la même colonne),
+  et surtout **actions Docker avec logs en direct** : boutons
+  `⬇ Pull` (`docker compose pull`) et `▲ Up -d` (`docker compose up -d`)
+  sur le détail d'une stack, qui ouvrent une fenêtre affichant la sortie de
+  Docker ligne par ligne pendant l'exécution (WebSocket, même mécanisme que
+  la console interactive). La fenêtre se ferme toute seule 3 s après un
+  succès et rafraîchit l'état des containers ; en cas d'échec elle reste
+  ouverte avec le code de sortie, les logs complets et un bouton « Copier
+  les logs ». La fermeture est bloquée pendant l'exécution (ni clic
+  extérieur ni Échap) pour ne jamais couper une commande en cours. Les
+  actions existantes (démarrer / arrêter / redémarrer / mettre à jour)
+  passent par la même fenêtre au lieu d'être muettes. Les commandes
+  exécutables sont une liste blanche côté serveur (`app/dockerops.py`) :
+  le navigateur envoie une clé d'action, jamais une commande — livré, en
+  attente de test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -214,8 +231,9 @@ les comptes de partage (profil, avatar), les comptes système/sudo et les
 groupes Linux (garde-fous d'auto-verrouillage inclus), les stacks Docker
 Compose (y compris le nettoyage automatique en cas d'échec de création), l'état réseau, la météo de santé/sécurité, la configuration réseau
 (netplan, agrégats, wifi, application avec confirmation/retour arrière),
-la console Docker interactive, le stockage Docker (orphelins, arborescence)
-et les routes web (404 tests).
+la console Docker interactive, le stockage Docker (orphelins, arborescence),
+les actions Docker diffusées en direct (liste blanche, étapes, codes de
+sortie) et les routes web (422 tests).
 
 ## Développement
 

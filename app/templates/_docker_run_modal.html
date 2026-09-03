@@ -1,0 +1,140 @@
+{# Fenetre de logs en direct pour les actions `docker compose` (Phase 9a).
+   S'utilise depuis n'importe quelle page enveloppee dans
+   x-data="dockerRun('<nom de la stack>')" : les boutons appellent
+   run('<action>'), et cette fenetre s'occupe du reste. #}
+<div class="modal-overlay run-overlay" x-show="open" x-cloak
+     @keydown.escape.window="if (!running) close()">
+  <div class="modal-box run-box" @click.outside="if (!running) close()">
+    <div class="run-head">
+      <div>
+        <h2 x-text="title"></h2>
+        <div class="run-sub" x-text="description"></div>
+      </div>
+      <div class="run-state">
+        <template x-if="running">
+          <span class="badge badge-neutral"><span class="run-spinner"></span> en cours…</span>
+        </template>
+        <template x-if="!running && ok === true">
+          <span class="badge badge-ok">✅ termine</span>
+        </template>
+        <template x-if="!running && ok === false">
+          <span class="badge badge-danger">❌ echec<span x-show="code > 0" x-text="' (code ' + code + ')'"></span></span>
+        </template>
+      </div>
+    </div>
+
+    <pre class="run-log" x-ref="log"><template x-for="l in lines" :key="l.id"><span
+      :class="'run-line run-' + l.kind" x-text="l.text + '\n'"></span></template></pre>
+
+    <div class="run-foot">
+      <div class="run-hint">
+        <span x-show="running">Fermeture bloquee pendant l'execution — on ne coupe pas une commande en cours.</span>
+        <span x-show="!running && ok === true">Fermeture automatique dans <span x-text="countdown"></span> s…</span>
+        <span x-show="!running && ok === false">La fenetre reste ouverte pour que tu puisses lire l'erreur.</span>
+      </div>
+      <div class="actions" style="margin:0;">
+        <button type="button" class="btn-muted btn-sm" @click="copyLogs()" x-show="lines.length" x-text="copied ? 'Copie ✓' : 'Copier les logs'"></button>
+        <button type="button" class="btn-muted btn-sm" @click="close()" :disabled="running">Fermer</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function dockerRun(stackName) {
+  return {
+    open: false, running: false, ok: null, code: 0,
+    title: '', description: '', lines: [], seq: 0,
+    countdown: 0, copied: false, ws: null, timer: null,
+
+    run(action, confirmText) {
+      if (this.running) return;
+      if (confirmText && !window.confirm(confirmText)) return;
+      this.open = true; this.running = true; this.ok = null; this.code = 0;
+      this.lines = []; this.seq = 0; this.copied = false;
+      this.title = action; this.description = '';
+      if (this.timer) { clearInterval(this.timer); this.timer = null; }
+
+      var proto = (location.protocol === 'https:') ? 'wss://' : 'ws://';
+      var url = proto + location.host + '/ws/docker/' + encodeURIComponent(stackName) +
+                '/run/' + encodeURIComponent(action);
+      var self = this;
+      var ws = new WebSocket(url);
+      this.ws = ws;
+
+      ws.onmessage = function (ev) {
+        var msg;
+        try { msg = JSON.parse(ev.data); } catch (e) { return; }
+        if (msg.type === 'meta') {
+          self.title = msg.label || self.title;
+          self.description = msg.description || '';
+        } else if (msg.type === 'done') {
+          self.push(msg.text, msg.ok ? 'ok' : 'err');
+          self.finish(msg.ok, msg.code);
+        } else {
+          self.push(msg.text, msg.type);
+        }
+      };
+      ws.onclose = function () {
+        if (self.running) {
+          self.push('-- connexion interrompue avant la fin --', 'err');
+          self.finish(false, -1);
+        }
+      };
+      ws.onerror = function () {
+        if (self.running) { self.push('-- erreur de connexion --', 'err'); }
+      };
+    },
+
+    push(text, kind) {
+      if (text === undefined || text === null) return;
+      this.lines.push({ id: this.seq++, text: text, kind: kind || 'out' });
+      var box = this.$refs.log;
+      if (box) { this.$nextTick(function () { box.scrollTop = box.scrollHeight; }); }
+    },
+
+    finish(ok, code) {
+      this.running = false; this.ok = !!ok; this.code = code || 0;
+      if (this.ws) { try { this.ws.close(); } catch (e) {} this.ws = null; }
+      if (!ok) return;               // en cas d'echec : on laisse lire
+      this.countdown = 3;
+      var self = this;
+      this.timer = setInterval(function () {
+        self.countdown -= 1;
+        if (self.countdown <= 0) { clearInterval(self.timer); self.timer = null; self.close(); }
+      }, 1000);
+    },
+
+    copyLogs() {
+      var text = this.lines.map(function (l) { return l.text; }).join('\n');
+      var self = this;
+      var done = function () { self.copied = true; setTimeout(function () { self.copied = false; }, 2000); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { self.fallbackCopy(text, done); });
+      } else {
+        this.fallbackCopy(text, done);
+      }
+    },
+
+    fallbackCopy(text, done) {
+      // navigator.clipboard n'existe pas hors contexte securise sur certains
+      // navigateurs : on retombe sur la vieille methode plutot que d'echouer.
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', '');
+      ta.style.position = 'absolute'; ta.style.left = '-9999px';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) {}
+      document.body.removeChild(ta);
+    },
+
+    close() {
+      if (this.running) return;      // jamais pendant l'execution
+      if (this.timer) { clearInterval(this.timer); this.timer = null; }
+      this.open = false;
+      // L'etat reel des containers a pu changer : on relit la page plutot
+      // que d'afficher un tableau perime.
+      location.reload();
+    },
+  };
+}
+</script>
