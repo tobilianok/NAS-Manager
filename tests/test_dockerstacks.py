@@ -12,6 +12,13 @@ def isolated_registry(tmp_path, monkeypatch):
     return registry
 
 
+@pytest.fixture
+def isolated_icons(tmp_path, monkeypatch):
+    icon_dir = tmp_path / "docker_icons"
+    monkeypatch.setattr(dockerstacks, "ICON_DIR", icon_dir)
+    return icon_dir
+
+
 def _fake_pool(name="tank"):
     return zfs.Pool(
         name=name, size_bytes=1000, alloc_bytes=100, free_bytes=900,
@@ -394,6 +401,91 @@ def test_pull_and_recreate_failure_on_pull(isolated_registry, tmp_path, monkeypa
     monkeypatch.setattr(dockerstacks, "_run", lambda cmd, input_text=None, timeout=None: (1, "", "pas de reseau"))
     with pytest.raises(dockerstacks.DockerStackError, match="telechargement"):
         dockerstacks.pull_and_recreate("myapp")
+
+
+# ---------------------------------------------------------------------------
+# Icones personnalisees
+# ---------------------------------------------------------------------------
+
+def _register_icon_stack(isolated_registry, name="myapp"):
+    stack = dockerstacks.Stack(name=name, pool="tank", dataset=f"tank/docker/{name}", directory="/tank/docker/" + name)
+    dockerstacks._save_registry([stack])
+    return stack
+
+
+def test_get_icon_path_none_when_no_dir(isolated_registry, isolated_icons):
+    _register_icon_stack(isolated_registry)
+    assert dockerstacks.get_icon_path("myapp") is None
+
+
+def test_save_icon_rejects_unknown_stack(isolated_registry, isolated_icons):
+    with pytest.raises(dockerstacks.DockerIconError, match="n'existe pas"):
+        dockerstacks.save_icon("ghost", "logo.png", b"fake-bytes")
+
+
+def test_save_icon_rejects_empty_content(isolated_registry, isolated_icons):
+    _register_icon_stack(isolated_registry)
+    with pytest.raises(dockerstacks.DockerIconError, match="vide"):
+        dockerstacks.save_icon("myapp", "logo.png", b"")
+
+
+def test_save_icon_rejects_bad_extension(isolated_registry, isolated_icons):
+    _register_icon_stack(isolated_registry)
+    with pytest.raises(dockerstacks.DockerIconError, match="non supporte"):
+        dockerstacks.save_icon("myapp", "logo.exe", b"fake-bytes")
+
+
+def test_save_icon_rejects_oversized_file(isolated_registry, isolated_icons):
+    _register_icon_stack(isolated_registry)
+    too_big = b"x" * (dockerstacks.ICON_MAX_BYTES + 1)
+    with pytest.raises(dockerstacks.DockerIconError, match="volumineuse"):
+        dockerstacks.save_icon("myapp", "logo.png", too_big)
+
+
+def test_save_icon_success_and_get_path(isolated_registry, isolated_icons):
+    _register_icon_stack(isolated_registry)
+    dockerstacks.save_icon("myapp", "logo.png", b"fake-png-bytes")
+
+    path = dockerstacks.get_icon_path("myapp")
+    assert path is not None
+    assert path.name == "myapp.png"
+    assert path.read_bytes() == b"fake-png-bytes"
+
+
+def test_save_icon_replaces_previous_extension(isolated_registry, isolated_icons):
+    _register_icon_stack(isolated_registry)
+    dockerstacks.save_icon("myapp", "logo.png", b"first")
+    dockerstacks.save_icon("myapp", "logo.svg", b"<svg/>")
+
+    icons = list(isolated_icons.iterdir())
+    assert len(icons) == 1
+    assert icons[0].name == "myapp.svg"
+
+
+def test_delete_icon_removes_file(isolated_registry, isolated_icons):
+    _register_icon_stack(isolated_registry)
+    dockerstacks.save_icon("myapp", "logo.png", b"first")
+    assert dockerstacks.get_icon_path("myapp") is not None
+
+    dockerstacks.delete_icon("myapp")
+    assert dockerstacks.get_icon_path("myapp") is None
+
+
+def test_delete_icon_noop_when_absent(isolated_registry, isolated_icons):
+    _register_icon_stack(isolated_registry)
+    dockerstacks.delete_icon("myapp")  # ne doit pas lever d'exception
+    assert dockerstacks.get_icon_path("myapp") is None
+
+
+def test_delete_stack_also_removes_icon(isolated_registry, isolated_icons, monkeypatch):
+    _register_icon_stack(isolated_registry)
+    dockerstacks.save_icon("myapp", "logo.png", b"first")
+
+    monkeypatch.setattr(dockerstacks, "_run", lambda *a, **k: (0, "", ""))
+    monkeypatch.setattr(zfs, "destroy_dataset", lambda dataset: "")
+
+    dockerstacks.delete_stack("myapp")
+    assert dockerstacks.get_icon_path("myapp") is None
 
 
 # ---------------------------------------------------------------------------

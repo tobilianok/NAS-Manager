@@ -1,0 +1,42 @@
+{# Fragment HTMX : rafraichi automatiquement (voir dashboard.html), pas de doctype/head/body ici. #}
+{% if not interfaces %}
+<div class="empty-state">Aucune carte reseau physique detectee.</div>
+{% else %}
+<div class="net-grid">
+  {% for iface in interfaces %}
+  <div class="net-card {{ 'net-down' if not iface.healthy }}">
+    <div class="net-card-top">
+      <strong>{{ iface.name }}</strong>
+      {% if iface.healthy %}
+        <span class="badge badge-ok">Active</span>
+      {% else %}
+        <span class="badge badge-danger">Hors service</span>
+      {% endif %}
+    </div>
+    <div class="net-speeds">
+      <div class="net-speed">
+        <span class="net-arrow">↓</span> {{ format_bitrate(iface.rx_bps) }}
+        <svg class="sparkline" viewBox="0 0 100 24" preserveAspectRatio="none">
+          <polyline points="{{ sparkline_points(iface.rx_history) }}" fill="none" stroke="#3b82f6" stroke-width="2"/>
+        </svg>
+      </div>
+      <div class="net-speed">
+        <span class="net-arrow">↑</span> {{ format_bitrate(iface.tx_bps) }}
+        <svg class="sparkline" viewBox="0 0 100 24" preserveAspectRatio="none">
+          <polyline points="{{ sparkline_points(iface.tx_history) }}" fill="none" stroke="#22c55e" stroke-width="2"/>
+        </svg>
+      </div>
+    </div>
+    {% if not iface.healthy %}
+    <div class="net-card-detail">
+      {% if iface.operstate == 'down' %}
+      Carte desactivee au niveau systeme (operstate = down).
+      {% else %}
+      Aucune liaison detectee (cable debranche, ou pas de point d'acces/reseau associe).
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}

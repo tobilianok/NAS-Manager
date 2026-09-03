@@ -47,26 +47,52 @@ def test_is_share_user(monkeypatch):
 
 def test_create_share_user_rejects_invalid_username(monkeypatch):
     with pytest.raises(nasusers.ShareUserError, match="invalide"):
-        nasusers.create_share_user("Al!ce", "longenoughpassword")
+        nasusers.create_share_user("Al!ce", "Longenough1Password!")
 
 
 def test_create_share_user_rejects_forbidden_username(monkeypatch):
     with pytest.raises(nasusers.ShareUserError, match="reserve"):
-        nasusers.create_share_user("root", "longenoughpassword")
+        nasusers.create_share_user("root", "Longenough1Password!")
 
 
 def test_create_share_user_rejects_short_password(monkeypatch):
     import pwd
     monkeypatch.setattr(pwd, "getpwnam", lambda name: (_ for _ in ()).throw(KeyError()))
-    with pytest.raises(nasusers.ShareUserError, match="8 caracteres"):
+    with pytest.raises(nasusers.ShareUserError, match="trop faible"):
         nasusers.create_share_user("alice", "short")
+
+
+def test_password_policy_lists_missing_requirements():
+    with pytest.raises(nasusers.ShareUserError) as excinfo:
+        nasusers.validate_password_strength("alllowercase")
+    message = str(excinfo.value)
+    assert "majuscule" in message
+    assert "chiffre" in message
+    assert "caractere special" in message
+
+
+def test_password_policy_accepts_strong_password():
+    # Ne doit lever aucune exception.
+    nasusers.validate_password_strength("Sup3r$ecret!")
+
+
+@pytest.mark.parametrize("password", [
+    "short1A!",       # trop court (< 10)
+    "nouppercase1!",  # pas de majuscule
+    "NOLOWERCASE1!",  # pas de minuscule
+    "NoDigitsHere!",  # pas de chiffre
+    "NoSpecial123",   # pas de caractere special
+])
+def test_password_policy_rejects_weak_passwords(password):
+    with pytest.raises(nasusers.ShareUserError, match="trop faible"):
+        nasusers.validate_password_strength(password)
 
 
 def test_create_share_user_rejects_existing_user(monkeypatch):
     import pwd
     monkeypatch.setattr(pwd, "getpwnam", lambda name: object())
     with pytest.raises(nasusers.ShareUserError, match="existe deja"):
-        nasusers.create_share_user("alice", "longenoughpassword")
+        nasusers.create_share_user("alice", "Longenough1Password!")
 
 
 def test_create_share_user_success(monkeypatch):
@@ -84,7 +110,7 @@ def test_create_share_user_success(monkeypatch):
         return R()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    nasusers.create_share_user("alice", "longenoughpassword")
+    nasusers.create_share_user("alice", "Longenough1Password!")
 
     cmds = [c[0] for c in calls]
     assert ["useradd", "--no-create-home", "--shell", "/usr/sbin/nologin", "--gid", "nasshares", "alice"] in cmds
@@ -115,7 +141,7 @@ def test_create_share_user_rolls_back_on_chpasswd_failure(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(nasusers.ShareUserError, match="mot de passe systeme"):
-        nasusers.create_share_user("alice", "longenoughpassword")
+        nasusers.create_share_user("alice", "Longenough1Password!")
 
     assert ["userdel", "alice"] in calls
 

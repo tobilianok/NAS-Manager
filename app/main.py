@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import mimetypes
 import os
 import subprocess
 from dataclasses import asdict
 
-from fastapi import FastAPI, Request, Form, Depends, HTTPException
-from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse
+from fastapi import FastAPI, Request, Form, Depends, HTTPException, File, UploadFile
+from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import auth, disks, zfs, sysstats, smart as smart_module, replace_workflow, shares, nasusers, dockerstacks
+from app import (
+    auth, disks, zfs, sysstats, smart as smart_module, replace_workflow, shares,
+    nasusers, dockerstacks, netstats, health,
+)
 
 BASE_DIR = os.path.dirname(__file__)
 
@@ -94,6 +98,28 @@ def _replacement_context() -> tuple[replace_workflow.ReplacementState | None, st
     return state, replace_workflow.STEP_LABELS.get(state.step, state.step)
 
 
+def _docker_dashboard_rows() -> list[dict]:
+    rows = []
+    for s in dockerstacks.list_stacks():
+        try:
+            containers = dockerstacks.get_stack_containers(s.name)
+        except dockerstacks.DockerStackError:
+            containers = []
+        running = sum(1 for c in containers if c.state == "running")
+        rows.append({
+            "stack": s, "running": running, "total": len(containers),
+            "has_icon": dockerstacks.get_icon_path(s.name) is not None,
+        })
+    return rows
+
+
+def _share_dashboard_rows() -> list[dict]:
+    return [
+        {"share": s, "usernames": [u.username for u in s.users]}
+        for s in shares.list_shares()
+    ]
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request, username: str = Depends(require_login)):
     disk_list = disks.list_disks()
@@ -111,6 +137,8 @@ def dashboard(request: Request, username: str = Depends(require_login)):
         {
             "request": request, "username": username, "disks": disk_list, "warning": warning,
             "replacement_state": replacement_state, "step_label": step_label,
+            "docker_rows": _docker_dashboard_rows(),
+            "share_rows": _share_dashboard_rows(),
         },
     )
 
@@ -134,6 +162,27 @@ def partial_sysstats(request: Request, username: str = Depends(require_login)):
             "uptime_label": sysstats.format_uptime(stats.uptime_seconds),
             "pools_with_alerts": pools_with_alerts,
         },
+    )
+
+
+@app.get("/partials/network", response_class=HTMLResponse)
+def partial_network(request: Request, username: str = Depends(require_login)):
+    interfaces = netstats.list_interfaces()
+    return templates.TemplateResponse(
+        "_network_partial.html",
+        {
+            "request": request, "interfaces": interfaces,
+            "format_bitrate": netstats.format_bitrate,
+            "sparkline_points": netstats.sparkline_points,
+        },
+    )
+
+
+@app.get("/partials/health", response_class=HTMLResponse)
+def partial_health(request: Request, username: str = Depends(require_login)):
+    return templates.TemplateResponse(
+        "_health_partial.html",
+        {"request": request, "report": health.get_report()},
     )
 
 
@@ -563,38 +612,49 @@ def partial_resilver(request: Request, username: str = Depends(require_login)):
 def share_users_list(request: Request, username: str = Depends(require_login), error: str | None = None):
     return templates.TemplateResponse(
         "share_users.html",
-        {"request": request, "username": username, "users": nasusers.list_share_users(), "error": error},
+        {
+            "request": request, "username": username, "users": nasusers.list_share_users(), "error": error,
+            "password_requirements": nasusers.PASSWORD_REQUIREMENTS_LABEL,
+        },
+    )
+
+
+def _render_share_users(request: Request, username: str, error: str, status_code: int = 400):
+    return templates.TemplateResponse(
+        "share_users.html",
+        {
+            "request": request, "username": username, "users": nasusers.list_share_users(), "error": error,
+            "password_requirements": nasusers.PASSWORD_REQUIREMENTS_LABEL,
+        },
+        status_code=status_code,
     )
 
 
 @app.post("/share-users", response_class=HTMLResponse)
 def share_users_create(
     request: Request, username: str = Depends(require_login),
-    new_username: str = Form(...), password: str = Form(...),
+    new_username: str = Form(...), password: str = Form(...), confirm_password: str = Form(...),
 ):
+    if password != confirm_password:
+        return _render_share_users(request, username, "Les deux mots de passe saisis ne correspondent pas.")
     try:
         nasusers.create_share_user(new_username, password)
     except nasusers.ShareUserError as exc:
-        return templates.TemplateResponse(
-            "share_users.html",
-            {"request": request, "username": username, "users": nasusers.list_share_users(), "error": str(exc)},
-            status_code=400,
-        )
+        return _render_share_users(request, username, str(exc))
     return RedirectResponse("/share-users", status_code=302)
 
 
 @app.post("/share-users/{name}/password", response_class=HTMLResponse)
 def share_users_password(
-    request: Request, name: str, username: str = Depends(require_login), password: str = Form(...),
+    request: Request, name: str, username: str = Depends(require_login),
+    password: str = Form(...), confirm_password: str = Form(...),
 ):
+    if password != confirm_password:
+        return _render_share_users(request, username, "Les deux mots de passe saisis ne correspondent pas.")
     try:
         nasusers.set_share_user_password(name, password)
     except nasusers.ShareUserError as exc:
-        return templates.TemplateResponse(
-            "share_users.html",
-            {"request": request, "username": username, "users": nasusers.list_share_users(), "error": str(exc)},
-            status_code=400,
-        )
+        return _render_share_users(request, username, str(exc))
     return RedirectResponse("/share-users", status_code=302)
 
 
@@ -769,7 +829,10 @@ def docker_list(request: Request, username: str = Depends(require_login)):
             containers = dockerstacks.get_stack_containers(s.name)
         except dockerstacks.DockerStackError:
             containers = []
-        rows.append({"stack": s, "containers": containers})
+        rows.append({
+            "stack": s, "containers": containers,
+            "has_icon": dockerstacks.get_icon_path(s.name) is not None,
+        })
     return templates.TemplateResponse(
         "docker_stacks.html",
         {"request": request, "username": username, "rows": rows},
@@ -817,6 +880,7 @@ def _render_docker_detail(
         containers = []
         error = error or str(exc)
     compose_content = dockerstacks.get_compose_content(name)
+    icon_url = f"/docker/{name}/icon" if dockerstacks.get_icon_path(name) is not None else None
 
     return templates.TemplateResponse(
         "docker_detail.html",
@@ -824,6 +888,7 @@ def _render_docker_detail(
             "request": request, "username": username, "stack": stack,
             "containers": containers, "compose_content": compose_content,
             "error": error, "message": message, "updates": updates or {},
+            "icon_url": icon_url,
         },
         status_code=status_code,
     )
@@ -905,6 +970,33 @@ def docker_logs(request: Request, name: str, service: str, username: str = Depen
         "docker_logs.html",
         {"request": request, "username": username, "stack": stack, "service": service, "logs": logs},
     )
+
+
+@app.get("/docker/{name}/icon")
+def docker_icon(name: str, username: str = Depends(require_login)):
+    path = dockerstacks.get_icon_path(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Aucune icone pour cette stack.")
+    content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    return Response(content=path.read_bytes(), media_type=content_type)
+
+
+@app.post("/docker/{name}/icon", response_class=HTMLResponse)
+async def docker_icon_upload(
+    request: Request, name: str, username: str = Depends(require_login), icon: UploadFile = File(...),
+):
+    content = await icon.read()
+    try:
+        dockerstacks.save_icon(name, icon.filename or "icon", content)
+    except dockerstacks.DockerIconError as exc:
+        return _render_docker_detail(request, username, name, error=str(exc), status_code=400)
+    return _render_docker_detail(request, username, name, message="Icone mise a jour.")
+
+
+@app.post("/docker/{name}/icon/delete", response_class=HTMLResponse)
+def docker_icon_delete(request: Request, name: str, username: str = Depends(require_login)):
+    dockerstacks.delete_icon(name)
+    return _render_docker_detail(request, username, name, message="Icone supprimee.")
 
 
 @app.get("/docker/{name}/delete", response_class=HTMLResponse)

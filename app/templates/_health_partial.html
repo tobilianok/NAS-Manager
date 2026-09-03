@@ -1,0 +1,30 @@
+{# Fragment HTMX : rafraichi automatiquement (voir dashboard.html), pas de doctype/head/body ici. #}
+<div class="weather-card weather-{{ report.weather }}">
+  <div class="weather-icon">
+    {% if report.weather == 'beau' %}
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2.5M12 19v2.5M4.2 4.2l1.8 1.8M18 18l1.8 1.8M2.5 12h2.5M19 12h2.5M4.2 19.8l1.8-1.8M18 6l1.8-1.8"/></svg>
+    {% elif report.weather == 'nuageux' %}
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .5-7.97A5.5 5.5 0 0 0 7.1 9.5 4 4 0 0 0 7 18z"/></svg>
+    {% elif report.weather == 'orageux' %}
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16h9a4 4 0 0 0 .4-7.98A5.5 5.5 0 0 0 6.2 7.5 4 4 0 0 0 6 16z"/><path d="M11 16l-2 4M15 16l-2 4"/></svg>
+    {% else %}
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v.01M12 8a2.2 2.2 0 0 1 2.2 2.2c0 1.5-2.2 1.8-2.2 3.6"/></svg>
+    {% endif %}
+  </div>
+  <div class="weather-main">
+    <div class="weather-label">{{ report.weather_label }}</div>
+    <div class="weather-sub">Sante et securite globales du systeme</div>
+  </div>
+</div>
+
+<div class="weather-checks">
+  {% for c in report.checks %}
+  <div class="weather-check">
+    <span class="badge status-{{ c.level }}">{{ c.level }}</span>
+    <div>
+      <strong>{{ c.label }}</strong>
+      <div class="weather-check-detail">{{ c.detail }}</div>
+    </div>
+  </div>
+  {% endfor %}
+</div>

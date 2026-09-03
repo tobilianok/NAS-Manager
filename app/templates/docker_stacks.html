@@ -13,14 +13,21 @@
 
     {% for row in rows %}
     {% set running = row.containers | selectattr('state', 'equalto', 'running') | list | length %}
-    <a class="link-card" href="/docker/{{ row.stack.name }}">
-      <span class="item-title">{{ row.stack.name }}</span>
-      {% if running > 0 %}
-      <span class="badge badge-ok">{{ running }}/{{ row.containers | length }} en cours</span>
+    <a class="link-card" href="/docker/{{ row.stack.name }}" style="display:flex; align-items:center; gap:1rem;">
+      {% if row.has_icon %}
+      <img class="dash-item-icon" style="width:36px;height:36px;" src="/docker/{{ row.stack.name }}/icon" alt="">
       {% else %}
-      <span class="badge badge-neutral">Arretee ({{ row.containers | length }} container(s))</span>
+      <span class="dash-item-icon dash-item-icon-placeholder" style="width:36px;height:36px;font-size:1rem;">{{ row.stack.name[0] | upper }}</span>
       {% endif %}
-      <div class="meta" style="margin-top:.3rem;">{{ row.stack.directory }} · pool "{{ row.stack.pool }}"</div>
+      <div style="flex:1;">
+        <span class="item-title">{{ row.stack.name }}</span>
+        {% if running > 0 %}
+        <span class="badge badge-ok">{{ running }}/{{ row.containers | length }} en cours</span>
+        {% else %}
+        <span class="badge badge-neutral">Arretee ({{ row.containers | length }} container(s))</span>
+        {% endif %}
+        <div class="meta" style="margin-top:.3rem;">{{ row.stack.directory }} · pool "{{ row.stack.pool }}"</div>
+      </div>
     </a>
     {% endfor %}
 {% endblock %}

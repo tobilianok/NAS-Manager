@@ -13,6 +13,8 @@
     <div class="msg msg-error">{{ error }}</div>
     {% endif %}
 
+    <div class="info-box">Exigences de mot de passe : {{ password_requirements }}.</div>
+
     <table>
       <thead><tr><th>Compte</th><th>Changer le mot de passe</th><th></th></tr></thead>
       <tbody>
@@ -21,7 +23,8 @@
           <td>{{ u.username }}</td>
           <td>
             <form class="field-row" method="post" action="/share-users/{{ u.username }}/password">
-              <input type="password" name="password" placeholder="Nouveau mot de passe" minlength="8" required>
+              <input type="password" name="password" placeholder="Nouveau mot de passe" minlength="10" required>
+              <input type="password" name="confirm_password" placeholder="Confirmer" minlength="10" required>
               <button type="submit" class="btn-primary">Changer</button>
             </form>
           </td>
@@ -40,10 +43,11 @@
 
     <div class="card" style="margin-top:1.5rem;">
       <strong>Nouveau compte de partage</strong>
-      <form method="post" action="/share-users">
+      <form method="post" action="/share-users" onsubmit="return this.password.value === this.confirm_password.value || (alert('Les deux mots de passe ne correspondent pas.'), false);">
         <div class="field-row" style="margin-top:.6rem;">
           <input type="text" name="new_username" placeholder="nom d'utilisateur" pattern="[a-z][a-z0-9_-]{2,31}" required>
-          <input type="password" name="password" placeholder="mot de passe (8+ caracteres)" minlength="8" required>
+          <input type="password" name="password" placeholder="mot de passe" minlength="10" required>
+          <input type="password" name="confirm_password" placeholder="confirmer le mot de passe" minlength="10" required>
           <button type="submit" class="btn-primary">Creer</button>
         </div>
       </form>

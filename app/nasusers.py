@@ -30,9 +30,46 @@ USERNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{2,31}$")
 # improbable ou l'un d'eux se retrouverait dans le groupe nasshares.
 _FORBIDDEN_USERNAMES = {"root", "daemon", "bin", "sys", "nasadmin", "nasshares"}
 
+# Politique de complexite des mots de passe des comptes de partage : ce sont
+# des comptes systeme reels (authentification SMB/NFS), donc soumis aux
+# memes exigences qu'un compte "serieux" plutot qu'un simple minimum de
+# longueur.
+PASSWORD_MIN_LENGTH = 10
+PASSWORD_REQUIREMENTS_LABEL = (
+    f"{PASSWORD_MIN_LENGTH} caracteres minimum, avec au moins une majuscule, "
+    "une minuscule, un chiffre et un caractere special"
+)
+
 
 class ShareUserError(RuntimeError):
     pass
+
+
+def _password_policy_errors(password: str) -> list[str]:
+    errors = []
+    if len(password) < PASSWORD_MIN_LENGTH:
+        errors.append(f"au moins {PASSWORD_MIN_LENGTH} caracteres")
+    if not re.search(r"[a-z]", password):
+        errors.append("une minuscule")
+    if not re.search(r"[A-Z]", password):
+        errors.append("une majuscule")
+    if not re.search(r"[0-9]", password):
+        errors.append("un chiffre")
+    if not re.search(r"[^a-zA-Z0-9]", password):
+        errors.append("un caractere special")
+    return errors
+
+
+def validate_password_strength(password: str) -> None:
+    """Politique de complexite pour les comptes de partage. Leve
+    ShareUserError avec un message clair listant ce qui manque si le mot de
+    passe ne la respecte pas - a appeler AVANT toute creation/modification
+    reelle, jamais apres."""
+    errors = _password_policy_errors(password)
+    if errors:
+        raise ShareUserError(
+            "Mot de passe trop faible : il manque " + ", ".join(errors) + "."
+        )
 
 
 def _run(cmd: list[str], input_text: str | None = None) -> tuple[int, str, str]:
@@ -93,8 +130,9 @@ def create_share_user(username: str, password: str) -> None:
         raise ShareUserError(f"'{username}' est un nom reserve, choisis-en un autre.")
     if _user_exists(username):
         raise ShareUserError(f"Le compte '{username}' existe deja sur ce systeme.")
-    if not password or len(password) < 8:
-        raise ShareUserError("Le mot de passe doit faire au moins 8 caracteres.")
+    if not password:
+        raise ShareUserError("Le mot de passe ne peut pas etre vide.")
+    validate_password_strength(password)
 
     code, out, err = _run([
         "useradd", "--no-create-home", "--shell", "/usr/sbin/nologin",
@@ -119,8 +157,9 @@ def create_share_user(username: str, password: str) -> None:
 def set_share_user_password(username: str, password: str) -> None:
     if not is_share_user(username):
         raise ShareUserError(f"'{username}' n'est pas un compte de partage gere par NAS Manager.")
-    if not password or len(password) < 8:
-        raise ShareUserError("Le mot de passe doit faire au moins 8 caracteres.")
+    if not password:
+        raise ShareUserError("Le mot de passe ne peut pas etre vide.")
+    validate_password_strength(password)
 
     code, out, err = _run(["chpasswd"], input_text=f"{username}:{password}\n")
     if code != 0:

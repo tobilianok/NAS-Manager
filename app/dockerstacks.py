@@ -46,8 +46,20 @@ STACK_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 DATASET_PARENT = "docker"
 COMPOSE_FILENAME = "docker-compose.yml"
 
+# Icones personnalisees par stack (uploadees par l'utilisateur - PNG/SVG/
+# JPEG/WebP de l'icone officielle de l'application containerisee, par
+# exemple). Stockees a part du dataset de la stack : ce sont des metadonnees
+# de l'interface NAS Manager, pas des donnees de l'application elle-meme.
+ICON_DIR = STATE_DIR / "docker_icons"
+ICON_ALLOWED_EXTENSIONS = {".png", ".svg", ".jpg", ".jpeg", ".webp"}
+ICON_MAX_BYTES = 2 * 1024 * 1024  # 2 Mo - largement suffisant pour une icone
+
 
 class DockerStackError(RuntimeError):
+    pass
+
+
+class DockerIconError(RuntimeError):
     pass
 
 
@@ -246,6 +258,7 @@ def delete_stack(name: str) -> str:
 
     remaining = [s for s in _load_registry() if s.name != name]
     _save_registry(remaining)
+    delete_icon(name)  # aucune trace residuelle, meme principe que le reste de la suppression
 
     logger.warning("Stack Docker '%s' supprimee (dataset '%s' detruit)", name, stack.dataset)
     return out
@@ -381,6 +394,58 @@ def check_stack_updates(name: str) -> dict[str, str]:
     containers = get_stack_containers(name)
     images = sorted({c.image for c in containers if c.image})
     return {image: check_image_update(image) for image in images}
+
+
+# ---------------------------------------------------------------------------
+# Icones personnalisees (upload utilisateur, une par stack)
+# ---------------------------------------------------------------------------
+
+def _icon_path_for(name: str) -> Path | None:
+    """Retrouve le fichier d'icone existant pour une stack, quelle que soit
+    son extension d'origine, ou None si aucune icone n'a ete uploadee."""
+    if not ICON_DIR.exists():
+        return None
+    for ext in ICON_ALLOWED_EXTENSIONS:
+        candidate = ICON_DIR / f"{name}{ext}"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def get_icon_path(name: str) -> Path | None:
+    return _icon_path_for(name)
+
+
+def save_icon(name: str, filename: str, content: bytes) -> None:
+    if get_stack(name) is None:
+        raise DockerIconError(f"La stack '{name}' n'existe pas.")
+    if not content:
+        raise DockerIconError("Le fichier envoye est vide.")
+    if len(content) > ICON_MAX_BYTES:
+        raise DockerIconError("Icone trop volumineuse (2 Mo maximum).")
+
+    ext = Path(filename).suffix.lower()
+    if ext not in ICON_ALLOWED_EXTENSIONS:
+        raise DockerIconError(
+            "Format d'icone non supporte : utilise un PNG, SVG, JPEG ou WebP."
+        )
+
+    ICON_DIR.mkdir(parents=True, exist_ok=True)
+    # Retire toute icone precedente (extension potentiellement differente)
+    # avant d'ecrire la nouvelle, pour ne jamais en laisser deux a la fois.
+    existing = _icon_path_for(name)
+    if existing is not None:
+        existing.unlink(missing_ok=True)
+
+    (ICON_DIR / f"{name}{ext}").write_bytes(content)
+    logger.info("Icone mise a jour pour la stack '%s' (%s)", name, ext)
+
+
+def delete_icon(name: str) -> None:
+    existing = _icon_path_for(name)
+    if existing is not None:
+        existing.unlink(missing_ok=True)
+        logger.info("Icone supprimee pour la stack '%s'", name)
 
 
 def pull_and_recreate(name: str) -> str:

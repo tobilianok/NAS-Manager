@@ -3,9 +3,31 @@
 {% block breadcrumb %}<a href="/docker">← Docker</a>{% endblock %}
 {% block content %}
     <div class="top-row">
-      <h1>{{ stack.name }}</h1>
+      <h1 style="display:flex; align-items:center; gap:.7rem;">
+        {% if icon_url %}
+        <img class="dash-item-icon" style="width:34px;height:34px;" src="{{ icon_url }}" alt="">
+        {% endif %}
+        {{ stack.name }}
+      </h1>
     </div>
     <div class="meta" style="margin-bottom:1.5rem;">{{ stack.directory }} · pool "{{ stack.pool }}" · dataset "{{ stack.dataset }}"</div>
+
+    <div class="card" style="display:flex; align-items:center; gap:1.2rem; flex-wrap:wrap;">
+      {% if icon_url %}
+      <img src="{{ icon_url }}" alt="" style="width:48px;height:48px;border-radius:9px;object-fit:cover;">
+      {% else %}
+      <span class="dash-item-icon dash-item-icon-placeholder" style="width:48px;height:48px;font-size:1.2rem;">{{ stack.name[0] | upper }}</span>
+      {% endif %}
+      <form method="post" action="/docker/{{ stack.name }}/icon" enctype="multipart/form-data" class="field-row" style="margin:0;">
+        <input type="file" name="icon" accept=".png,.svg,.jpg,.jpeg,.webp" required>
+        <button type="submit" class="btn-muted btn-sm">{{ 'Changer l\'icone' if icon_url else 'Ajouter une icone' }}</button>
+      </form>
+      {% if icon_url %}
+      <form method="post" action="/docker/{{ stack.name }}/icon/delete" class="inline-form">
+        <button type="submit" class="btn-muted btn-sm">Retirer l'icone</button>
+      </form>
+      {% endif %}
+    </div>
 
     {% if error %}
     <div class="msg msg-error">{{ error }}</div>

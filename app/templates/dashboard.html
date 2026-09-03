@@ -13,9 +13,84 @@
     </div>
     {% endif %}
 
-    <h2 class="section-title">Etat du systeme</h2>
-    <div id="live-stats" hx-get="/partials/sysstats" hx-trigger="load, every 5s" hx-swap="innerHTML">
+    <div class="dash-row dash-row-top">
+      <div class="dash-col-weather">
+        <h2 class="section-title">Sante &amp; securite</h2>
+        <div id="live-health" hx-get="/partials/health" hx-trigger="load, every 30s" hx-swap="innerHTML">
+          Chargement...
+        </div>
+      </div>
+      <div class="dash-col-stats">
+        <h2 class="section-title">Etat du systeme</h2>
+        <div id="live-stats" hx-get="/partials/sysstats" hx-trigger="load, every 5s" hx-swap="innerHTML">
+          Chargement...
+        </div>
+      </div>
+    </div>
+
+    <h2 class="section-title">Reseau</h2>
+    <div id="live-network" hx-get="/partials/network" hx-trigger="load, every 5s" hx-swap="innerHTML">
       Chargement...
+    </div>
+
+    <div class="dash-row">
+      <div class="dash-col">
+        <div class="top-row" style="margin-bottom:.6rem;">
+          <h2 class="section-title" style="margin:0;">Docker</h2>
+          <a class="btn-link" href="/docker">Tout voir →</a>
+        </div>
+        {% if not docker_rows %}
+        <div class="empty-state">Aucune stack Docker pour l'instant.</div>
+        {% else %}
+        <div class="card">
+          {% for row in docker_rows %}
+          <a class="dash-list-item" href="/docker/{{ row.stack.name }}">
+            {% if row.has_icon %}
+            <img class="dash-item-icon" src="/docker/{{ row.stack.name }}/icon" alt="">
+            {% else %}
+            <span class="dash-item-icon dash-item-icon-placeholder">{{ row.stack.name[0] | upper }}</span>
+            {% endif %}
+            <span class="dash-item-name">{{ row.stack.name }}</span>
+            {% if row.running > 0 %}
+            <span class="badge badge-ok">{{ row.running }}/{{ row.total }} en cours</span>
+            {% else %}
+            <span class="badge badge-neutral">Arretee</span>
+            {% endif %}
+          </a>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+
+      <div class="dash-col">
+        <div class="top-row" style="margin-bottom:.6rem;">
+          <h2 class="section-title" style="margin:0;">Partages</h2>
+          <a class="btn-link" href="/shares">Tout voir →</a>
+        </div>
+        {% if not share_rows %}
+        <div class="empty-state">Aucun partage pour l'instant.</div>
+        {% else %}
+        <div class="card">
+          <table>
+            <thead><tr><th>Partage</th><th>Protocole</th><th>Comptes lies</th></tr></thead>
+            <tbody>
+              {% for row in share_rows %}
+              <tr>
+                <td><a class="btn-link" href="/shares/{{ row.share.name }}">{{ row.share.name }}</a></td>
+                <td>
+                  {% if 'smb' in row.share.protocols %}<span class="badge proto-smb">SMB</span>{% endif %}
+                  {% if 'nfs' in row.share.protocols %}<span class="badge proto-nfs">NFS</span>{% endif %}
+                </td>
+                <td class="dim">
+                  {% if row.usernames %}{{ row.usernames | join(', ') }}{% else %}aucun{% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+      </div>
     </div>
 
     <h2 class="section-title">Disques detectes</h2>

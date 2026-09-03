@@ -39,16 +39,49 @@ def test_share_users_create_and_error(client, monkeypatch):
     created = []
     monkeypatch.setattr(nasusers, "create_share_user", lambda u, p: created.append((u, p)))
     monkeypatch.setattr(nasusers, "list_share_users", lambda: [])
-    resp = client.post("/share-users", data={"new_username": "alice", "password": "longenoughpass"}, follow_redirects=False)
+    resp = client.post(
+        "/share-users",
+        data={"new_username": "alice", "password": "longenoughpass", "confirm_password": "longenoughpass"},
+        follow_redirects=False,
+    )
     assert resp.status_code == 302
     assert created == [("alice", "longenoughpass")]
 
     def raise_error(u, p):
         raise nasusers.ShareUserError("nom invalide")
     monkeypatch.setattr(nasusers, "create_share_user", raise_error)
-    resp = client.post("/share-users", data={"new_username": "!!", "password": "longenoughpass"})
+    resp = client.post(
+        "/share-users",
+        data={"new_username": "!!", "password": "longenoughpass", "confirm_password": "longenoughpass"},
+    )
     assert resp.status_code == 400
     assert "nom invalide" in resp.text
+
+
+def test_share_users_create_rejects_mismatched_confirmation(client, monkeypatch):
+    created = []
+    monkeypatch.setattr(nasusers, "create_share_user", lambda u, p: created.append((u, p)))
+    monkeypatch.setattr(nasusers, "list_share_users", lambda: [])
+    resp = client.post(
+        "/share-users",
+        data={"new_username": "alice", "password": "longenoughpass", "confirm_password": "different"},
+    )
+    assert resp.status_code == 400
+    assert "ne correspondent pas" in resp.text
+    assert created == []  # jamais appele : la verification bloque avant
+
+
+def test_share_users_password_change_rejects_mismatched_confirmation(client, monkeypatch):
+    changed = []
+    monkeypatch.setattr(nasusers, "set_share_user_password", lambda u, p: changed.append((u, p)))
+    monkeypatch.setattr(nasusers, "list_share_users", lambda: [])
+    resp = client.post(
+        "/share-users/alice/password",
+        data={"password": "longenoughpass", "confirm_password": "different"},
+    )
+    assert resp.status_code == 400
+    assert "ne correspondent pas" in resp.text
+    assert changed == []
 
 
 def test_share_users_delete(client, monkeypatch):

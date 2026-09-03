@@ -28,7 +28,22 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
   TrueNAS/Unraid, une seule feuille de style partagée par toutes les pages au
   lieu de CSS dupliqué par template), HTTPS par défaut (certificat auto-signé
   généré automatiquement, port 8443), pare-feu `ufw` configuré automatiquement
-  (seuls les ports nécessaires sont ouverts) — livré, en attente de test réel.
+  (seuls les ports nécessaires sont ouverts) — en usage réel (Louis a vu et
+  commenté le nouveau tableau de bord via l'interface HTTPS), sans
+  confirmation explicite spécifique sur le pare-feu ufw à ce stade.
+- Phase 7a : tableau de bord enrichi — mise en page élargie (occupe mieux
+  l'écran), widget réseau (débit descendant/montant en direct par carte
+  physique, détection de carte hors service), météo de santé/sécurité
+  globale (disques SMART, pools ZFS, réseau, températures via lm-sensors,
+  pare-feu, Docker, politique de mot de passe), récapitulatifs Docker et
+  Partages directement sur l'accueil, icônes personnalisées par stack Docker
+  (upload PNG/SVG/JPEG/WebP), politique de mot de passe complexe avec
+  confirmation pour les comptes de partage, et clarification de la section
+  cache (L2ARC/SLOG/Special VDEV) à la création d'un pool — livré, en
+  attente de test réel. La configuration réseau (IP fixe/DHCP, DNS,
+  agrégats de liens, wifi) et une console Docker interactive sont prévues
+  pour une prochaine phase (7b), volontairement traitées à part vu leur
+  sensibilité (risque de coupure d'accès au NAS pour le réseau).
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -45,6 +60,12 @@ Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS
 - CSS : une seule feuille de style partagée (`app/static/css/style.css`),
   chargée par toutes les pages via un layout Jinja2 commun (`base.html`) —
   plus de style dupliqué par template.
+- Réseau : lecture directe de `/proc/net/dev` et `/sys/class/net/` (aucune
+  dépendance externe type psutil/ifstat) pour le débit et l'état des cartes
+  physiques.
+- Températures : lues via `lm-sensors` (`sensors -j`), installé et détecté
+  automatiquement par `install.sh` (`sensors-detect --auto`) ; dégrade
+  proprement en "inconnu" si aucun capteur n'est trouvé (fréquent en VM).
 
 ## Installation
 
@@ -110,8 +131,8 @@ pytest tests/ -v
 Optionnel (pas nécessaire pour faire tourner NAS Manager), mais recommandé
 avant de valider une mise à jour manuellement modifiée : la suite couvre la
 détection des disques, la validation des pools ZFS, le remplacement de
-disque, la lecture SMART, les partages SMB/NFS, les stacks Docker Compose et
-les routes web (159 tests).
+disque, la lecture SMART, les partages SMB/NFS, les stacks Docker Compose,
+l'état réseau, la météo de santé/sécurité et les routes web (220 tests).
 
 ## Développement
 

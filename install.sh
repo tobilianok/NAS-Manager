@@ -15,30 +15,39 @@ INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${INSTALL_DIR}/.env"
 SSL_DIR="/etc/nas-manager/ssl"
 
-echo "==> [1/13] Mise a jour du systeme et installation des dependances"
+echo "==> [1/14] Mise a jour du systeme et installation des dependances"
 apt-get update
 apt-get install -y \
     python3 python3-venv python3-pip \
     zfsutils-linux smartmontools lsscsi nvme-cli \
     samba nfs-kernel-server acl \
     openssl ufw \
+    lm-sensors \
     git curl unzip
 
-echo "==> [2/13] Verification du module ZFS"
+echo "==> [2/14] Detection des capteurs materiels (lm-sensors)"
+# Necessaire pour le widget "meteo" de sante du tableau de bord (temperatures
+# CPU/carte mere). --auto evite toute question interactive ; sur une machine
+# virtuelle (VM de test), aucun capteur n'est generalement trouve - c'est
+# normal et sans gravite (le widget affichera "inconnu" pour ce critere,
+# meme logique que SMART sur disque virtuel, deja documentee ailleurs).
+sensors-detect --auto >/tmp/sensors-detect.log 2>&1 || true
+
+echo "==> [3/14] Verification du module ZFS"
 if ! modinfo zfs >/dev/null 2>&1; then
     echo "ATTENTION : le module ZFS ne semble pas disponible sur ce noyau." >&2
     echo "Verifie que zfsutils-linux s'est bien installe avant de continuer." >&2
     exit 1
 fi
 
-echo "==> [3/13] Creation de l'environnement virtuel Python"
+echo "==> [4/14] Creation de l'environnement virtuel Python"
 if [[ ! -d "${INSTALL_DIR}/venv" ]]; then
     python3 -m venv "${INSTALL_DIR}/venv"
 fi
 "${INSTALL_DIR}/venv/bin/pip" install --upgrade pip
 "${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
 
-echo "==> [4/13] Generation de la cle de session (si absente)"
+echo "==> [5/14] Generation de la cle de session (si absente)"
 if [[ ! -f "${ENV_FILE}" ]]; then
     SECRET="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
     cat > "${ENV_FILE}" <<EOF
@@ -57,7 +66,7 @@ else
     echo "    ${ENV_FILE} existe deja, conserve tel quel (hors ajout ci-dessus si necessaire)."
 fi
 
-echo "==> [5/13] Groupe d'administration NAS Manager"
+echo "==> [6/14] Groupe d'administration NAS Manager"
 if ! getent group nasadmin >/dev/null; then
     groupadd nasadmin
     echo "    Groupe 'nasadmin' cree."
@@ -74,17 +83,17 @@ else
     echo "      sudo usermod -aG nasadmin <nom_utilisateur>"
 fi
 
-echo "==> [6/13] Groupe des comptes de partage SMB/NFS"
+echo "==> [7/14] Groupe des comptes de partage SMB/NFS"
 if ! getent group nasshares >/dev/null; then
     groupadd nasshares
     echo "    Groupe 'nasshares' cree (comptes dedies aux partages, sans acces SSH ni interface web)."
 fi
 
-echo "==> [7/13] Dossier d'etat persistant (survit aux redemarrages)"
+echo "==> [8/14] Dossier d'etat persistant (survit aux redemarrages)"
 mkdir -p /var/lib/nas-manager
 chmod 700 /var/lib/nas-manager
 
-echo "==> [8/13] Preparation Samba / NFS (bloc gere par NAS Manager)"
+echo "==> [9/14] Preparation Samba / NFS (bloc gere par NAS Manager)"
 mkdir -p /etc/samba
 if [[ ! -f /etc/samba/smb.conf ]]; then
     cat > /etc/samba/smb.conf <<'EOF'
@@ -100,7 +109,7 @@ touch /etc/exports
 systemctl enable smbd nmbd nfs-kernel-server >/dev/null 2>&1 || true
 systemctl restart smbd nmbd nfs-kernel-server
 
-echo "==> [9/13] Installation de Docker Engine (gestion des stacks Docker Compose)"
+echo "==> [10/14] Installation de Docker Engine (gestion des stacks Docker Compose)"
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     echo "    Docker et le plugin 'compose' sont deja installes, etape ignoree."
 else
@@ -117,7 +126,7 @@ else
     echo "    Docker Engine, le plugin 'compose' et 'buildx' installes."
 fi
 
-echo "==> [10/13] Certificat HTTPS (auto-signe)"
+echo "==> [11/14] Certificat HTTPS (auto-signe)"
 mkdir -p "${SSL_DIR}"
 chmod 700 "${SSL_DIR}"
 if [[ ! -f "${SSL_DIR}/privkey.pem" || ! -f "${SSL_DIR}/cert.pem" ]]; then
@@ -137,7 +146,7 @@ else
     echo "    (Pour en regenerer un, supprime ${SSL_DIR}/*.pem puis relance ce script.)"
 fi
 
-echo "==> [11/13] Pare-feu (ufw) - ouverture des seuls ports necessaires"
+echo "==> [12/14] Pare-feu (ufw) - ouverture des seuls ports necessaires"
 # IMPORTANT : ufw ne filtre PAS les ports publies par les containers Docker.
 # Docker manipule directement iptables (chaine DOCKER-USER) et contourne les
 # regles ufw par defaut - un port expose par une stack (ex: "8081:80" dans un
@@ -158,7 +167,7 @@ ufw --force enable >/dev/null 2>&1 || true
 echo "    Pare-feu actif. Regles :"
 ufw status | sed 's/^/    /'
 
-echo "==> [12/13] Installation du service systemd"
+echo "==> [13/14] Installation du service systemd"
 # Le fichier .service reference /opt/nas-manager en dur : on l'adapte au
 # dossier reel d'installation (utile si le depot n'est pas clone exactement
 # a cet endroit).
@@ -167,7 +176,7 @@ systemctl daemon-reload
 systemctl enable nas-manager.service
 systemctl restart nas-manager.service
 
-echo "==> [13/13] Verification du service"
+echo "==> [14/14] Verification du service"
 sleep 2
 if systemctl is-active --quiet nas-manager.service; then
     IP_ADDR="$(hostname -I | awk '{print $1}')"
