@@ -24,7 +24,7 @@ echo "==> [1/15] Mise a jour du systeme et installation des dependances"
 apt-get update
 apt-get install -y \
     python3 python3-venv python3-pip \
-    zfsutils-linux smartmontools lsscsi nvme-cli \
+    zfsutils-linux smartmontools lsscsi nvme-cli hdparm \
     samba nfs-kernel-server acl \
     openssl ufw \
     lm-sensors \
@@ -177,7 +177,7 @@ ufw status | sed 's/^/    /'
 echo "==> [13/15] Script de mise a jour automatique"
 # Le bit d'execution ne survit pas a toutes les facons de recuperer le
 # depot (archive zip notamment) : on le repose a chaque installation.
-chmod +x "${INSTALL_DIR}/scripts/self-update.sh" 2>/dev/null || true
+chmod +x "${INSTALL_DIR}/scripts/"*.sh 2>/dev/null || true
 
 echo "==> [14/15] Installation du service systemd"
 # Le fichier .service reference /opt/nas-manager en dur : on l'adapte au

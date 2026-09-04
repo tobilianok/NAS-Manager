@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}{{ mode.label }} {{ disk.path }} - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/disks">Disques</a> <span>/</span> <span>{{ mode.label }} {{ disk.path }}</span>{% endblock %}
+{% block content %}
+    <h1>{{ mode.label }} — {{ disk.path }}</h1>
+    <p class="subtitle">
+      {{ disk.model or 'Modele inconnu' }} &middot;
+      {{ (disk.size_bytes / (1000**3)) | round(1) }} Go
+      {% if disk.serial %}&middot; numero de serie <span class="mono">{{ disk.serial }}</span>{% endif %}
+    </p>
+
+    <div class="danger-banner">
+      <strong>Operation destructrice, irreversible et longue.</strong>
+      Tout ce qui se trouve sur ce disque sera detruit — reellement, pas
+      seulement dereference. Verifie le numero de serie ci-dessus contre
+      l'etiquette physique du disque : le nom <span class="mono">{{ disk.path }}</span>
+      peut changer d'un demarrage a l'autre, le numero de serie non.
+    </div>
+
+    {% if mode.warning %}
+    <div class="warning-banner">⚠ {{ mode.warning }}</div>
+    {% endif %}
+
+    {% if secure and not secure.possible %}
+    <div class="warning-banner">
+      <strong>Effacement securise impossible sur ce disque.</strong><br>
+      {{ secure.reason }}<br>{{ secure.advice }}
+    </div>
+    {% endif %}
+
+    <h2 class="section-title">Ce que contient ce disque aujourd'hui</h2>
+    <div class="card">
+      {% if disk.contents %}
+      <ul class="removal-list">
+        {% for item in disk.contents %}<li class="mono">{{ item }}</li>{% endfor %}
+      </ul>
+      {% elif disk.partitions %}
+      <p class="stat-sub">
+        Table de partition avec : <span class="mono">{{ disk.partitions | join(', ') }}</span>.
+      </p>
+      {% else %}
+      <p class="stat-sub">Aucune signature detectee : ce disque parait deja vierge.</p>
+      {% endif %}
+    </div>
+
+    <h2 class="section-title">Ce qui va etre fait</h2>
+    <div class="card">
+      <p class="stat-sub">{{ mode.description }}</p>
+      <p class="stat-sub"><strong>Duree attendue : {{ mode.duration }}.</strong></p>
+      <p class="stat-sub">
+        L'operation est confiee a un travail independant de cette page : tu
+        peux fermer le navigateur, te deconnecter, ou meme redemarrer NAS
+        Manager — elle continue, et sa progression reste visible sur la page
+        Disques.
+      </p>
+      {% if mode.key == 'full' and disk.rota %}
+      <p class="stat-sub dim">
+        Sur un disque mecanique, le debit chute a mesure qu'on progresse vers
+        le centre du plateau : la duree restante estimee au debut est
+        toujours optimiste.
+      </p>
+      {% endif %}
+    </div>
+
+    <h2 class="section-title">Confirmation</h2>
+    <form method="post" action="/disks/{{ disk.name }}/erase/{{ mode.key }}" class="card">
+      <label>Retape le chemin exact du disque : <strong class="mono">{{ disk.path }}</strong></label>
+      <input type="text" name="confirm_path" autocomplete="off" spellcheck="false" required>
+
+      <label>Ton mot de passe ({{ username }})</label>
+      <input type="password" name="password" autocomplete="current-password" required>
+
+      <div class="actions">
+        <a class="btn btn-muted" href="/disks">Annuler</a>
+        <button type="submit" class="btn-solid-danger"
+                {% if secure and not secure.possible %}disabled{% endif %}>
+          Lancer {{ mode.label | lower }} sur {{ disk.path }}
+        </button>
+      </div>
+    </form>
+{% endblock %}

@@ -4,7 +4,7 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
-**Version actuelle : v1.3.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+**Version actuelle : v1.4.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
 est affiché en bas du menu latéral ; le survol donne le commit déployé et
 signale si des fichiers ont été modifiés à la main sur le serveur.
 
@@ -16,7 +16,9 @@ signale si des fichiers ont été modifiés à la main sur le serveur.
   pédagogie, suppression) — validé en conditions réelles.
 - Phase 3 : tableau de bord système (CPU/RAM/uptime en direct), état SMART des
   disques, remplacement guidé de disque en cas de panne (mise hors ligne,
-  instructions physiques, suivi du resilver) — livré, en attente de test réel.
+  instructions physiques, suivi du resilver) — **validé en conditions réelles
+  le 2026-09-04** : parcours complet joué sur la machine physique, pool
+  reconstruit.
 - Phase 4 : dossiers partagés SMB/NFS (chaque partage = un dataset ZFS dédié),
   comptes de partage dédiés (sans accès SSH ni à l'interface d'admin),
   permissions lecture/écriture ou lecture seule par utilisateur, export NFS
@@ -302,7 +304,24 @@ signale si des fichiers ont été modifiés à la main sur le serveur.
   là où vivent la table GPT de secours et les superblocs mdadm). Un disque
   système ou en pool est refusé catégoriquement, seul un disque entier est
   acceptable, il faut retaper le chemin et son mot de passe, et l'état réel est
-  relu au moment du clic — livré, en attente de test réel.
+  relu au moment du clic — **validé en conditions réelles** (disque détecté,
+  pool reconstruit).
+- Phase 12b (**v1.4.0**) : la page Disques devient un outil de maintenance.
+  **Auto-tests SMART** à la demande (court, long, transport) avec avancement
+  en direct — le test long relit toute la surface, c'est le seul qui trouve
+  les secteurs illisibles dormant dans une zone rarement lue, ceux-là mêmes
+  qui font échouer une reconstruction au pire moment. Un auto-test ne
+  détruisant rien, il est autorisé sur **tous** les disques, y compris les
+  disques système où il est le plus utile. **Effacement complet** (zéros sur
+  tout le disque, avec progression, débit et durée restante) et **effacement
+  sécurisé** délégué au micrologiciel (ATA Secure Erase / format NVMe — la
+  seule méthode efficace sur SSD, où écrire des zéros ne touche pas les
+  cellules du sur-provisionnement). L'état « frozen » est vérifié **avant**
+  avec la manœuvre qui le lève, et le mot de passe ATA temporaire est public
+  et affiché : si l'effacement est coupé, le disque reste verrouillé, et un
+  mot de passe secret le condamnerait. Ces opérations durant des heures, elles
+  sont confiées à un travail détaché qui survit à la fermeture du navigateur
+  et au redémarrage du service — livré, en attente de test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -427,7 +446,9 @@ d'état, retour arrière) et l'accès GitHub (traitement du jeton, diagnostic de
 échecs d'authentification, absence du secret dans les sauvegardes), l'identité
 des disques (étiquette ZFS plutôt que nom, filet de sécurité, disques non
 vierges) et l'effacement de disque (refus catégoriques, ce qui est réellement
-exécuté) (761 tests).
+exécuté), les auto-tests SMART (analyse de la sortie de smartctl, liste
+blanche des types de test) et les effacements longs (refus catégoriques,
+détachement, état « frozen », progression) (818 tests).
 
 ## Développement
 

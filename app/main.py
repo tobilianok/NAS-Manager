@@ -23,7 +23,7 @@ from app import (
     auth, disks, zfs, sysstats, smart as smart_module, replace_workflow, shares,
     nasusers, dockerstacks, netstats, health, netconfig, dockerconsole, dockerops,
     sysaccounts, configbackup, poolexpand, navigation, version as version_module,
-    sysupdate, appupdate, liverun, gitauth, diskwipe,
+    sysupdate, appupdate, liverun, gitauth, diskwipe, smarttests, diskjobs,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -557,10 +557,19 @@ def pool_delete_submit(
 # ---------------------------------------------------------------------------
 
 def _disk_rows() -> list[dict]:
-    return [
-        {"disk": d, "report": smart_module.get_smart_report(d.path)}
-        for d in disks.list_disks()
-    ]
+    """Une ligne par disque : etat SMART, auto-test en cours, effacement long
+    en cours. Tout est relu en direct - rien n'est mis en cache, l'etat d'un
+    disque peut changer entre deux affichages."""
+    jobs = diskjobs.all_states()
+    rows = []
+    for d in disks.list_disks():
+        rows.append({
+            "disk": d,
+            "report": smart_module.get_smart_report(d.path),
+            "test": smarttests.get_status(d.path),
+            "job": jobs.get(d.name),
+        })
+    return rows
 
 
 @app.get("/disks", response_class=HTMLResponse)
@@ -570,7 +579,8 @@ def disks_overview(request: Request, username: str = Depends(require_login),
         "disks.html",
         {
             "request": request, "username": username, "rows": _disk_rows(),
-            "modes": diskwipe.MODES, "error": error, "notice": notice,
+            "modes": diskwipe.MODES, "long_modes": diskjobs.MODES,
+            "test_kinds": smarttests.KINDS, "error": error, "notice": notice,
         },
     )
 
@@ -588,10 +598,113 @@ def _render_disks(request: Request, username: str, error: str | None = None,
         "disks.html",
         {
             "request": request, "username": username, "rows": _disk_rows(),
-            "modes": diskwipe.MODES, "error": error, "notice": notice,
+            "modes": diskwipe.MODES, "long_modes": diskjobs.MODES,
+            "test_kinds": smarttests.KINDS, "error": error, "notice": notice,
         },
         status_code=status_code,
     )
+
+
+@app.get("/partials/disks", response_class=HTMLResponse)
+def partial_disks(request: Request, username: str = Depends(require_login)):
+    """Fragment rafraichi automatiquement : un auto-test SMART dure des
+    minutes, un effacement des heures. La page doit avancer toute seule."""
+    return templates.TemplateResponse(
+        "_disks_partial.html",
+        {
+            "request": request, "username": username, "rows": _disk_rows(),
+            "modes": diskwipe.MODES, "long_modes": diskjobs.MODES,
+            "test_kinds": smarttests.KINDS,
+        },
+    )
+
+
+@app.post("/disks/{name}/smart-test/{kind}", response_class=HTMLResponse)
+def disk_smart_test_start(request: Request, name: str, kind: str,
+                          username: str = Depends(require_login)):
+    """Lance un auto-test SMART. Volontairement SANS mot de passe ni
+    confirmation : un auto-test ne fait que lire, il ne detruit rien - et il
+    est autorise sur les disques systeme, ou il est le plus utile."""
+    disk = disks.get_disk(name)
+    if disk is None:
+        return _render_disks(request, username, error=f"Disque '{name}' introuvable.",
+                             status_code=404)
+    try:
+        message = smarttests.start_test(disk.path, kind)
+    except smarttests.SmartTestError as exc:
+        return _render_disks(request, username, error=str(exc), status_code=400)
+    return _render_disks(request, username, notice=message)
+
+
+@app.post("/disks/{name}/smart-test-abort", response_class=HTMLResponse)
+def disk_smart_test_abort(request: Request, name: str,
+                          username: str = Depends(require_login)):
+    disk = disks.get_disk(name)
+    if disk is None:
+        return _render_disks(request, username, error=f"Disque '{name}' introuvable.",
+                             status_code=404)
+    try:
+        message = smarttests.abort_test(disk.path)
+    except smarttests.SmartTestError as exc:
+        return _render_disks(request, username, error=str(exc), status_code=400)
+    return _render_disks(request, username, notice=message)
+
+
+@app.get("/disks/{name}/erase/{mode_key}", response_class=HTMLResponse)
+def disk_long_erase_form(request: Request, name: str, mode_key: str,
+                         username: str = Depends(require_login)):
+    """Page de confirmation d'un effacement long (complet ou securise)."""
+    try:
+        mode = diskjobs.resolve_mode(mode_key)
+        disk = diskjobs.check_target(f"/dev/{name}")
+    except (diskjobs.DiskJobError, diskwipe.DiskWipeError) as exc:
+        return _render_disks(request, username, error=str(exc), status_code=400)
+
+    secure = diskjobs.check_secure_erase(disk.path) if mode.key == "secure" else None
+    return templates.TemplateResponse(
+        "disk_erase.html",
+        {
+            "request": request, "username": username, "disk": disk,
+            "mode": mode, "secure": secure,
+        },
+    )
+
+
+@app.post("/disks/{name}/erase/{mode_key}", response_class=HTMLResponse)
+def disk_long_erase_start(request: Request, name: str, mode_key: str,
+                          username: str = Depends(require_login),
+                          confirm_path: str = Form(...), password: str = Form(...)):
+    path = f"/dev/{name}"
+    if confirm_path.strip() != path:
+        return _render_disks(request, username, status_code=400,
+                             error=f"Confirmation incorrecte : retape exactement {path}.")
+    if not auth.authenticate(username, password):
+        return _render_disks(request, username, error="Mot de passe incorrect.",
+                             status_code=400)
+    try:
+        mode = diskjobs.start(path, mode_key)
+    except (diskjobs.DiskJobError, diskwipe.DiskWipeError) as exc:
+        return _render_disks(request, username, error=str(exc), status_code=400)
+
+    logger.warning("Effacement long '%s' lance sur %s par %s", mode_key, path, username)
+    return _render_disks(
+        request, username,
+        notice=(f"{mode.label} lance sur {path}. Tu peux fermer cette page : "
+                f"l'operation continue et la progression restera visible ici."),
+    )
+
+
+@app.post("/disks/{name}/erase-clear", response_class=HTMLResponse)
+def disk_long_erase_clear(request: Request, name: str,
+                          username: str = Depends(require_login)):
+    """Retire le compte rendu d'un effacement termine. Refuse tant que le
+    travail tourne : masquer une operation en cours la rendrait invisible."""
+    state = diskjobs.read_state(name)
+    if state.running and not state.stale:
+        return _render_disks(request, username, status_code=400,
+                             error="Effacement en cours : impossible de masquer le suivi.")
+    diskjobs.clear_state(name)
+    return _render_disks(request, username)
 
 
 @app.get("/disks/{name}/wipe/{mode_key}", response_class=HTMLResponse)

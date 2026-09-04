@@ -13,6 +13,54 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.4.0 — 2026-09-04
+
+La page Disques devient un vrai outil de maintenance : auto-tests SMART à la
+demande, et les deux effacements longs.
+
+### Auto-tests SMART
+- Trois tests par disque : **court** (1 à 3 min), **long** (relit toute la
+  surface — le seul qui trouve les secteurs illisibles dormant dans une zone
+  rarement lue, exactement ceux qui font échouer une reconstruction de pool au
+  pire moment) et **transport** (à la réception d'un disque d'occasion).
+- **Avancement affiché en direct.** Le disque annonce ce qu'il lui *reste* à
+  faire, par paliers de 10 % sur la plupart des modèles — l'interface affiche
+  le complément.
+- Un auto-test **ne détruit rien** : il est donc autorisé sur **tous** les
+  disques, y compris les disques système, où il est le plus utile. C'est la
+  différence de fond avec l'effacement, qui reste refusé là.
+- Rien n'est gardé en mémoire ni sur disque : c'est le micrologiciel du disque
+  qui exécute le test, l'avancement se relit à tout moment en interrogeant le
+  disque, et il survit à un redémarrage du service.
+
+### Effacement complet et effacement sécurisé
+- **Complet** : zéros sur tout le disque, avec barre de progression, débit
+  constaté et durée restante estimée. Les données sont réellement recouvertes,
+  pas seulement déréférencées — ce qu'il faut avant de faire sortir un disque
+  de la maison.
+- **Sécurisé** : délègue au micrologiciel (ATA Secure Erase, ou format NVMe).
+  Sur un SSD c'est la seule méthode vraiment efficace : écrire des zéros ne
+  touche pas les cellules mises de côté par le sur-provisionnement.
+- **L'état « frozen » est vérifié avant**, pas découvert après : c'est le cas
+  le plus fréquent (la plupart des cartes mères et la quasi-totalité des
+  boîtiers USB), et l'interface donne la manœuvre qui le lève plutôt qu'un
+  message brut de `hdparm`.
+- Le mot de passe ATA temporaire est **public et affiché** : si l'effacement
+  est coupé par une panne de courant, le disque reste verrouillé — un mot de
+  passe secret le condamnerait.
+- Ces opérations durent des heures : elles sont confiées à un **travail
+  détaché** (`systemd-run`) qui écrit sa progression dans un fichier d'état.
+  Fermer le navigateur, se déconnecter ou redémarrer NAS Manager n'interrompt
+  rien, et la progression reste visible.
+- Le script refuse d'écrire sur autre chose qu'un périphérique bloc : sur un
+  fichier ordinaire, `dd` écrirait jusqu'à remplir la partition système.
+- La locale est figée dans le script : `dd` traduit sa ligne de progression
+  (« copied » devient « copié »), et la barre serait restée à zéro pendant des
+  heures.
+- 818 tests automatisés.
+
+---
+
 ## v1.3.0 — 2026-09-04
 
 Correction d'un bug rencontré lors du premier test de remplacement de disque
