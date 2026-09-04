@@ -4,6 +4,10 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
+**Version actuelle : v1.0.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+est affiché en bas du menu latéral ; le survol donne le commit déployé et
+signale si des fichiers ont été modifiés à la main sur le serveur.
+
 ## État du projet
 
 - Phase 0 : fondations (auth PAM, service systemd) — validé en conditions réelles.
@@ -226,6 +230,21 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
   entre RAM et Disponibilité : il ne vit plus dans son propre bloc HTMX,
   donc tout le panneau se rafraîchit d'un seul coup au même rythme au lieu
   de deux cycles indépendants — livré, en attente de test réel.
+- Phase 11a : réorganisation du menu latéral et numérotation des versions.
+  Dix entrées à plat, ça se cherche : le menu est désormais structuré en
+  rubriques repliables — **Stockage** (Pools ZFS, Partages, SMART),
+  **Comptes** (comptes de partage, comptes système) et **Paramètres**
+  (Réseau, Sauvegarde) — Tableau de bord et Docker restant au premier niveau
+  puisqu'on y va tous les jours. La structure est décrite une seule fois dans
+  `app/navigation.py` au lieu d'être écrite à la main dans le gabarit commun :
+  la règle qui allume l'entrée courante existait auparavant en dix copies,
+  donc n'était testée nulle part (et `/shares` vs `/share-users` est
+  exactement le genre de piège qu'elle cache). Les rubriques sont des
+  `<details>` ouverts **par le serveur** : celle de la page affichée est
+  déjà ouverte au premier pixel, et le menu reste utilisable même si le
+  JavaScript ne charge pas. Le projet passe en **v1.0.0** (versionnage
+  sémantique, `CHANGELOG.md`), numéro affiché en bas du menu — c'est la
+  référence sur laquelle s'appuiera l'écran de mise à jour de la 11b.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -340,8 +359,10 @@ l'archive, refus des archives piégées, restauration sélective) et les
 routes web, et l'agrandissement de pool (refus des configurations qui
 affaibliraient la redondance, essai à blanc, recalcul avant exécution),
 la cascade de suppression d'un pool (ordre des opérations, registres
-préservés si la destruction échoue) et le panneau d'état système enrichi
-(charge par cœur, topologie CPU, répartition mémoire) (567 tests).
+préservés si la destruction échoue), le panneau d'état système enrichi
+(charge par cœur, topologie CPU, répartition mémoire) et la structure du
+menu latéral (correspondance page/entrée, rubriques, version affichée)
+(609 tests).
 
 ## Développement
 

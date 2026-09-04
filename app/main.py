@@ -22,7 +22,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app import (
     auth, disks, zfs, sysstats, smart as smart_module, replace_workflow, shares,
     nasusers, dockerstacks, netstats, health, netconfig, dockerconsole, dockerops,
-    sysaccounts, configbackup, poolexpand,
+    sysaccounts, configbackup, poolexpand, navigation, version as version_module,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -55,6 +55,12 @@ app.add_middleware(SessionMiddleware, secret_key=secret_key, https_only=_env_fla
 
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+
+# Disponibles dans TOUS les gabarits sans avoir a les passer route par route :
+# le menu lateral et le numero de version apparaissent sur chaque page, les
+# oublier dans une seule reponse casserait la navigation de cette page.
+templates.env.globals["nav_entries"] = navigation.NAV
+templates.env.globals["app_version"] = version_module.get_version_info()
 
 
 def require_login(request: Request) -> str:
