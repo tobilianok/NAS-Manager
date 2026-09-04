@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -47,6 +48,15 @@ SERVICE_UNIT = "nas-manager-selfupdate"
 # rarement quelques minutes. Au-dela, on considere l'etat comme perime
 # plutot que de bloquer indefiniment l'interface sur "en cours".
 STALE_AFTER_SECONDS = 1800
+
+# Au-dela, un compte rendu de mise a jour n'est plus une nouvelle : il
+# decrit un evenement passe, avec des consignes qui ont pu cesser d'etre
+# valables. Un jour laisse largement le temps de le lire.
+REPORT_TTL_SECONDS = 24 * 3600
+
+# Un libelle de cible qui commence par vX est un tag ; « main @ abc1234 »
+# n'en est pas un et ne se compare pas a un numero de version.
+_TAG_LABEL = re.compile(r"^v\d")
 
 STABLE = "stable"
 DEV = "dev"
@@ -191,8 +201,15 @@ def get_status(fetch: bool = True) -> AppUpdateStatus:
         if len(parts) == 2 and all(p.isdigit() for p in parts):
             status.ahead_origin, status.behind_origin = int(parts[0]), int(parts[1])
 
-    # --- Version stable : le dernier tag accessible depuis origin/main ---
-    latest_tag = _git_out("describe", "--tags", "--abbrev=0", "origin/main")
+    # --- Version stable : le tag de plus haut numero accessible depuis
+    # origin/main. `describe --abbrev=0` donnerait le tag le plus PROCHE dans
+    # le graphe, pas le plus RECENT : apres une fusion, l'ordre des parents
+    # peut mettre un ancien tag a portee plus courte et faire annoncer une
+    # version depassee comme « derniere version publiee ». Le tri `-v:refname`
+    # compare les numeros (v1.10.0 apres v1.9.0, ce qu'un tri alphabetique
+    # rate), et `--merged` garantit qu'on ne propose que du deja accessible.
+    tags = _git_out("tag", "--sort=-v:refname", "--merged", "origin/main")
+    latest_tag = tags.splitlines()[0].strip() if tags else None
     if latest_tag:
         tag_commit = _git_out("rev-list", "-n", "1", latest_tag)
         # Une version DEJA contenue dans l'historique deploye ne doit pas
@@ -265,6 +282,31 @@ class UpdateProgress:
         probablement ete tue (coupure de courant, OOM). On ne laisse pas
         l'interface bloquee dessus."""
         return self.running and (time.time() - self.started_epoch) > STALE_AFTER_SECONDS
+
+    @property
+    def obsolete(self) -> bool:
+        """Le compte rendu ne decrit plus la situation presente (v1.5.3).
+
+        Le fichier d'etat n'est jamais efface : sans ca, un « Mise a jour
+        terminee — v1.4.3 » restait affiche en tete de page des semaines plus
+        tard, avec ses consignes d'alors, alors que la machine tournait deja
+        trois versions plus loin. Un bandeau qui ne peut pas disparaitre finit
+        par etre lu comme l'etat courant.
+
+        Deux facons d'etre depasse :
+        - un succes qui annonce une version qui n'est plus celle qui tourne ;
+        - n'importe quel compte rendu vieux de plus d'un jour.
+
+        Un ECHEC, lui, n'est jamais masque par le premier critere : il annonce
+        justement une version qui n'a pas ete installee, et c'est precisement
+        ce qu'il faut continuer a voir."""
+        if self.status in ("idle", "running"):
+            return False
+        if self.finished_epoch and (time.time() - self.finished_epoch) > REPORT_TTL_SECONDS:
+            return True
+        if self.status == "success" and _TAG_LABEL.match(self.target_label or ""):
+            return self.target_label != f"v{version_module.VERSION}"
+        return False
 
 
 def read_progress() -> UpdateProgress:

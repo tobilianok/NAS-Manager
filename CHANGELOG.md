@@ -13,6 +13,43 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.5.3 — 2026-09-04
+
+Deux défauts d'affichage qui rendaient l'écran des mises à jour trompeur.
+
+### Le compte rendu de mise à jour ne périmait jamais
+- Le fichier d'état n'est jamais effacé. Un « ✅ Mise à jour terminée —
+  v1.4.3 » restait donc affiché **en tête de page indéfiniment**, avec les
+  consignes de l'époque, alors que la machine tournait déjà trois versions
+  plus loin. Un bandeau qui ne peut pas disparaître finit par être lu comme
+  l'état courant.
+- Un compte rendu est maintenant considéré comme dépassé quand il annonce un
+  succès vers une version qui n'est plus celle qui tourne, ou quand il a plus
+  d'un jour.
+- **Un échec, lui, n'est jamais masqué par la comparaison de version** : il
+  annonce justement une version qui n'a *pas* été installée, donc le critère
+  l'aurait fait disparaître systématiquement — alors que c'est le message le
+  plus important de la page. Un test verrouille ce comportement.
+- Une cible de développement (`main @ abc1234`) n'est pas un numéro de
+  version et n'est pas comparée comme tel.
+
+### La « dernière version publiée » pouvait être une ancienne
+- Le tag était résolu par `git describe --abbrev=0`, qui donne le tag le plus
+  **proche dans le graphe**, pas le plus **récent**. Après une fusion, l'ordre
+  des parents peut mettre un ancien tag à portée plus courte : l'écran
+  annonçait alors v1.5.0 comme dernière version stable alors que v1.5.2
+  existait.
+- Remplacé par `git tag --sort=-v:refname --merged origin/main`, qui compare
+  les numéros (v1.10.0 après v1.9.0 — ce qu'un tri alphabétique rate) et ne
+  retient que les tags réellement accessibles.
+
+### À savoir pour livrer
+`git pull <bundle> main` **n'importe pas les tags** du bundle : seule la
+branche demandée est récupérée. Pour les avoir, il faut un
+`git fetch <bundle> 'refs/tags/*:refs/tags/*'` explicite avant de pousser.
+
+---
+
 ## v1.5.2 — 2026-09-04
 
 Le code présent sur le disque n'est pas toujours celui qui tourne. Cette
