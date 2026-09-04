@@ -13,6 +13,54 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.3.0 — 2026-09-04
+
+Correction d'un bug rencontré lors du premier test de remplacement de disque
+sur machine physique, et refonte de la page SMART en page **Disques**.
+
+### Les disques sont identifiés par leur étiquette, plus par leur nom
+- **Le bug** : pool dégradé, disque défaillant débranché, disque neuf installé
+  à sa place. Le noyau lui redonne le nom `sdc` de l'ancien, et `zpool status`
+  liste toujours le membre manquant `/dev/sdc1`. Le disque **neuf** était donc
+  classé « déjà membre du pool », et la reconstruction annonçait « aucun disque
+  disponible » alors qu'il était bien là.
+- **Le fond** : `sdX` n'est pas une identité — le noyau l'attribue dans l'ordre
+  de détection. L'appartenance à un pool est désormais déterminée par
+  l'**étiquette ZFS écrite sur le disque**. Ça corrige aussi le sens inverse,
+  plus dangereux : un vrai membre qui change de nom après un redémarrage aurait
+  été proposé comme disponible, donc effaçable.
+- La méthode par nom subsiste comme **filet de sécurité**, appliquée pool par
+  pool, uniquement si aucune étiquette n'a pu identifier ses membres. Elle peut
+  surprotéger un disque, jamais en exposer un.
+
+### Nouvel état « à effacer »
+- Un disque portant d'anciennes données (système de fichiers, étiquette d'un
+  pool non importé, superbloc mdadm, volume LVM, table de partition) n'est plus
+  annoncé comme disponible. `zpool create` l'aurait refusé de toute façon —
+  NAS Manager ne passe jamais `-f` — mais l'échec arrivait à la création, sans
+  explication. L'interface dit maintenant **avant** ce que contient le disque.
+
+### Page Disques
+- Le menu SMART devient **Disques** : tous les disques physiques, leur rôle
+  (système, en pool, à effacer, disponible), leur contenu détaillé et leur état
+  SMART sur une seule page. L'ancienne adresse `/disks/smart` redirige.
+- Deux effacements disponibles : **rapide** (étiquettes ZFS, signatures,
+  table de partition — quelques secondes, suffit pour réutiliser un disque) et
+  **bordures** (le rapide, plus 100 Mo de zéros au début *et à la fin* — car la
+  table GPT de secours et les superblocs mdadm vivent à la fin et survivent à un
+  effacement d'en-tête seul, cas typique d'un disque sorti d'un autre NAS).
+- Garde-fous : un disque système ou membre d'un pool importé est refusé
+  catégoriquement ; seul un disque physique entier est acceptable (jamais une
+  partition) ; il faut retaper le chemin exact **et** son mot de passe ; l'état
+  réel du disque est relu au moment du clic, pas pris sur la page affichée ; et
+  `zpool labelclear` n'est jamais forcé.
+- La page d'effacement affiche le **numéro de série** : le nom `sdX` change d'un
+  démarrage à l'autre, le numéro de série non — c'est lui qu'on vérifie contre
+  l'étiquette physique du disque.
+- 761 tests automatisés.
+
+---
+
 ## v1.2.0 — 2026-09-04
 
 Correction d'un blocage rencontré dès la première utilisation de l'écran des

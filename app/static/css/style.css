@@ -880,3 +880,27 @@ body.login-body { display: flex; align-items: center; justify-content: center; m
 .token-form input { width: 100%; }
 .token-extra { display: flex; gap: .6rem; flex-wrap: wrap; margin-top: .4rem; }
 .token-extra form { margin: 0; }
+
+/* ---------------------------------------------------------------------
+   Page Disques (Phase 12a)
+   --------------------------------------------------------------------- */
+
+.disk-list { display: flex; flex-direction: column; gap: 1rem; }
+.disk-card { border-left: 4px solid var(--border); }
+.disk-card.disk-system_protected { border-left-color: var(--danger); }
+.disk-card.disk-in_pool { border-left-color: var(--accent); }
+.disk-card.disk-occupied { border-left-color: var(--warning); }
+.disk-card.disk-available { border-left-color: var(--success); }
+
+.disk-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.disk-title { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-bottom: .25rem; }
+.disk-smart { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: .25rem; }
+.disk-detail { margin-top: .6rem; }
+.disk-actions { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-top: .9rem; }
+
+/* Bandeau des operations irreversibles : plus fort qu'un avertissement. */
+.danger-banner {
+  background: var(--danger-bg); color: var(--danger-text);
+  border-radius: var(--radius); padding: 1rem 1.2rem; margin-bottom: 1.2rem;
+  font-size: .89rem; line-height: 1.6;
+}

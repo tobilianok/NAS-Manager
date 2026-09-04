@@ -296,6 +296,14 @@ def validate_pool_plan(
             )
         elif info.status == "in_pool":
             check.errors.append(f"Disque {disk_path} deja utilise ({info.detail}).")
+        elif info.status == "occupied":
+            # `zpool create` refuserait de toute facon un disque non vierge,
+            # et nous ne passons jamais -f : autant le dire clairement, avec
+            # ce qu'il contient et ou aller pour l'effacer.
+            check.errors.append(
+                f"Disque {disk_path} non vierge ({info.detail}). "
+                f"Efface-le depuis le menu Disques avant de l'utiliser."
+            )
         elif disk_path in already_used:
             check.errors.append(f"Disque {disk_path} deja utilise par un autre pool.")
 
@@ -692,6 +700,11 @@ def replace_disk(pool_name: str, old_disk: str, new_disk: str) -> str:
         )
     if new_info.status == "in_pool":
         raise ReplacementError(f"Disque {new_disk} deja utilise ({new_info.detail}).")
+    if new_info.status == "occupied":
+        raise ReplacementError(
+            f"Disque {new_disk} non vierge ({new_info.detail}). "
+            f"Efface-le depuis le menu Disques avant de l'utiliser pour la reconstruction."
+        )
 
     code, out, err = _run(["zpool", "replace", pool_name, old_disk, new_disk])
     if code != 0:

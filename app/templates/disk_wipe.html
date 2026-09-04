@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Effacer {{ disk.path }} - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/disks">Disques</a> <span>/</span> <span>Effacer {{ disk.path }}</span>{% endblock %}
+{% block content %}
+    <h1>{{ mode.label }} — {{ disk.path }}</h1>
+    <p class="subtitle">
+      {{ disk.model or 'Modele inconnu' }} &middot;
+      {{ (disk.size_bytes / (1000**3)) | round(1) }} Go
+      {% if disk.serial %}&middot; numero de serie <span class="mono">{{ disk.serial }}</span>{% endif %}
+    </p>
+
+    {% if error %}<div class="warning-banner">⚠ {{ error }}</div>{% endif %}
+
+    <div class="danger-banner">
+      <strong>Operation destructrice et irreversible.</strong>
+      Tout ce qui se trouve sur ce disque deviendra inaccessible. Verifie le
+      numero de serie ci-dessus contre l'etiquette physique du disque : le nom
+      <span class="mono">{{ disk.path }}</span> peut changer d'un demarrage a
+      l'autre, le numero de serie non.
+    </div>
+
+    <h2 class="section-title">Ce que contient ce disque aujourd'hui</h2>
+    <div class="card">
+      {% if disk.contents %}
+      <ul class="removal-list">
+        {% for item in disk.contents %}<li class="mono">{{ item }}</li>{% endfor %}
+      </ul>
+      {% elif disk.partitions %}
+      <p class="stat-sub">
+        Table de partition avec : <span class="mono">{{ disk.partitions | join(', ') }}</span>
+        (aucun systeme de fichiers reconnu).
+      </p>
+      {% else %}
+      <p class="stat-sub">Aucune signature detectee : ce disque parait deja vierge.</p>
+      {% endif %}
+    </div>
+
+    <h2 class="section-title">Ce qui va etre fait</h2>
+    <div class="card">
+      <p class="stat-sub">{{ mode.description }}</p>
+      <p class="stat-sub">Duree attendue : {{ mode.duration }}.</p>
+      <ol class="change-list">
+        {% for step in plan.steps %}<li class="mono">{{ step }}</li>{% endfor %}
+      </ol>
+      {% if mode.key == 'quick' %}
+      <p class="stat-sub dim">
+        A noter : cet effacement rend les donnees inaccessibles mais ne les
+        detruit pas physiquement. Pour un disque destine a quitter la maison
+        (revente, don, mise au rebut), un effacement complet sera necessaire.
+      </p>
+      {% endif %}
+    </div>
+
+    <h2 class="section-title">Confirmation</h2>
+    <form method="post" action="/disks/{{ disk.name }}/wipe/{{ mode.key }}" class="card">
+      <label>Retape le chemin exact du disque : <strong class="mono">{{ disk.path }}</strong></label>
+      <input type="text" name="confirm_path" autocomplete="off" spellcheck="false" required>
+
+      <label>Ton mot de passe ({{ username }})</label>
+      <input type="password" name="password" autocomplete="current-password" required>
+
+      <div class="actions">
+        <a class="btn btn-muted" href="/disks">Annuler</a>
+        <button type="submit" class="btn-solid-danger">Effacer {{ disk.path }} definitivement</button>
+      </div>
+    </form>
+{% endblock %}

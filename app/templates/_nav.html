@@ -11,6 +11,8 @@
 <svg {{ common|safe }}><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
 {% elif name == 'folder' %}
 <svg {{ common|safe }}><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+{% elif name == 'disk' %}
+<svg {{ common|safe }}><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="M14.2 14.2 19 19"/></svg>
 {% elif name == 'pulse' %}
 <svg {{ common|safe }}><path d="M3 12h4l1.6-4 3 8 1.8-4H21"/></svg>
 {% elif name == 'docker' %}
