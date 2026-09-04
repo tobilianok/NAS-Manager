@@ -196,10 +196,14 @@
       <div class="info-panel">
         <strong>Comment ca se passe.</strong> La mise a jour est confiee a un script
         independant : il bascule le depot sur la version choisie, relance
-        l'installation, puis <strong>verifie que l'interface repond vraiment</strong>.
+        l'installation complete — <strong>y compris les nouvelles dependances
+        systeme</strong> —, puis <strong>verifie que l'interface repond vraiment</strong>.
         Si elle ne repond pas dans les deux minutes, il revient <strong>tout seul</strong>
         a la version precedente et la reinstalle — tu ne peux pas te retrouver
         enferme dehors par une mise a jour ratee.<br><br>
+        <strong>Aucune intervention en SSH n'est necessaire</strong>, meme quand une
+        version ajoute un paquet : c'est le meme <span class="mono">install.sh</span>
+        qui tourne, en mode non interactif.<br><br>
         Tes donnees ne sont jamais concernees : partages, comptes, stacks et icones
         vivent dans <span class="mono">/var/lib/nas-manager</span>, en dehors du code
         mis a jour.

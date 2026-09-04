@@ -4,7 +4,7 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
-**Version actuelle : v1.4.1** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+**Version actuelle : v1.4.2** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
 est affiché en bas du menu latéral ; le survol donne le commit déployé et
 signale si des fichiers ont été modifiés à la main sur le serveur.
 
@@ -333,6 +333,18 @@ signale si des fichiers ont été modifiés à la main sur le serveur.
   toujours `git checkout -B main`, retour arrière compris, et l'interface
   détecte un dépôt déjà détaché pour en expliquer le symptôme et donner la
   commande qui le remet d'aplomb — livré, en attente de test réel.
+- Phase 12d (**v1.4.2**) : plus aucune intervention en SSH pour mettre à
+  jour, même quand une version ajoute une dépendance système. Le script de
+  mise à jour lançait déjà `install.sh` lui-même depuis la v1.1.0 — la
+  consigne donnée avec la v1.4.0 était inexacte. Ce qui manquait, c'est que
+  `install.sh` soit **sûr sans terminal** : exécuté détaché, une question
+  d'apt sur un fichier de configuration l'aurait bloqué indéfiniment. Il
+  répond désormais par avance, en gardant la version locale du fichier. La
+  vérification finale attend le service jusqu'à 30 s au lieu d'un `sleep 2` —
+  sur une machine modeste, un démarrage un peu lent était pris pour un échec
+  et déclenchait à tort le retour arrière. Nouveau fichier de tests sur les
+  scripts shell, chaque propriété correspondant à une façon connue de bloquer
+  une mise à jour à distance — livré, en attente de test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -460,7 +472,9 @@ vierges) et l'effacement de disque (refus catégoriques, ce qui est réellement
 exécuté), les auto-tests SMART (analyse de la sortie de smartctl, liste
 blanche des types de test) et les effacements longs (refus catégoriques,
 détachement, état « frozen », progression) et la détection d'un dépôt en HEAD
-détaché (823 tests).
+détaché, ainsi que les scripts shell eux-mêmes (apt non interactif, dépôt
+maintenu sur une branche, refus d'un effacement hors périphérique bloc)
+(840 tests).
 
 ## Développement
 

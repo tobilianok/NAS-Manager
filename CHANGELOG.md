@@ -13,6 +13,36 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.4.2 — 2026-09-04
+
+Aucune intervention en SSH n'est nécessaire pour mettre à jour, y compris
+quand une version ajoute une dépendance système.
+
+- **Mise au point** : le script de mise à jour lançait déjà `install.sh`
+  lui-même depuis la v1.1.0 — la consigne « il faut repasser par
+  `sudo ./install.sh` » donnée avec la v1.4.0 était **inexacte**. `hdparm`
+  s'installait tout seul.
+- Ce qui manquait vraiment, c'est que `install.sh` soit **sûr sans
+  terminal** : il est exécuté détaché, sans clavier ni écran. Si apt posait
+  une question sur un fichier de configuration modifié, il attendrait une
+  réponse qui ne viendrait jamais et la mise à jour resterait bloquée. Le
+  script répond donc par avance, de façon conservatrice — garder la version
+  locale du fichier — comme le fait déjà l'écran des mises à jour système.
+- La vérification finale attend le service jusqu'à 30 secondes au lieu d'un
+  `sleep 2` fixe. Sur une machine modeste, un premier démarrage un peu lent
+  après une mise à jour de dépendances était pris pour un échec — et
+  déclenchait à tort le retour arrière automatique.
+- L'écran des mises à jour dit maintenant explicitement que l'installation
+  complète est relancée, dépendances comprises.
+- Nouveau fichier de tests sur les scripts shell : chaque propriété vérifiée
+  correspond à une façon connue de bloquer une mise à jour à distance
+  (`GIT_TERMINAL_PROMPT`, `checkout -B main`, refus d'un `dd` hors
+  périphérique bloc, locale figée, apt non interactif, compteur d'étapes
+  cohérent).
+- 840 tests automatisés.
+
+---
+
 ## v1.4.1 — 2026-09-04
 
 Correction d'un piège introduit en v1.1.0, rencontré en conditions réelles.

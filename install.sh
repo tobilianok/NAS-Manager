@@ -11,6 +11,16 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+# Ce script n'est PAS toujours lance depuis un terminal : la mise a jour
+# depuis l'interface web l'execute elle-meme, detache, sans clavier ni
+# ecran. Si apt posait alors une question (typiquement "garder le fichier de
+# configuration modifie ou prendre celui du paquet ?"), il attendrait une
+# reponse qui ne viendrait jamais et la mise a jour resterait bloquee.
+# On repond donc par avance, et de facon conservatrice : garder la version
+# locale du fichier de configuration.
+export DEBIAN_FRONTEND=noninteractive
+APT_OPTS=(-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${INSTALL_DIR}/.env"
 SSL_DIR="/etc/nas-manager/ssl"
@@ -22,7 +32,7 @@ echo "==> [1/15] Mise a jour du systeme et installation des dependances"
 # necessaires pour le scan et la connexion wifi (WPA2) si une carte wifi est
 # presente ; sans effet sur une machine sans carte wifi.
 apt-get update
-apt-get install -y \
+apt-get install -y "${APT_OPTS[@]}" \
     python3 python3-venv python3-pip \
     zfsutils-linux smartmontools lsscsi nvme-cli hdparm \
     samba nfs-kernel-server acl \
@@ -189,7 +199,15 @@ systemctl enable nas-manager.service
 systemctl restart nas-manager.service
 
 echo "==> [15/15] Verification du service"
-sleep 2
+# Attente active plutot qu'un `sleep` fixe : sur une machine modeste, le
+# premier demarrage apres une mise a jour de dependances peut depasser deux
+# secondes - et declencher a tort le retour arriere automatique de la mise a
+# jour, qui se fie au code de retour de ce script.
+for _ in $(seq 1 30); do
+    systemctl is-active --quiet nas-manager.service && break
+    sleep 1
+done
+
 if systemctl is-active --quiet nas-manager.service; then
     IP_ADDR="$(hostname -I | awk '{print $1}')"
     echo ""
