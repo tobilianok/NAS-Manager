@@ -13,6 +13,59 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.1.0 — 2026-09-04
+
+Nouveau menu **Paramètres → Mises à jour**, qui couvre deux choses
+indépendantes.
+
+### Mises à jour du système Ubuntu
+- État lu sans rien modifier : paquets en attente, dont ceux de sécurité,
+  et détection du redémarrage requis (`/var/run/reboot-required`).
+- Quatre actions, toutes diffusées **en direct** dans une fenêtre de logs :
+  mise à jour simple (`upgrade`, qui n'enlève jamais un paquet), sécurité
+  uniquement (`unattended-upgrade`), nettoyage (`autoremove`) et mise à jour
+  complète (`dist-upgrade`).
+- `dist-upgrade` passe par une **page de validation qui liste les paquets
+  qui seraient supprimés**, recalculée au moment du clic. Si la liste ne peut
+  pas être calculée, le bouton disparaît : on ne lance pas à l'aveugle une
+  commande capable de retirer ZFS ou Samba.
+- Toutes les commandes sont non interactives (`DEBIAN_FRONTEND`,
+  `--force-confold`) : sans ça, une question d'apt sur un fichier de
+  configuration bloquerait le processus indéfiniment, sans clavier pour
+  répondre. Le choix imposé est le conservateur : garder la version locale.
+- Redémarrage de la machine depuis l'interface, protégé par la saisie du mot
+  `REDEMARRER` **et** du mot de passe de l'administrateur connecté, avec
+  avertissement si une reconstruction ZFS est en cours ou si des stacks
+  Docker tournent.
+
+### Mise à jour de NAS Manager depuis GitHub
+- Deux cibles au choix : la dernière **version stable** (dernier tag) ou la
+  dernière **version de développement** (dernier commit de `main`, clairement
+  averti). La liste des changements depuis la version installée est affichée.
+- **Retour arrière automatique** : après l'installation, le service redémarre
+  et sa page de santé est interrogée pendant deux minutes. Si elle ne répond
+  pas, la version précédente est restaurée et réinstallée toute seule. Une
+  interface web qui se met à jour elle-même peut se couper l'accès ; sans ce
+  filet, il faudrait un clavier ou du SSH pour s'en sortir.
+- La mise à jour est exécutée par un **script détaché** (`systemd-run`), pas
+  par le serveur web : le processus qui redémarre le service ne peut pas être
+  celui qu'on redémarre. Sa progression est écrite dans un fichier d'état que
+  l'interface relit — la mémoire du service, elle, ne survit pas à l'opération.
+- Refus explicite si des fichiers ont été modifiés à la main sur le serveur
+  (ils seraient écrasés), si GitHub est injoignable, ou si une mise à jour est
+  déjà en cours.
+- Retour arrière manuel également disponible, vers la version précédente.
+- Les données ne sont jamais concernées : registres, comptes, icônes et
+  avatars vivent dans `/var/lib/nas-manager`, en dehors du code mis à jour.
+
+### Divers
+- Nouvelle route `/healthz` sans authentification, volontairement muette :
+  elle ne dit que « je réponds ». C'est ce que le script de mise à jour
+  interroge, et ce sur quoi la page de redémarrage se reconnecte.
+- 677 tests automatisés.
+
+---
+
 ## v1.0.0 — 2026-09-04
 
 Première version numérotée. Elle regroupe tout ce qui a été construit depuis

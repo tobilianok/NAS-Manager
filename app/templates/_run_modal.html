@@ -1,7 +1,8 @@
-{# Fenetre de logs en direct pour les actions `docker compose` (Phase 9a).
-   S'utilise depuis n'importe quelle page enveloppee dans
-   x-data="dockerRun('<nom de la stack>')" : les boutons appellent
-   run('<action>'), et cette fenetre s'occupe du reste. #}
+{# Fenetre de logs en direct (Phase 9a, generalisee en 11b).
+   Deux usages, meme fenetre et meme protocole d'evenements :
+     x-data="dockerRun('<stack>')"  -> actions docker compose
+     x-data="liveRun('/ws/updates/system/')" -> actions apt
+   Les boutons appellent run('<action>'), la fenetre s'occupe du reste. #}
 <div class="modal-overlay run-overlay" x-show="open" x-cloak
      @keydown.escape.window="if (!running) close()">
   <div class="modal-box run-box" @click.outside="if (!running) close()">
@@ -41,11 +42,14 @@
 </div>
 
 <script>
-function dockerRun(stackName) {
+// `wsBase` est un prefixe d'URL cote SERVEUR ; seule la cle d'action est
+// ajoutee par le navigateur. Aucune commande ne transite jamais par ici.
+function liveRun(wsBase) {
   return {
     open: false, running: false, ok: null, code: 0,
     title: '', description: '', lines: [], seq: 0,
     countdown: 0, copied: false, ws: null, timer: null,
+    reloadOnClose: true,
 
     run(action, confirmText) {
       if (this.running) return;
@@ -56,8 +60,7 @@ function dockerRun(stackName) {
       if (this.timer) { clearInterval(this.timer); this.timer = null; }
 
       var proto = (location.protocol === 'https:') ? 'wss://' : 'ws://';
-      var url = proto + location.host + '/ws/docker/' + encodeURIComponent(stackName) +
-                '/run/' + encodeURIComponent(action);
+      var url = proto + location.host + wsBase + encodeURIComponent(action);
       var self = this;
       var ws = new WebSocket(url);
       this.ws = ws;
@@ -131,10 +134,15 @@ function dockerRun(stackName) {
       if (this.running) return;      // jamais pendant l'execution
       if (this.timer) { clearInterval(this.timer); this.timer = null; }
       this.open = false;
-      // L'etat reel des containers a pu changer : on relit la page plutot
-      // que d'afficher un tableau perime.
-      location.reload();
+      // L'etat reel (containers, paquets installes) a pu changer : on relit
+      // la page plutot que d'afficher un tableau perime.
+      if (this.reloadOnClose) { location.reload(); }
     },
   };
+}
+
+// Conserve pour les pages Docker : meme fenetre, URL specialisee.
+function dockerRun(stackName) {
+  return liveRun('/ws/docker/' + encodeURIComponent(stackName) + '/run/');
 }
 </script>

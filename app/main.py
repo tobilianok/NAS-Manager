@@ -23,6 +23,7 @@ from app import (
     auth, disks, zfs, sysstats, smart as smart_module, replace_workflow, shares,
     nasusers, dockerstacks, netstats, health, netconfig, dockerconsole, dockerops,
     sysaccounts, configbackup, poolexpand, navigation, version as version_module,
+    sysupdate, appupdate, liverun,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -2177,3 +2178,194 @@ def admin_groups_delete(request: Request, groupname: str, username: str = Depend
     except sysaccounts.SysAccountError as exc:
         return _render_admin_accounts(request, username, error=str(exc), status_code=400)
     return RedirectResponse("/admin-accounts", status_code=302)
+
+
+# ---------------------------------------------------------------------------
+# Mises a jour (Phase 11b) - systeme Ubuntu et NAS Manager lui-meme
+# ---------------------------------------------------------------------------
+
+@app.get("/healthz")
+def healthz():
+    """Page de sante SANS authentification, volontairement muette : elle ne
+    dit que "je reponds". C'est ce que le script de mise a jour interroge
+    apres redemarrage pour decider s'il garde la nouvelle version ou s'il
+    revient a la precedente - il n'a pas de session, il ne peut donc pas
+    passer par une route protegee."""
+    return JSONResponse({"status": "ok"})
+
+
+def _updates_context(request: Request, username: str, fetch: bool = True,
+                     error: str | None = None) -> dict:
+    try:
+        system_status = sysupdate.get_status()
+    except Exception:  # noqa: BLE001 - un souci apt ne doit pas vider la page
+        logger.exception("Lecture de l'etat des mises a jour systeme impossible")
+        system_status = sysupdate.SystemUpdateStatus(
+            error="Impossible de lire l'etat des paquets (voir les journaux du service)."
+        )
+    return {
+        "request": request, "username": username,
+        "system": system_status,
+        "app_status": appupdate.get_status(fetch=fetch),
+        "progress": appupdate.read_progress(),
+        "actions": sysupdate.ACTIONS,
+        "error": error,
+        "running_stacks": _running_stack_names(),
+        "resilvering_pools": _resilvering_pool_names(),
+    }
+
+
+def _running_stack_names() -> list[str]:
+    """Stacks Docker en cours d'execution : un redemarrage les coupe, il
+    vaut mieux le dire avant."""
+    try:
+        return [row["stack"].name for row in _docker_dashboard_rows() if row["running"] > 0]
+    except Exception:  # noqa: BLE001
+        logger.debug("Etat des stacks indisponible pour l'ecran de mise a jour", exc_info=True)
+        return []
+
+
+def _resilvering_pool_names() -> list[str]:
+    """Un redemarrage pendant une reconstruction la suspend : ZFS la reprend
+    au redemarrage, mais le pool reste degrade plus longtemps. On avertit."""
+    try:
+        return [p.name for p in zfs.list_pools()
+                if zfs.get_resilver_status(p.name).in_progress]
+    except Exception:  # noqa: BLE001
+        logger.debug("Etat des pools indisponible pour l'ecran de mise a jour", exc_info=True)
+        return []
+
+
+@app.get("/updates", response_class=HTMLResponse)
+def updates_page(request: Request, username: str = Depends(require_login),
+                 error: str | None = None):
+    return templates.TemplateResponse(
+        "updates.html", _updates_context(request, username, error=error)
+    )
+
+
+@app.get("/partials/update-progress", response_class=HTMLResponse)
+def partial_update_progress(request: Request, username: str = Depends(require_login)):
+    """Suivi de la mise a jour de NAS Manager. Volontairement lu depuis le
+    FICHIER d'etat et non depuis la memoire : pendant l'operation, le
+    service redemarre - toute progression gardee en memoire serait perdue
+    au moment ou l'on en a le plus besoin."""
+    return templates.TemplateResponse(
+        "_update_progress_partial.html",
+        {"request": request, "progress": appupdate.read_progress()},
+    )
+
+
+@app.get("/updates/system/preview/{action_key}", response_class=HTMLResponse)
+def updates_system_preview(request: Request, action_key: str,
+                           username: str = Depends(require_login)):
+    """Page de validation des actions qui peuvent SUPPRIMER des paquets.
+    La liste est recalculee ici, au moment du clic."""
+    try:
+        action = sysupdate.resolve_action(action_key)
+    except sysupdate.SystemUpdateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    if not action.may_remove:
+        return RedirectResponse("/updates", status_code=302)
+
+    removals: list[str] = []
+    preview_error = ""
+    try:
+        removals = sysupdate.preview_dist_upgrade() if action_key == "dist_upgrade" else []
+    except (sysupdate.SystemUpdateError, OSError) as exc:
+        preview_error = str(exc)
+
+    return templates.TemplateResponse(
+        "update_confirm.html",
+        {
+            "request": request, "username": username, "action": action,
+            "removals": removals, "preview_error": preview_error,
+        },
+    )
+
+
+@app.post("/updates/reboot", response_class=HTMLResponse)
+def updates_reboot(request: Request, username: str = Depends(require_login),
+                   password: str = Form(...), confirm: str = Form("")):
+    """Redemarrage de la machine. Exige le mot de passe de l'admin connecte
+    (meme regle que toutes les actions sensibles depuis la Phase 8b) et la
+    saisie du mot 'REDEMARRER'."""
+    if confirm.strip().upper() != "REDEMARRER":
+        return _render_updates_error(request, username,
+                                     "Confirmation incorrecte : tape REDEMARRER pour valider.")
+    if not auth.authenticate(username, password):
+        return _render_updates_error(request, username, "Mot de passe incorrect.")
+
+    logger.warning("Redemarrage de la machine demande par %s", username)
+    try:
+        subprocess.Popen(["systemctl", "reboot"])
+    except OSError as exc:
+        return _render_updates_error(request, username, f"Redemarrage impossible : {exc}")
+    return templates.TemplateResponse(
+        "reboot_pending.html", {"request": request, "username": username}
+    )
+
+
+def _render_updates_error(request: Request, username: str, message: str):
+    context = _updates_context(request, username, fetch=False, error=message)
+    return templates.TemplateResponse("updates.html", context, status_code=400)
+
+
+@app.post("/updates/app/{kind}")
+def updates_app_start(request: Request, kind: str, username: str = Depends(require_login)):
+    try:
+        target = appupdate.start_update(kind)
+    except appupdate.AppUpdateError as exc:
+        return _render_updates_error(request, username, str(exc))
+    logger.warning("Mise a jour de NAS Manager vers %s lancee par %s", target.label, username)
+    return RedirectResponse("/updates?started=1", status_code=302)
+
+
+@app.post("/updates/app-rollback")
+def updates_app_rollback(request: Request, username: str = Depends(require_login)):
+    try:
+        previous = appupdate.start_rollback()
+    except appupdate.AppUpdateError as exc:
+        return _render_updates_error(request, username, str(exc))
+    logger.warning("Retour arriere de NAS Manager vers %s demande par %s", previous, username)
+    return RedirectResponse("/updates", status_code=302)
+
+
+@app.websocket("/ws/updates/system/{action}")
+async def updates_system_ws(websocket: WebSocket, action: str):
+    """Execute une action apt en relayant sa sortie EN DIRECT. Comme pour
+    Docker, le navigateur envoie une CLE de liste blanche, jamais une
+    commande."""
+    username = websocket.session.get("username")
+    if not username:
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+    try:
+        resolved = sysupdate.resolve_action(action)
+        stream = liverun.stream_commands(
+            resolved.steps, resolved.label, resolved.description,
+            env=sysupdate.APT_ENV, timeout=sysupdate.STEP_TIMEOUT_SECONDS,
+        )
+        async for event in stream:
+            await websocket.send_json(event)
+    except sysupdate.SystemUpdateError as exc:
+        await websocket.send_json({"type": "done", "ok": False, "code": -1, "text": str(exc)})
+    except WebSocketDisconnect:
+        logger.info("Fenetre de mise a jour systeme fermee pendant '%s'", action)
+        return
+    except Exception:  # noqa: BLE001
+        logger.exception("Action systeme '%s' a plante", action)
+        try:
+            await websocket.send_json({
+                "type": "done", "ok": False, "code": -1,
+                "text": "Erreur interne pendant l'execution - voir les journaux du service.",
+            })
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        await websocket.close()
+    except Exception:  # noqa: BLE001
+        pass

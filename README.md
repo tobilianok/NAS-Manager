@@ -6,7 +6,7 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
-**Version actuelle : v1.0.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+**Version actuelle : v1.1.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
 est affiché en bas du menu latéral ; le survol donne le commit déployé et
 signale si des fichiers ont été modifiés à la main sur le serveur.
 
@@ -246,7 +246,27 @@ signale si des fichiers ont été modifiés à la main sur le serveur.
   déjà ouverte au premier pixel, et le menu reste utilisable même si le
   JavaScript ne charge pas. Le projet passe en **v1.0.0** (versionnage
   sémantique, `CHANGELOG.md`), numéro affiché en bas du menu — c'est la
-  référence sur laquelle s'appuiera l'écran de mise à jour de la 11b.
+  référence sur laquelle s'appuie l'écran de mise à jour de la 11b.
+- Phase 11b (**v1.1.0**) : nouveau menu « Mises à jour », deux systèmes
+  indépendants. Côté **Ubuntu** : état lu sans rien modifier, puis quatre
+  actions diffusées en direct — mise à jour simple (qui n'enlève jamais un
+  paquet), sécurité uniquement, nettoyage, et `dist-upgrade` **précédé d'une
+  page listant les paquets qui seraient supprimés**, recalculée au clic ; si
+  cette liste ne peut pas être calculée, le bouton disparaît, parce qu'on ne
+  lance pas à l'aveugle une commande capable de retirer ZFS ou Samba. Toutes
+  les commandes sont non interactives : sans ça une question d'apt sur un
+  fichier de configuration bloquerait le processus indéfiniment, sans clavier
+  pour répondre. Redémarrage de la machine protégé par un mot à retaper *et*
+  le mot de passe admin, avec avertissement si un resilver tourne ou si des
+  stacks sont en cours. Côté **NAS Manager** : mise à jour depuis GitHub vers
+  le dernier tag (stable) ou le dernier commit de `main` (développement,
+  averti), avec **retour arrière automatique** si l'interface ne répond plus
+  après redémarrage — une interface qui se met à jour elle-même peut se
+  couper l'accès, et sans ce filet il faudrait du SSH pour s'en sortir. Le
+  travail est confié à un script détaché (`systemd-run`) : le processus qui
+  redémarre le service ne peut pas être celui qu'on redémarre. Les données
+  (`/var/lib/nas-manager`) sont hors du code mis à jour, donc jamais
+  concernées — livré, en attente de test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -364,8 +384,11 @@ affaibliraient la redondance, essai à blanc, recalcul avant exécution),
 la cascade de suppression d'un pool (ordre des opérations, registres
 préservés si la destruction échoue), le panneau d'état système enrichi
 (charge par cœur, topologie CPU, répartition mémoire) et la structure du
-menu latéral (correspondance page/entrée, rubriques, version affichée)
-(609 tests).
+menu latéral (correspondance page/entrée, rubriques, version affichée), les
+mises à jour système (analyse des simulations apt, liste blanche d'actions
+non interactives, redémarrage requis) et la mise à jour de NAS Manager
+lui-même (garde-fous avant lancement, détachement du processus, fichier
+d'état, retour arrière) (677 tests).
 
 ## Développement
 
