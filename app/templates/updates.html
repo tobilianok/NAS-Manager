@@ -137,6 +137,16 @@
       </div>
       {% endif %}
 
+      {% if app_status.diverged %}
+      <div class="warning-banner">
+        ⚠ <strong>La branche locale est en retard de {{ app_status.behind_origin }} commit(s) sur GitHub</strong>{% if app_status.ahead_origin %}, et en avance de {{ app_status.ahead_origin }}{% endif %}.
+        Ton prochain <span class="mono">git push origin main</span> sera refuse
+        (non-fast-forward). Pour resynchroniser, depuis le dossier du depot :
+        <span class="mono">git pull --no-rebase --no-edit origin main</span>,
+        puis pousse a nouveau.
+      </div>
+      {% endif %}
+
       {% if app_status.dirty %}
       <div class="warning-banner">
         ⚠ Des fichiers du serveur ont ete modifies a la main. La mise a jour est
@@ -154,6 +164,8 @@
             </div>
             {% if target.available %}
               <span class="badge badge-warn">disponible</span>
+            {% elif target.already_included %}
+              <span class="badge badge-neutral">deja inclus</span>
             {% else %}
               <span class="badge badge-ok">a jour</span>
             {% endif %}
@@ -168,6 +180,14 @@
           </p>
           {% if target.warning %}
           <p class="stat-sub warn-text">⚠ {{ target.warning }}</p>
+          {% endif %}
+          {% if target.already_included %}
+          <p class="stat-sub dim">
+            Cette version est deja contenue dans ce qui est deploye : elle a ete
+            integree par une fusion, et le tag se retrouve sous la pointe de la
+            branche. L'installer ferait reculer la branche au lieu de
+            l'avancer — elle n'est donc pas proposee.
+          </p>
           {% endif %}
 
           <form method="post" action="/updates/app/{{ target.kind }}">

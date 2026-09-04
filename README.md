@@ -6,7 +6,7 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
-**Version actuelle : v1.4.2** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+**Version actuelle : v1.4.3** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
 est affiché en bas du menu latéral ; le survol donne le commit déployé et
 signale si des fichiers ont été modifiés à la main sur le serveur.
 
@@ -347,6 +347,19 @@ signale si des fichiers ont été modifiés à la main sur le serveur.
   et déclenchait à tort le retour arrière. Nouveau fichier de tests sur les
   scripts shell, chaque propriété correspondant à une façon connue de bloquer
   une mise à jour à distance — livré, en attente de test réel.
+- Phase 12e (**v1.4.3**) : suite et fin du correctif 12c. Le `checkout -B
+  main` de la v1.4.1 déplaçait le pointeur **de force**, effaçant de la
+  branche les commits de fusion créés en intégrant les livraisons — ceux-là
+  mêmes qui vivent sur GitHub. La branche se retrouvait en retard sur
+  `origin/main` et le push suivant était **rejeté**. La mise à jour avance
+  désormais par **fast-forward** quand elle le peut, et signale explicitement
+  le déplacement quand il est inévitable (retour arrière). Surtout, une
+  version déjà contenue dans ce qui est déployé n'est plus proposée : c'est
+  le cas courant quand la livraison a été intégrée par une fusion, et
+  l'installer ferait reculer la branche au lieu de l'avancer. L'écran compare
+  aussi la branche locale à GitHub et annonce un retard **avant** la
+  livraison, avec la commande de resynchronisation — livré, en attente de
+  test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -477,7 +490,7 @@ blanche des types de test) et les effacements longs (refus catégoriques,
 détachement, état « frozen », progression) et la détection d'un dépôt en HEAD
 détaché, ainsi que les scripts shell eux-mêmes (apt non interactif, dépôt
 maintenu sur une branche, refus d'un effacement hors périphérique bloc)
-(840 tests).
+et l'écart avec GitHub (847 tests).
 
 ## Développement
 

@@ -55,6 +55,9 @@ fi
 
 PREVIOUS_COMMIT="$("${GIT[@]}" rev-parse HEAD 2>/dev/null || echo '')"
 STARTED="$(date +%s)"
+# Passe a 1 quand la branche main a du etre deplacee de force : l'interface
+# le signale, sinon Louis ne le decouvrirait qu'au prochain push rejete.
+BRANCH_MOVED=0
 
 log() {
     echo "[$(date '+%H:%M:%S')] $*" >> "${LOG_FILE}"
@@ -125,6 +128,7 @@ rollback() {
     # -B main la aussi : un retour arriere ne doit pas laisser le depot dans
     # un etat ou la livraison suivante echouera silencieusement.
     "${GIT[@]}" checkout -B main "${PREVIOUS_COMMIT}" >> "${LOG_FILE}" 2>&1
+    BRANCH_MOVED=1
     bash "${REPO_DIR}/install.sh" >> "${LOG_FILE}" 2>&1
     systemctl restart "${SERVICE}" >> "${LOG_FILE}" 2>&1
 
@@ -150,20 +154,39 @@ fi
 # A partir d'ici seulement le depot est modifie : tout echec declenche le
 # retour arriere automatique.
 #
-# TOUJOURS `checkout -B main`, jamais un checkout detache (correctif 12c).
-# La version precedente ne gardait la branche que si la cible etait
-# exactement la pointe de origin/main ; un tag plus ancien laissait le depot
-# en HEAD detache. C'etait defendable en theorie, et un piege en pratique :
-# un `git pull <bundle> main` depuis un HEAD detache annonce fierement
-# "Fast-forward", fait avancer HEAD... et laisse la BRANCHE main en arriere.
-# Le `git push origin main` qui suit ne pousse alors que les tags, sans rien
-# signaler d'anormal. Rencontre en reel le 2026-09-04.
+# On reste TOUJOURS sur la branche main (correctif 12c : un HEAD detache
+# faisait avancer HEAD sans la branche, et le git push suivant ne poussait
+# plus que les tags, en silence).
 #
-# Faire pointer main sur ce qui est reellement deploye est de toute facon
-# plus juste pour un depot de deploiement : `git status` dit la verite, et
-# le cycle de livraison habituel continue de fonctionner.
-if ! run_step "Bascule sur ${TARGET_LABEL}" "${GIT[@]}" checkout -B main "${TARGET_REF}"; then
-    rollback "La bascule vers ${TARGET_LABEL} a echoue."
+# Mais `checkout -B main` deplacait le pointeur de force (correctif 12e) :
+# il effacait de la branche les commits de fusion crees en integrant les
+# livraisons, qui eux vivent sur GitHub. La branche locale se retrouvait
+# EN RETARD sur origin/main, et le push suivant etait rejete
+# (non-fast-forward). Moins grave que le silence de la 12c - au moins git
+# proteste - mais toujours bloquant.
+#
+# Regle appliquee maintenant :
+#   - avancer par FAST-FORWARD quand la cible descend de la branche : rien
+#     n'est perdu, le cycle de livraison continue de fonctionner ;
+#   - sinon (retour arriere, ou histoire divergente) deplacer le pointeur,
+#     mais le SIGNALER : la branche ne correspond alors plus a GitHub, et
+#     l'interface doit le dire plutot que de laisser decouvrir au push.
+if ! run_step "Passage sur la branche main" bash -c \
+        "$(printf '%q ' "${GIT[@]}") checkout main 2>/dev/null || $(printf '%q ' "${GIT[@]}") checkout -B main"; then
+    rollback "Impossible de se placer sur la branche main."
+fi
+
+if "${GIT[@]}" merge-base --is-ancestor HEAD "${TARGET_REF}" 2>/dev/null; then
+    if ! run_step "Avance vers ${TARGET_LABEL}" "${GIT[@]}" merge --ff-only "${TARGET_REF}"; then
+        rollback "La bascule vers ${TARGET_LABEL} a echoue."
+    fi
+else
+    log "!! ${TARGET_LABEL} ne descend pas de la branche main : deplacement du pointeur."
+    BRANCH_MOVED=1
+    if ! run_step "Bascule sur ${TARGET_LABEL} (deplacement de la branche)" \
+            "${GIT[@]}" reset --hard "${TARGET_REF}"; then
+        rollback "La bascule vers ${TARGET_LABEL} a echoue."
+    fi
 fi
 
 if ! run_step "Installation (dependances, service)" bash "${REPO_DIR}/install.sh"; then
@@ -181,4 +204,8 @@ if ! wait_for_health; then
 fi
 
 log "Mise a jour terminee avec succes vers ${TARGET_LABEL}"
-write_state success "Termine" "NAS Manager est maintenant en ${TARGET_LABEL}."
+if [[ "${BRANCH_MOVED}" -eq 1 ]]; then
+    write_state success "Termine" "NAS Manager est maintenant en ${TARGET_LABEL}. Attention : la branche main a ete deplacee sur cette version et ne correspond plus a GitHub - resynchronise avec 'git pull --no-rebase origin main' avant ta prochaine livraison."
+else
+    write_state success "Termine" "NAS Manager est maintenant en ${TARGET_LABEL}."
+fi

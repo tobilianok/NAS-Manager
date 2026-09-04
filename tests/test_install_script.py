@@ -85,8 +85,25 @@ def test_the_update_always_keeps_a_branch():
     """Correctif 12c : un checkout detache faisait avancer HEAD sans la
     branche, et le git push suivant ne poussait plus que les tags."""
     content = SELF_UPDATE.read_text()
-    assert "checkout -B main" in content
+    assert "checkout main" in content
     assert "checkout --force" not in content
+
+
+def test_the_update_advances_by_fast_forward_when_it_can():
+    """Correctif 12e : deplacer le pointeur de force effacait de la branche
+    les commits de fusion crees en integrant les livraisons - la branche se
+    retrouvait en retard sur GitHub et le push etait rejete."""
+    content = SELF_UPDATE.read_text()
+    assert "merge-base --is-ancestor HEAD" in content
+    assert "merge --ff-only" in content
+
+
+def test_a_forced_branch_move_is_reported():
+    """Quand le deplacement est inevitable (retour arriere), il doit etre
+    signale : sinon on le decouvre au push suivant, refuse."""
+    content = SELF_UPDATE.read_text()
+    assert "BRANCH_MOVED=1" in content
+    assert "ne correspond plus a GitHub" in content
 
 
 def test_the_update_runs_the_installer_itself():

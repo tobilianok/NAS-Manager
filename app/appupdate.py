@@ -62,8 +62,11 @@ class UpdateTarget:
     label: str               # "v1.1.0" ou "main @ a1b2c3d"
     ref: str                 # reference git resolue (tag ou sha)
     commit: str              # sha court
-    available: bool          # vrai si different de la version deployee
+    available: bool          # vrai si cette version apporte quelque chose de nouveau
     warning: str = ""        # avertissement affiche a cote du bouton
+    # Vrai quand la version est deja contenue dans l'historique deploye : la
+    # proposer ferait RECULER la branche, pas avancer.
+    already_included: bool = False
 
 
 @dataclass
@@ -85,10 +88,19 @@ class AppUpdateStatus:
     # avancer HEAD, mais laisse la BRANCHE en arriere - le `git push` suivant
     # ne pousse alors rien d'autre que les tags, sans le dire.
     branch: str = ""
+    # Ecart entre la branche locale et GitHub. Un retard signifie que le
+    # prochain `git push` sera refuse (non-fast-forward) : autant le dire
+    # ici plutot que de le laisser decouvrir au moment de livrer.
+    behind_origin: int = 0
+    ahead_origin: int = 0
 
     @property
     def detached(self) -> bool:
         return self.git_available and not self.branch
+
+    @property
+    def diverged(self) -> bool:
+        return self.behind_origin > 0
 
     def target(self, kind: str) -> UpdateTarget | None:
         for candidate in self.targets:
@@ -134,6 +146,11 @@ def _git_out(*args: str) -> str | None:
     return out if code == 0 and out else None
 
 
+def _is_ancestor(commit: str, of: str) -> bool:
+    """Vrai si `commit` est deja contenu dans l'historique de `of`."""
+    return _git("merge-base", "--is-ancestor", commit, of)[0] == 0
+
+
 def get_status(fetch: bool = True) -> AppUpdateStatus:
     """Etat des mises a jour de NAS Manager. `fetch=False` evite l'acces
     reseau (utile pour un affichage rapide, ou hors connexion)."""
@@ -167,23 +184,38 @@ def get_status(fetch: bool = True) -> AppUpdateStatus:
 
     head = _git_out("rev-parse", "HEAD")
 
+    # Ecart avec GitHub. `rev-list --count A..B` compte ce que B a en plus.
+    counts = _git_out("rev-list", "--left-right", "--count", "HEAD...origin/main")
+    if counts:
+        parts = counts.split()
+        if len(parts) == 2 and all(p.isdigit() for p in parts):
+            status.ahead_origin, status.behind_origin = int(parts[0]), int(parts[1])
+
     # --- Version stable : le dernier tag accessible depuis origin/main ---
     latest_tag = _git_out("describe", "--tags", "--abbrev=0", "origin/main")
     if latest_tag:
         tag_commit = _git_out("rev-list", "-n", "1", latest_tag)
+        # Une version DEJA contenue dans l'historique deploye ne doit pas
+        # etre proposee : l'installer ferait reculer la branche au lieu de
+        # l'avancer. C'est le cas courant quand la livraison a ete integree
+        # par une fusion, le tag se retrouvant alors sous la pointe.
+        included = bool(tag_commit and head and _is_ancestor(tag_commit, head))
         status.targets.append(UpdateTarget(
             kind=STABLE, label=latest_tag, ref=latest_tag,
             commit=(tag_commit or "")[:7],
-            available=bool(tag_commit and tag_commit != head),
+            available=bool(tag_commit and tag_commit != head and not included),
+            already_included=included and tag_commit != head,
         ))
 
     # --- Version de developpement : le dernier commit de origin/main ---
     dev_commit = _git_out("rev-parse", "origin/main")
     if dev_commit:
+        dev_included = bool(head and _is_ancestor(dev_commit, head))
         status.targets.append(UpdateTarget(
             kind=DEV, label=f"main @ {dev_commit[:7]}", ref="origin/main",
             commit=dev_commit[:7],
-            available=dev_commit != head,
+            available=dev_commit != head and not dev_included,
+            already_included=dev_included and dev_commit != head,
             warning=(
                 "Version de developpement : ce commit n'a pas ete publie comme "
                 "version stable, il peut contenir du travail en cours."
