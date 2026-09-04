@@ -219,6 +219,9 @@ def create_archive(dest_dir: Path | None = None) -> Path:
     contents: dict[str, object] = {}
 
     # 1. Configuration NAS Manager
+    # Les fichiers sont repris UN PAR UN, jamais par balayage du dossier
+    # d'etat : ce dossier contient aussi des secrets qui n'ont rien a faire
+    # dans une archive telechargeable (jeton GitHub de la Phase 11c).
     nm = staging / "nas-manager"
     nm.mkdir(parents=True, exist_ok=True)
     _copy_if_exists(Path(shares.REGISTRY_FILE), nm / "shares.json")

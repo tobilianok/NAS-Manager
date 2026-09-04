@@ -276,3 +276,96 @@ def test_progress_ignores_unknown_fields():
 def test_state_file_is_not_world_readable():
     appupdate.write_progress(appupdate.UpdateProgress(status="running"))
     assert (appupdate.STATE_FILE.stat().st_mode & 0o077) == 0
+
+
+# ---------------------------------------------------------------------------
+# Authentification GitHub (Phase 11c)
+# ---------------------------------------------------------------------------
+
+AUTH_ERROR = ("fatal: could not read Username for 'https://github.com': "
+              "No such device or address")
+
+
+def test_an_authentication_failure_is_explained_not_recopied(monkeypatch):
+    """C'est l'erreur rencontree en reel : le message brut de git est
+    incomprehensible, la page doit dire quoi faire."""
+    from app import gitauth
+
+    def _git(*args, timeout=60):
+        if args[0] == "fetch":
+            return (128, "", AUTH_ERROR)
+        return fake_git(BASE_GIT)(*args, timeout=timeout)
+
+    monkeypatch.setattr(appupdate, "_git", _git)
+    monkeypatch.setattr(gitauth, "has_token", lambda: False)
+
+    status = appupdate.get_status()
+    assert status.auth_required
+    assert "No such device" not in status.fetch_error
+    assert "jeton" in status.fetch_error
+
+
+def test_a_network_failure_is_not_reported_as_an_authentication_problem(monkeypatch):
+    def _git(*args, timeout=60):
+        if args[0] == "fetch":
+            return (128, "", "fatal: unable to access: Could not resolve host")
+        return fake_git(BASE_GIT)(*args, timeout=timeout)
+
+    monkeypatch.setattr(appupdate, "_git", _git)
+    status = appupdate.get_status()
+    assert not status.auth_required
+    assert "Could not resolve host" in status.fetch_error
+
+
+def test_starting_an_update_surfaces_the_authentication_explanation(monkeypatch):
+    from app import gitauth
+
+    def _git(*args, timeout=60):
+        if args[0] == "fetch":
+            return (128, "", AUTH_ERROR)
+        return fake_git(BASE_GIT)(*args, timeout=timeout)
+
+    monkeypatch.setattr(appupdate, "_git", _git)
+    monkeypatch.setattr(gitauth, "has_token", lambda: False)
+    launched = _no_launch(monkeypatch)
+
+    with pytest.raises(appupdate.AppUpdateError) as excinfo:
+        appupdate.start_update("stable")
+    # Pas de prefixe technique qui noierait l'explication utile.
+    assert not str(excinfo.value).startswith("Impossible de recuperer")
+    assert "jeton" in str(excinfo.value)
+    assert launched == []
+
+
+def test_status_reports_the_remote_url(monkeypatch):
+    mapping = dict(BASE_GIT)
+    mapping["remote get-url origin"] = "https://github.com/tobilianok/NAS-Manager.git"
+    monkeypatch.setattr(appupdate, "_git", fake_git(mapping))
+    assert appupdate.get_status().remote_url.endswith("NAS-Manager.git")
+
+
+def test_connection_test_does_not_touch_the_local_repository(monkeypatch):
+    """`ls-remote` interroge GitHub sans rien ecrire : le bouton de test
+    peut etre presse autant de fois qu'on veut."""
+    calls = []
+
+    def _git(*args, timeout=60):
+        calls.append(args)
+        if args[0] == "ls-remote":
+            return (0, "abc\trefs/heads/main", "")
+        return fake_git(BASE_GIT)(*args, timeout=timeout)
+
+    monkeypatch.setattr(appupdate, "_git", _git)
+    assert "reussie" in appupdate.test_connection()
+    assert all(args[0] not in ("fetch", "checkout", "reset") for args in calls)
+
+
+def test_connection_test_explains_a_refusal(monkeypatch):
+    def _git(*args, timeout=60):
+        if args[0] == "ls-remote":
+            return (128, "", AUTH_ERROR)
+        return (0, "https://github.com/x/y.git", "")
+
+    monkeypatch.setattr(appupdate, "_git", _git)
+    with pytest.raises(appupdate.AppUpdateError, match="jeton"):
+        appupdate.test_connection()

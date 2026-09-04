@@ -13,6 +13,43 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.2.0 — 2026-09-04
+
+Correction d'un blocage rencontré dès la première utilisation de l'écran des
+mises à jour : `fatal: could not read Username for 'https://github.com'`.
+
+### Accès à GitHub
+- **Cause** : le dépôt est privé et le service tourne en `root`, alors que les
+  identifiants git appartiennent au compte administrateur. `git fetch`
+  demandait un login sur un terminal qui n'existe pas.
+- `GIT_TERMINAL_PROMPT=0` sur tous les appels git : au lieu d'essayer d'ouvrir
+  un terminal et de produire un message incompréhensible, git échoue
+  immédiatement — et l'interface **traduit l'échec en explication actionnable**,
+  différente selon qu'aucun jeton n'est enregistré, qu'un jeton est refusé, ou
+  que le dépôt est configuré en SSH (auquel cas c'est la clé de root qui est en
+  jeu, pas un jeton).
+- Nouvelle section **Accès à GitHub** dans l'écran des mises à jour : saisie
+  d'un jeton d'accès personnel, bouton « Tester la connexion » (`git ls-remote`,
+  qui ne modifie rien), suppression du jeton. La section s'ouvre d'elle-même
+  quand c'est précisément ce qui bloque, et reste repliée sinon.
+- Le jeton est vérifié auprès de GitHub **au moment de l'enregistrement** — un
+  jeton refusé ne doit pas être découvert à la prochaine mise à jour.
+- Enregistrer ou supprimer le jeton exige le mot de passe de l'administrateur
+  connecté, comme toute action sensible depuis la v1.0.
+- **Traitement du secret** : rangé dans `/var/lib/nas-manager/github_token`,
+  créé directement en 0600 (jamais un instant lisible par d'autres), jamais
+  écrit dans l'URL du dépôt (elle apparaîtrait dans `git remote -v`, dans
+  `.git/config` et dans les messages d'erreur), jamais passé en argument de
+  commande (il serait visible dans `ps`) — il transite par une variable
+  d'environnement lue par un assistant d'identifiants git. Il n'est jamais
+  réaffiché en clair, et **n'est pas inclus dans les sauvegardes de
+  configuration** (l'archive reprend les fichiers un par un, pas le dossier).
+- Le script de mise à jour détaché lit le même jeton, avec les mêmes
+  précautions.
+- 716 tests automatisés.
+
+---
+
 ## v1.1.0 — 2026-09-04
 
 Nouveau menu **Paramètres → Mises à jour**, qui couvre deux choses

@@ -23,7 +23,7 @@ from app import (
     auth, disks, zfs, sysstats, smart as smart_module, replace_workflow, shares,
     nasusers, dockerstacks, netstats, health, netconfig, dockerconsole, dockerops,
     sysaccounts, configbackup, poolexpand, navigation, version as version_module,
-    sysupdate, appupdate, liverun,
+    sysupdate, appupdate, liverun, gitauth,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -2195,7 +2195,7 @@ def healthz():
 
 
 def _updates_context(request: Request, username: str, fetch: bool = True,
-                     error: str | None = None) -> dict:
+                     error: str | None = None, notice: str | None = None) -> dict:
     try:
         system_status = sysupdate.get_status()
     except Exception:  # noqa: BLE001 - un souci apt ne doit pas vider la page
@@ -2210,6 +2210,9 @@ def _updates_context(request: Request, username: str, fetch: bool = True,
         "progress": appupdate.read_progress(),
         "actions": sysupdate.ACTIONS,
         "error": error,
+        "notice": notice,
+        "has_token": gitauth.has_token(),
+        "masked_token": gitauth.masked_token(),
         "running_stacks": _running_stack_names(),
         "resilvering_pools": _resilvering_pool_names(),
     }
@@ -2238,10 +2241,62 @@ def _resilvering_pool_names() -> list[str]:
 
 @app.get("/updates", response_class=HTMLResponse)
 def updates_page(request: Request, username: str = Depends(require_login),
-                 error: str | None = None):
+                 error: str | None = None, notice: str | None = None):
     return templates.TemplateResponse(
-        "updates.html", _updates_context(request, username, error=error)
+        "updates.html", _updates_context(request, username, error=error, notice=notice)
     )
+
+
+def _render_updates_notice(request: Request, username: str, message: str):
+    return templates.TemplateResponse(
+        "updates.html", _updates_context(request, username, notice=message)
+    )
+
+
+@app.post("/updates/github-token", response_class=HTMLResponse)
+def updates_save_token(request: Request, username: str = Depends(require_login),
+                       token: str = Form(...), password: str = Form(...)):
+    """Enregistre le jeton d'acces GitHub. Comme toute action sensible
+    depuis la Phase 8b, exige le mot de passe de l'admin connecte : ce
+    jeton donne acces au depot."""
+    if not auth.authenticate(username, password):
+        return _render_updates_error(request, username, "Mot de passe incorrect.")
+    try:
+        gitauth.save_token(token)
+    except gitauth.GitAuthError as exc:
+        return _render_updates_error(request, username, str(exc))
+
+    logger.info("Jeton d'acces GitHub enregistre par %s", username)
+    # On verifie tout de suite : un jeton accepte a la saisie mais refuse
+    # par GitHub ne servirait a rien, et l'erreur ne serait decouverte
+    # qu'a la prochaine mise a jour.
+    try:
+        message = appupdate.test_connection()
+    except appupdate.AppUpdateError as exc:
+        return _render_updates_error(
+            request, username,
+            f"Jeton enregistre, mais GitHub le refuse : {exc}",
+        )
+    return _render_updates_notice(request, username, f"Jeton enregistre. {message}")
+
+
+@app.post("/updates/github-token/delete", response_class=HTMLResponse)
+def updates_delete_token(request: Request, username: str = Depends(require_login),
+                         password: str = Form(...)):
+    if not auth.authenticate(username, password):
+        return _render_updates_error(request, username, "Mot de passe incorrect.")
+    gitauth.clear_token()
+    logger.info("Jeton d'acces GitHub supprime par %s", username)
+    return _render_updates_notice(request, username, "Jeton supprime.")
+
+
+@app.post("/updates/github-test", response_class=HTMLResponse)
+def updates_test_github(request: Request, username: str = Depends(require_login)):
+    try:
+        message = appupdate.test_connection()
+    except appupdate.AppUpdateError as exc:
+        return _render_updates_error(request, username, str(exc))
+    return _render_updates_notice(request, username, message)
 
 
 @app.get("/partials/update-progress", response_class=HTMLResponse)
