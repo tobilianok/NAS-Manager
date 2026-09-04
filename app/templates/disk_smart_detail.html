@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}SMART {{ disk.path }} - NAS Manager{% endblock %}
-{% block breadcrumb %}<a href="/disks/smart">← Etat SMART</a>{% endblock %}
+{% block breadcrumb %}<a href="/disks">← Disques</a>{% endblock %}
 {% block content %}
     <h1>{{ disk.path }} {{ '(' ~ disk.model ~ ')' if disk.model else '' }}</h1>
     <div class="meta" style="margin-bottom:1.2rem;">

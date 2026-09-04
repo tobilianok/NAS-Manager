@@ -23,7 +23,7 @@ from app import (
     auth, disks, zfs, sysstats, smart as smart_module, replace_workflow, shares,
     nasusers, dockerstacks, netstats, health, netconfig, dockerconsole, dockerops,
     sysaccounts, configbackup, poolexpand, navigation, version as version_module,
-    sysupdate, appupdate, liverun, gitauth,
+    sysupdate, appupdate, liverun, gitauth, diskwipe,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -556,13 +556,85 @@ def pool_delete_submit(
 # Etat SMART des disques
 # ---------------------------------------------------------------------------
 
+def _disk_rows() -> list[dict]:
+    return [
+        {"disk": d, "report": smart_module.get_smart_report(d.path)}
+        for d in disks.list_disks()
+    ]
+
+
+@app.get("/disks", response_class=HTMLResponse)
+def disks_overview(request: Request, username: str = Depends(require_login),
+                   error: str | None = None, notice: str | None = None):
+    return templates.TemplateResponse(
+        "disks.html",
+        {
+            "request": request, "username": username, "rows": _disk_rows(),
+            "modes": diskwipe.MODES, "error": error, "notice": notice,
+        },
+    )
+
+
 @app.get("/disks/smart", response_class=HTMLResponse)
 def disks_smart_overview(request: Request, username: str = Depends(require_login)):
-    disk_list = disks.list_disks()
-    reports = [{"disk": d, "report": smart_module.get_smart_report(d.path)} for d in disk_list]
+    """Ancienne adresse de la page SMART, conservee : elle a pu etre mise en
+    favori, et un lien casse pour un simple renommage serait dommage."""
+    return RedirectResponse("/disks", status_code=301)
+
+
+def _render_disks(request: Request, username: str, error: str | None = None,
+                  notice: str | None = None, status_code: int = 200):
     return templates.TemplateResponse(
-        "disks_smart.html",
-        {"request": request, "username": username, "reports": reports},
+        "disks.html",
+        {
+            "request": request, "username": username, "rows": _disk_rows(),
+            "modes": diskwipe.MODES, "error": error, "notice": notice,
+        },
+        status_code=status_code,
+    )
+
+
+@app.get("/disks/{name}/wipe/{mode_key}", response_class=HTMLResponse)
+def disk_wipe_form(request: Request, name: str, mode_key: str,
+                   username: str = Depends(require_login)):
+    try:
+        plan = diskwipe.plan(f"/dev/{name}", mode_key)
+    except diskwipe.DiskWipeError as exc:
+        return _render_disks(request, username, error=str(exc), status_code=400)
+    return templates.TemplateResponse(
+        "disk_wipe.html",
+        {
+            "request": request, "username": username,
+            "disk": plan.disk, "mode": plan.mode, "plan": plan,
+        },
+    )
+
+
+@app.post("/disks/{name}/wipe/{mode_key}", response_class=HTMLResponse)
+def disk_wipe_apply(request: Request, name: str, mode_key: str,
+                    username: str = Depends(require_login),
+                    confirm_path: str = Form(...), password: str = Form(...)):
+    """Efface un disque. Tout est reverifie ICI : le chemin retape, le mot de
+    passe de l'admin connecte, et surtout l'etat REEL du disque au moment du
+    clic - la page affichee peut dater de plusieurs minutes."""
+    path = f"/dev/{name}"
+    if confirm_path.strip() != path:
+        return _render_disks(
+            request, username, status_code=400,
+            error=f"Confirmation incorrecte : retape exactement {path}.",
+        )
+    if not auth.authenticate(username, password):
+        return _render_disks(request, username, error="Mot de passe incorrect.",
+                             status_code=400)
+    try:
+        log = diskwipe.wipe(path, mode_key)
+    except diskwipe.DiskWipeError as exc:
+        return _render_disks(request, username, error=str(exc), status_code=400)
+
+    logger.warning("Disque %s efface (%s) par %s", path, mode_key, username)
+    return _render_disks(
+        request, username,
+        notice=f"{path} efface. " + " | ".join(log),
     )
 
 

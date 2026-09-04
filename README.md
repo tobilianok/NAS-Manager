@@ -6,7 +6,7 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
-**Version actuelle : v1.2.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+**Version actuelle : v1.3.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
 est affiché en bas du menu latéral ; le survol donne le commit déployé et
 signale si des fichiers ont été modifiés à la main sur le serveur.
 
@@ -284,6 +284,27 @@ signale si des fichiers ont été modifiés à la main sur le serveur.
   passé en argument (il serait visible dans `ps`), jamais réaffiché en clair,
   et n'entre pas dans les sauvegardes de configuration — livré, en attente de
   test réel.
+- Phase 12a (**v1.3.0**) : correction d'un bug trouvé au premier test de
+  remplacement de disque sur machine physique, et refonte de la page SMART en
+  page **Disques**. Le bug : pool dégradé, disque défaillant débranché, disque
+  neuf installé — le noyau lui redonne le nom `sdc` de l'ancien, `zpool status`
+  liste toujours le membre manquant `/dev/sdc1`, et le disque **neuf** était
+  donc classé « déjà en pool ». La reconstruction annonçait « aucun disque
+  disponible » alors qu'il était là. Le fond du problème : `sdX` n'est pas une
+  identité. L'appartenance à un pool vient désormais de l'**étiquette ZFS écrite
+  sur le disque** — ce qui corrige aussi le sens inverse, plus dangereux (un
+  vrai membre renommé après un redémarrage aurait été proposé comme
+  disponible). L'ancienne méthode par nom reste comme filet de sécurité, pool
+  par pool, quand aucune étiquette n'est lisible : elle peut surprotéger, jamais
+  exposer. Nouvel état **« à effacer »** pour un disque portant d'anciennes
+  données, au lieu de le présenter comme disponible et d'échouer plus tard à la
+  création du pool. Nouvelle page **Disques** : tous les disques, leur rôle,
+  leur contenu, leur état SMART, et deux effacements — rapide (signatures et
+  table de partition) et bordures (plus 100 Mo de zéros au début *et à la fin*,
+  là où vivent la table GPT de secours et les superblocs mdadm). Un disque
+  système ou en pool est refusé catégoriquement, seul un disque entier est
+  acceptable, il faut retaper le chemin et son mot de passe, et l'état réel est
+  relu au moment du clic — livré, en attente de test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -406,7 +427,10 @@ mises à jour système (analyse des simulations apt, liste blanche d'actions
 non interactives, redémarrage requis) et la mise à jour de NAS Manager
 lui-même (garde-fous avant lancement, détachement du processus, fichier
 d'état, retour arrière) et l'accès GitHub (traitement du jeton, diagnostic des
-échecs d'authentification, absence du secret dans les sauvegardes) (716 tests).
+échecs d'authentification, absence du secret dans les sauvegardes), l'identité
+des disques (étiquette ZFS plutôt que nom, filet de sécurité, disques non
+vierges) et l'effacement de disque (refus catégoriques, ce qui est réellement
+exécuté) (761 tests).
 
 ## Développement
 

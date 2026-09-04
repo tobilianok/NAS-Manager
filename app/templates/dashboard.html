@@ -105,6 +105,8 @@
               <span class="badge badge-danger">Protege (systeme)</span>
             {% elif d.status == 'in_pool' %}
               <span class="badge badge-neutral">Deja en pool</span>
+            {% elif d.status == 'occupied' %}
+              <span class="badge badge-warn">A effacer</span>
             {% else %}
               <span class="badge badge-ok">Disponible</span>
             {% endif %}
