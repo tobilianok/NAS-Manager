@@ -401,3 +401,73 @@ def test_a_non_git_directory_is_not_reported_as_detached(monkeypatch):
     monkeypatch.setattr(appupdate, "_git", lambda *a, timeout=60: (1, "", "not a repo"))
     status = appupdate.get_status()
     assert not status.detached
+
+
+# ---------------------------------------------------------------------------
+# Branche divergente et versions deja incluses (correctif 12e)
+# ---------------------------------------------------------------------------
+
+def _git_with_ancestors(mapping, ancestors=(), counts="0\t0"):
+    """`ancestors` liste les paires (commit, of) pour lesquelles
+    `merge-base --is-ancestor` doit reussir."""
+    base = fake_git(mapping)
+
+    def _git(*args, timeout=60):
+        if args[:2] == ("merge-base", "--is-ancestor"):
+            return (0, "", "") if (args[2], args[3]) in ancestors else (1, "", "")
+        if args[:1] == ("rev-list",) and "--left-right" in args:
+            return (0, counts, "")
+        return base(*args, timeout=timeout)
+    return _git
+
+
+def test_a_branch_behind_github_is_reported(monkeypatch):
+    """L'etat exact rencontre en reel : le push suivant sera refuse
+    (non-fast-forward), autant le dire avant de livrer."""
+    mapping = dict(BASE_GIT)
+    mapping["branch --show-current"] = "main"
+    monkeypatch.setattr(appupdate, "_git", _git_with_ancestors(mapping, counts="2\t3"))
+    status = appupdate.get_status()
+    assert status.ahead_origin == 2
+    assert status.behind_origin == 3
+    assert status.diverged
+
+
+def test_a_branch_in_sync_is_not_flagged(monkeypatch):
+    mapping = dict(BASE_GIT)
+    mapping["branch --show-current"] = "main"
+    monkeypatch.setattr(appupdate, "_git", _git_with_ancestors(mapping, counts="0\t0"))
+    assert not appupdate.get_status().diverged
+
+
+def test_a_version_already_merged_in_is_not_offered(monkeypatch):
+    """Cas courant du flux de Louis : la livraison est integree par une
+    fusion, donc le tag se retrouve SOUS la pointe de la branche.
+    L'installer ferait reculer la branche, pas avancer."""
+    mapping = dict(BASE_GIT)
+    mapping["branch --show-current"] = "main"
+    monkeypatch.setattr(appupdate, "_git", _git_with_ancestors(
+        mapping, ancestors={("bbbbbbb000", "aaaaaaa000")}))
+    stable = appupdate.get_status().target("stable")
+    assert not stable.available
+    assert stable.already_included
+
+
+def test_a_genuinely_newer_version_is_still_offered(monkeypatch):
+    mapping = dict(BASE_GIT)
+    mapping["branch --show-current"] = "main"
+    monkeypatch.setattr(appupdate, "_git", _git_with_ancestors(mapping, ancestors=set()))
+    stable = appupdate.get_status().target("stable")
+    assert stable.available
+    assert not stable.already_included
+
+
+def test_the_deployed_version_itself_is_neither_available_nor_included(monkeypatch):
+    mapping = dict(BASE_GIT)
+    mapping["branch --show-current"] = "main"
+    mapping["rev-list -n 1 v1.1.0"] = "aaaaaaa000"      # exactement HEAD
+    monkeypatch.setattr(appupdate, "_git", _git_with_ancestors(
+        mapping, ancestors={("aaaaaaa000", "aaaaaaa000")}))
+    stable = appupdate.get_status().target("stable")
+    assert not stable.available
+    assert not stable.already_included          # "a jour", pas "deja inclus"

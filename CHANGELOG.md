@@ -13,6 +13,38 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.4.3 — 2026-09-04
+
+Suite (et fin) du correctif 12c : la mise à jour ne casse plus la branche
+locale dans l'autre sens.
+
+- **Le symptôme** : après une mise à jour depuis l'interface, le
+  `git push origin main` de la livraison suivante était **rejeté**
+  (« non-fast-forward, the tip of your current branch is behind its remote
+  counterpart »).
+- **La cause** : la v1.4.1 faisait `git checkout -B main`, qui déplace le
+  pointeur **de force**. Les commits de fusion créés en intégrant les
+  livraisons — ceux qui vivent sur GitHub — disparaissaient de la branche,
+  qui se retrouvait en retard sur `origin/main`. Moins grave que le silence
+  de la v1.4.0 (git proteste, au moins), mais tout aussi bloquant.
+- **La correction** : la mise à jour **avance par fast-forward** quand la
+  version visée descend de la branche — rien n'est perdu, le cycle de
+  livraison continue de fonctionner. Quand ce n'est pas possible (retour
+  arrière, historiques divergents), le pointeur est déplacé mais l'opération
+  le **signale** dans son compte rendu.
+- **Prévention plutôt que réparation** : une version déjà contenue dans ce
+  qui est déployé n'est plus proposée du tout. C'est le cas courant ici — la
+  livraison est intégrée par une fusion, donc le tag se retrouve *sous* la
+  pointe de la branche, et l'installer ferait reculer la branche au lieu de
+  l'avancer. Elle s'affiche « déjà inclus », avec l'explication.
+- **Détection** : l'écran des mises à jour compare la branche locale à
+  GitHub et annonce un retard **avant** la livraison, avec la commande de
+  resynchronisation — plutôt que de le laisser découvrir sur un push rejeté.
+- 847 tests automatisés, dont la logique de branche vérifiée sur un dépôt
+  jetable reproduisant l'historique réel (fusions comprises).
+
+---
+
 ## v1.4.2 — 2026-09-04
 
 Aucune intervention en SSH n'est nécessaire pour mettre à jour, y compris
