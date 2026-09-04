@@ -1,0 +1,152 @@
+{# Fragment HTMX : la liste des disques se rafraichit toute seule, un
+   auto-test SMART durant des minutes et un effacement complet des heures. #}
+<div class="disk-list">
+  {% for row in rows %}
+  {% set d = row.disk %}
+  {% set r = row.report %}
+  {% set t = row.test %}
+  {% set job = row.job %}
+  <div class="card disk-card disk-{{ d.status }}">
+    <div class="disk-head">
+      <div>
+        <div class="disk-title">
+          <strong class="mono">{{ d.path }}</strong>
+          {% if d.status == 'system_protected' %}
+            <span class="badge badge-danger">Systeme - intouchable</span>
+          {% elif d.status == 'in_pool' %}
+            <span class="badge badge-neutral">En pool</span>
+          {% elif d.status == 'occupied' %}
+            <span class="badge badge-warn">A effacer</span>
+          {% else %}
+            <span class="badge badge-ok">Disponible</span>
+          {% endif %}
+        </div>
+        <div class="stat-sub">
+          {{ d.model or 'modele inconnu' }}
+          &middot; {{ (d.size_bytes / (1000**3)) | round(1) }} Go
+          &middot; {{ 'HDD' if d.rota else 'SSD/NVMe' }}
+          {% if d.serial %}&middot; n/s {{ d.serial }}{% endif %}
+        </div>
+      </div>
+      <div class="disk-smart">
+        <span class="badge status-{{ r.status_label }}">SMART {{ r.status_label }}</span>
+        <span class="stat-sub">
+          {% if r.temperature_c is not none %}{{ r.temperature_c }} degC{% endif %}
+          {% if r.power_on_hours is not none %} &middot; {{ r.power_on_hours }} h{% endif %}
+        </span>
+      </div>
+    </div>
+
+    <div class="stat-sub disk-detail">{{ d.detail }}</div>
+
+    {% if r.warnings %}
+    <div class="stat-sub warn-text">⚠ {{ r.warnings[0] }}</div>
+    {% elif r.raw_error %}
+    <div class="stat-sub dim">{{ r.raw_error }}</div>
+    {% endif %}
+
+    {# ---------- Effacement long en cours ou termine ---------- #}
+    {% if job and job.status != 'idle' %}
+    <div class="job-panel job-{{ 'stale' if job.stale else job.status }}">
+      {% if job.stale %}
+        <strong>⚠ Effacement sans nouvelle depuis longtemps</strong>
+        <p class="stat-sub">
+          Le travail a ete lance mais ne donne plus signe de vie. Verifie avec
+          <span class="mono">systemctl status nas-manager-diskjob-{{ d.name }}</span>
+          avant de relancer quoi que ce soit.
+        </p>
+      {% elif job.running %}
+        <div class="job-head">
+          <span class="run-spinner"></span>
+          <strong>{{ long_modes[job.mode].label if job.mode in long_modes else job.mode }} en cours</strong>
+          {% if job.percent is not none %}<span class="job-percent">{{ job.percent }}%</span>{% endif %}
+        </div>
+        {% if job.percent is not none %}
+        <div class="bar-bg"><div class="bar-fill bar-ok" style="width: {{ job.percent }}%;"></div></div>
+        {% endif %}
+        <div class="stat-sub">
+          {{ job.step }}
+          {% if job.speed %}&middot; {{ job.speed }}{% endif %}
+          {% if job.eta_label %}&middot; environ {{ job.eta_label }} restantes{% endif %}
+        </div>
+        {% if job.message %}<div class="stat-sub dim">{{ job.message }}</div>{% endif %}
+      {% elif job.status == 'success' %}
+        <strong>✅ {{ long_modes[job.mode].label if job.mode in long_modes else job.mode }} termine</strong>
+        <p class="stat-sub">{{ job.message }}</p>
+      {% else %}
+        <strong>❌ Effacement echoue</strong>
+        <p class="stat-sub">{{ job.message }}</p>
+      {% endif %}
+
+      {% if not job.running or job.stale %}
+      <form method="post" action="/disks/{{ d.name }}/erase-clear">
+        <button type="submit" class="btn-muted btn-sm">Masquer ce compte rendu</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {# ---------- Auto-test SMART ---------- #}
+    {% if t.supported %}
+    <div class="test-panel">
+      {% if t.running %}
+        <div class="job-head">
+          <span class="run-spinner"></span>
+          <strong>Auto-test SMART en cours</strong>
+          <span class="job-percent">{{ t.percent_label }}</span>
+        </div>
+        {% if t.percent_done is not none %}
+        <div class="bar-bg"><div class="bar-fill bar-ok" style="width: {{ t.percent_done }}%;"></div></div>
+        {% endif %}
+        <div class="stat-sub">
+          Le disque reste utilisable pendant le test. L'avancement progresse par
+          paliers de 10 % sur la plupart des modeles.
+        </div>
+        <form method="post" action="/disks/{{ d.name }}/smart-test-abort">
+          <button type="submit" class="btn-muted btn-sm">Interrompre le test</button>
+        </form>
+      {% else %}
+        <div class="test-actions">
+          <span class="stat-sub">Auto-test :</span>
+          {% for kind in test_kinds.values() %}
+          <form method="post" action="/disks/{{ d.name }}/smart-test/{{ kind.key }}">
+            <button type="submit" class="btn-muted btn-sm" title="{{ kind.description }} Duree : {{ kind.typical_duration }}.">
+              {{ kind.label }}
+            </button>
+          </form>
+          {% endfor %}
+        </div>
+        {% if t.last_result %}
+        <div class="stat-sub dim">Dernier test : {{ t.last_result }}</div>
+        {% endif %}
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {# ---------- Effacements ---------- #}
+    <div class="disk-actions">
+      <a class="btn btn-muted btn-sm" href="/disks/{{ d.name }}/smart">Detail SMART →</a>
+      {% if d.wipeable %}
+        {% if job and job.running and not job.stale %}
+        <span class="stat-sub dim">Effacement en cours : les autres actions sont suspendues.</span>
+        {% else %}
+          {% for mode in modes.values() %}
+          <a class="btn btn-warn btn-sm" href="/disks/{{ d.name }}/wipe/{{ mode.key }}">{{ mode.label }}…</a>
+          {% endfor %}
+          {% for mode in long_modes.values() %}
+          <a class="btn btn-danger btn-sm" href="/disks/{{ d.name }}/erase/{{ mode.key }}">{{ mode.label }}…</a>
+          {% endfor %}
+        {% endif %}
+      {% else %}
+        <span class="stat-sub dim">
+          {% if d.status == 'system_protected' %}
+          Effacement impossible : ce disque porte le systeme en cours d'execution.
+          {% else %}
+          Effacement impossible tant que ce disque appartient a un pool.
+          {% endif %}
+        </span>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>

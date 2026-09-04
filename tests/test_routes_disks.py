@@ -153,3 +153,165 @@ def test_a_refusal_from_the_wipe_module_is_shown(client, monkeypatch):
                        data={"confirm_path": "/dev/sdc", "password": "x"})
     assert resp.status_code == 400
     assert "membre du pool" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Auto-tests SMART et effacements longs (Phase 12b)
+# ---------------------------------------------------------------------------
+
+from app import diskjobs, smarttests   # noqa: E402
+
+
+def _idle_test():
+    return smarttests.TestStatus(supported=True, message="Aucun auto-test en cours")
+
+
+@pytest.fixture(autouse=True)
+def quiet_probes(monkeypatch, tmp_path):
+    """Par defaut : aucun auto-test en cours, aucun effacement en cours."""
+    monkeypatch.setattr(smarttests, "get_status", lambda path: _idle_test())
+    monkeypatch.setattr(diskjobs, "STATE_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(diskjobs, "JOB_SCRIPT", str(tmp_path / "disk-job.sh"))
+    (tmp_path / "disk-job.sh").write_text("#!/bin/bash\n")
+
+
+def test_a_smart_test_is_offered_even_on_the_system_disk(client, monkeypatch):
+    """Un auto-test ne detruit rien, et c'est sur le disque systeme qu'il est
+    le plus utile : le refuser la n'aurait aucun sens."""
+    _disks(monkeypatch, _disk("sda", status="system_protected"))
+    text = client.get("/disks").text
+    assert "/disks/sda/smart-test/short" in text
+    assert "/disks/sda/wipe/" not in text          # l'effacement, lui, reste refuse
+
+
+def test_starting_a_smart_test_needs_no_password(client, monkeypatch):
+    _disks(monkeypatch, _disk())
+    started = []
+    monkeypatch.setattr(smarttests, "start_test",
+                        lambda p, k: started.append((p, k)) or "Test court lance.")
+    resp = client.post("/disks/sdc/smart-test/short")
+    assert resp.status_code == 200
+    assert started == [("/dev/sdc", "short")]
+    assert "Test court lance" in resp.text
+
+
+def test_a_refused_smart_test_is_explained(client, monkeypatch):
+    _disks(monkeypatch, _disk())
+
+    def refuse(path, kind):
+        raise smarttests.SmartTestError("Un auto-test est deja en cours.")
+
+    monkeypatch.setattr(smarttests, "start_test", refuse)
+    resp = client.post("/disks/sdc/smart-test/short")
+    assert resp.status_code == 400
+    assert "deja en cours" in resp.text
+
+
+def test_a_running_smart_test_shows_its_progress(client, monkeypatch):
+    _disks(monkeypatch, _disk())
+    monkeypatch.setattr(smarttests, "get_status", lambda path: smarttests.TestStatus(
+        running=True, percent_done=40, supported=True))
+    text = client.get("/disks").text
+    assert "Auto-test SMART en cours" in text
+    assert "40%" in text
+    assert "/disks/sdc/smart-test-abort" in text
+
+
+def test_aborting_a_smart_test(client, monkeypatch):
+    _disks(monkeypatch, _disk())
+    monkeypatch.setattr(smarttests, "abort_test", lambda p: f"Auto-test interrompu sur {p}.")
+    resp = client.post("/disks/sdc/smart-test-abort")
+    assert resp.status_code == 200
+    assert "interrompu" in resp.text
+
+
+def test_a_disk_without_smart_gets_no_test_buttons(client, monkeypatch):
+    _disks(monkeypatch, _disk())
+    monkeypatch.setattr(smarttests, "get_status",
+                        lambda path: smarttests.TestStatus(supported=False))
+    assert "smart-test/short" not in client.get("/disks").text
+
+
+def test_the_long_erase_form_warns_about_the_duration(client, monkeypatch):
+    _disks(monkeypatch, _disk())
+    text = client.get("/disks/sdc/erase/full").text
+    assert "irreversible" in text
+    assert "~2 h par To" in text
+    assert "fermer le navigateur" in text
+
+
+def test_the_secure_erase_form_blocks_on_a_frozen_disk(client, monkeypatch):
+    _disks(monkeypatch, _disk())
+    monkeypatch.setattr(diskjobs, "check_secure_erase",
+                        lambda path: diskjobs.SecureEraseCheck(
+                            possible=False, frozen=True, supported=True,
+                            reason="Le disque est en etat « frozen ».",
+                            advice="Une mise en veille leve generalement le gel."))
+    text = client.get("/disks/sdc/erase/secure").text
+    assert "frozen" in text
+    assert "disabled" in text
+
+
+def test_a_long_erase_needs_the_path_and_the_password(client, monkeypatch):
+    _disks(monkeypatch, _disk())
+    started = []
+    monkeypatch.setattr(diskjobs, "start",
+                        lambda p, m: started.append((p, m)) or diskjobs.MODES[m])
+
+    assert client.post("/disks/sdc/erase/full",
+                       data={"confirm_path": "/dev/sdb", "password": "x"}).status_code == 400
+    monkeypatch.setattr(auth, "authenticate", lambda u, p: False)
+    assert client.post("/disks/sdc/erase/full",
+                       data={"confirm_path": "/dev/sdc", "password": "faux"}).status_code == 400
+    assert started == []
+
+    monkeypatch.setattr(auth, "authenticate", lambda u, p: True)
+    resp = client.post("/disks/sdc/erase/full",
+                       data={"confirm_path": "/dev/sdc", "password": "x"})
+    assert resp.status_code == 200
+    assert started == [("/dev/sdc", "full")]
+    assert "fermer cette page" in resp.text
+
+
+def test_a_running_erase_hides_the_other_actions(client, monkeypatch):
+    """Proposer un second effacement pendant qu'un premier tourne n'a aucun
+    sens et invite a l'erreur."""
+    _disks(monkeypatch, _disk())
+    import time as _t
+    monkeypatch.setattr(diskjobs, "all_states", lambda: {"sdc": diskjobs.JobState(
+        disk="sdc", mode="full", status="running", percent=12.5,
+        bytes_done=1, bytes_total=8, started_epoch=_t.time())})
+    text = client.get("/disks").text
+    assert "Effacement complet en cours" in text
+    assert "12.5%" in text
+    assert "/disks/sdc/erase/secure" not in text
+
+
+def test_a_finished_erase_can_be_dismissed(client, monkeypatch):
+    _disks(monkeypatch, _disk())
+    diskjobs.write_state(diskjobs.JobState(disk="sdc", mode="full", status="success",
+                                           message="Disque recouvert de zeros."))
+    assert "Disque recouvert de zeros." in client.get("/disks").text
+
+    resp = client.post("/disks/sdc/erase-clear")
+    assert resp.status_code == 200
+    assert diskjobs.read_state("sdc").status == "idle"
+
+
+def test_a_running_erase_cannot_be_dismissed(client, monkeypatch):
+    """Masquer une operation en cours la rendrait invisible sans l'arreter."""
+    _disks(monkeypatch, _disk())
+    import time as _t
+    diskjobs.write_state(diskjobs.JobState(disk="sdc", mode="full", status="running",
+                                           started_epoch=_t.time()))
+    resp = client.post("/disks/sdc/erase-clear")
+    assert resp.status_code == 400
+    assert diskjobs.read_state("sdc").running
+
+
+def test_the_partial_refreshes_on_its_own(client, monkeypatch):
+    _disks(monkeypatch, _disk())
+    assert 'hx-get="/partials/disks"' in client.get("/disks").text
+    resp = client.get("/partials/disks")
+    assert resp.status_code == 200
+    assert "/dev/sdc" in resp.text

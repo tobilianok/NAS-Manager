@@ -4,75 +4,21 @@
 {% block content %}
     <h1>Disques</h1>
     <p class="intro">
-      Tous les disques physiques detectes, leur role actuel et leur etat SMART
-      lu en direct (smartctl). Sur une machine virtuelle, SMART est rarement
-      disponible : c'est normal et sans gravite.
+      Tous les disques physiques detectes, leur role actuel, leur etat SMART lu
+      en direct, et les operations de maintenance. Les auto-tests et les
+      effacements longs continuent meme si tu fermes cette page.
     </p>
 
     {% if error %}<div class="warning-banner">⚠ {{ error }}</div>{% endif %}
     {% if notice %}<div class="notice-banner">✅ {{ notice }}</div>{% endif %}
 
-    <div class="disk-list">
-      {% for row in rows %}
-      {% set d = row.disk %}
-      {% set r = row.report %}
-      <div class="card disk-card disk-{{ d.status }}">
-        <div class="disk-head">
-          <div>
-            <div class="disk-title">
-              <strong class="mono">{{ d.path }}</strong>
-              {% if d.status == 'system_protected' %}
-                <span class="badge badge-danger">Systeme - intouchable</span>
-              {% elif d.status == 'in_pool' %}
-                <span class="badge badge-neutral">En pool</span>
-              {% elif d.status == 'occupied' %}
-                <span class="badge badge-warn">A effacer</span>
-              {% else %}
-                <span class="badge badge-ok">Disponible</span>
-              {% endif %}
-            </div>
-            <div class="stat-sub">
-              {{ d.model or 'modele inconnu' }}
-              &middot; {{ (d.size_bytes / (1000**3)) | round(1) }} Go
-              &middot; {{ 'HDD' if d.rota else 'SSD/NVMe' }}
-              {% if d.serial %}&middot; n/s {{ d.serial }}{% endif %}
-            </div>
-          </div>
-          <div class="disk-smart">
-            <span class="badge status-{{ r.status_label }}">SMART {{ r.status_label }}</span>
-            <span class="stat-sub">
-              {% if r.temperature_c is not none %}{{ r.temperature_c }} degC{% endif %}
-              {% if r.power_on_hours is not none %} &middot; {{ r.power_on_hours }} h{% endif %}
-            </span>
-          </div>
-        </div>
-
-        <div class="stat-sub disk-detail">{{ d.detail }}</div>
-
-        {% if r.warnings %}
-        <div class="stat-sub warn-text">⚠ {{ r.warnings[0] }}</div>
-        {% elif r.raw_error %}
-        <div class="stat-sub dim">{{ r.raw_error }}</div>
-        {% endif %}
-
-        <div class="disk-actions">
-          <a class="btn btn-muted btn-sm" href="/disks/{{ d.name }}/smart">Detail SMART →</a>
-          {% if d.wipeable %}
-            {% for mode in modes.values() %}
-            <a class="btn {{ 'btn-warn' if mode.key == 'quick' else 'btn-danger' }} btn-sm"
-               href="/disks/{{ d.name }}/wipe/{{ mode.key }}">{{ mode.label }}…</a>
-            {% endfor %}
-          {% else %}
-            <span class="stat-sub dim">
-              {% if d.status == 'system_protected' %}
-              Effacement impossible : ce disque porte le systeme en cours d'execution.
-              {% else %}
-              Effacement impossible tant que ce disque appartient a un pool.
-              {% endif %}
-            </span>
-          {% endif %}
-        </div>
-      </div>
-      {% endfor %}
+    {# Rafraichissement automatique : un auto-test dure des minutes, un
+       effacement complet des heures. Le premier rendu vient du serveur, pas
+       d'un appel differe : la page est utile des le premier pixel. #}
+    <div id="live-disks"
+         hx-get="/partials/disks"
+         hx-trigger="every 10s"
+         hx-swap="innerHTML">
+      {% include "_disks_partial.html" %}
     </div>
 {% endblock %}
