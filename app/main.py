@@ -2595,6 +2595,18 @@ def updates_app_start(request: Request, kind: str, username: str = Depends(requi
     return RedirectResponse("/updates?started=1", status_code=302)
 
 
+@app.post("/updates/resync")
+def updates_resync(request: Request, username: str = Depends(require_login)):
+    """Fusionne GitHub dans la branche locale. Ne pousse rien : le jeton
+    recommande est en lecture seule, et pousser depuis une interface web
+    demande une intention explicite."""
+    try:
+        message = appupdate.resync_with_origin()
+    except appupdate.AppUpdateError as exc:
+        return _render_updates_error(request, username, str(exc))
+    return _render_updates_notice(request, username, message)
+
+
 @app.post("/updates/app-rollback")
 def updates_app_rollback(request: Request, username: str = Depends(require_login)):
     try:

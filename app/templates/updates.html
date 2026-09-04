@@ -141,9 +141,21 @@
       <div class="warning-banner">
         ⚠ <strong>La branche locale est en retard de {{ app_status.behind_origin }} commit(s) sur GitHub</strong>{% if app_status.ahead_origin %}, et en avance de {{ app_status.ahead_origin }}{% endif %}.
         Ton prochain <span class="mono">git push origin main</span> sera refuse
-        (non-fast-forward). Pour resynchroniser, depuis le dossier du depot :
-        <span class="mono">git pull --no-rebase --no-edit origin main</span>,
-        puis pousse a nouveau.
+        (non-fast-forward).<br><br>
+        C'est le residu d'une mise a jour installee par une version anterieure
+        a la v1.4.3, qui deplacait la branche de force. Le correctif n'a pas pu
+        s'appliquer a sa propre installation : une remise a niveau est
+        necessaire une fois, puis ca ne se reproduira plus.
+        <div class="actions" style="margin-top:.8rem;">
+          <form method="post" action="/updates/resync">
+            <button type="submit" class="btn-primary btn-sm">Resynchroniser avec GitHub</button>
+          </form>
+        </div>
+        <span class="stat-sub">
+          Cela fusionne ce qui est sur GitHub dans la branche locale, sans rien
+          pousser. En cas de conflit la fusion est annulee et le depot reste
+          intact.
+        </span>
       </div>
       {% endif %}
 

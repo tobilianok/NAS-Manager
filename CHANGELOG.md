@@ -13,6 +13,42 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.5.1 — 2026-09-04
+
+Bouton **« Resynchroniser avec GitHub »** dans Mises à jour, pour réparer
+depuis l'interface une branche locale désynchronisée.
+
+### Le problème que ça répare
+- Le correctif de la v1.4.3 (branche `main` avancée par fusion plutôt que
+  déplacée de force) **ne pouvait pas s'appliquer à sa propre installation** :
+  `scripts/self-update.sh` est lu sur le disque *avant* le basculement de
+  version, donc c'est l'ancien script qui a installé le nouveau. Le
+  `git checkout -B main` de la v1.4.2 a donc déplacé la branche locale une
+  dernière fois, hors des commits de fusion présents sur GitHub — d'où le
+  `! [rejected] main -> main (non-fast-forward)` au push suivant.
+- Ce résidu ne peut apparaître qu'une seule fois, et uniquement sur une
+  installation passée par une version antérieure à la v1.4.3.
+
+### Le bouton
+- La bannière de divergence explique désormais la cause et propose un bouton,
+  au lieu d'une ligne de commande à taper en SSH. Réparer le NAS depuis le NAS,
+  sans clavier ni écran sur la machine physique, c'est tout l'intérêt.
+- Le bouton fait un `git fetch` puis un `git merge --no-edit origin/main` :
+  une **fusion**, jamais un `reset --hard`. Rien de ce qui est sur le serveur
+  n'est jeté.
+- **En cas de conflit, la fusion est annulée** (`git merge --abort`) avant que
+  l'erreur ne remonte. Le service tourne sur ces fichiers : les laisser avec
+  des marqueurs de conflit (`<<<<<<<`) casserait l'interface au premier
+  redémarrage du service. Le dépôt est donc toujours rendu intact.
+- Le bouton refuse d'agir si le dépôt a des modifications non validées ou si
+  `HEAD` est détaché — deux situations où une fusion ferait plus de mal que de
+  bien, et qui demandent un œil humain.
+- **Il ne pousse jamais.** Le jeton GitHub recommandé est en lecture seule ; un
+  bouton qui pousserait donnerait une fausse impression de succès là où il n'y
+  a que le droit de lire.
+
+---
+
 ## v1.5.0 — 2026-09-04
 
 Carte horloge et commandes d'alimentation sur le tableau de bord, et README

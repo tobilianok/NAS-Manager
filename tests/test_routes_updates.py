@@ -410,3 +410,29 @@ def test_a_repository_on_a_branch_shows_no_such_warning(client, monkeypatch):
     status = appupdate.AppUpdateStatus(current_commit="aaaaaaa", branch="main")
     monkeypatch.setattr(appupdate, "get_status", lambda fetch=True: status)
     assert "HEAD detache" not in client.get("/updates").text
+
+
+def test_the_diverged_banner_offers_a_button_rather_than_only_commands(client, monkeypatch):
+    """Louis a dit que passer par SSH n'etait pas pratique sur la machine
+    physique : la reparation doit pouvoir se faire d'ici."""
+    status = appupdate.AppUpdateStatus(current_commit="aaaaaaa", branch="main",
+                                       behind_origin=3)
+    monkeypatch.setattr(appupdate, "get_status", lambda fetch=True: status)
+    text = client.get("/updates").text
+    assert 'action="/updates/resync"' in text
+    assert "Resynchroniser avec GitHub" in text
+    # L'origine du probleme est expliquee : ce n'est pas une panne de plus.
+    assert "anterieure" in text and "v1.4.3" in text
+
+
+def test_the_resync_button_reports_success_and_failure(client, monkeypatch):
+    monkeypatch.setattr(appupdate, "resync_with_origin",
+                        lambda: "Branche resynchronisee avec GitHub.")
+    assert "resynchronisee" in client.post("/updates/resync").text
+
+    def refuse():
+        raise appupdate.AppUpdateError("La fusion a ete annulee : conflit.")
+    monkeypatch.setattr(appupdate, "resync_with_origin", refuse)
+    resp = client.post("/updates/resync")
+    assert resp.status_code == 400
+    assert "annulee" in resp.text
