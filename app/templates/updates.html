@@ -32,7 +32,14 @@
   <div class="card">
     <div class="update-current">
       <div>
-        <div class="stat-label">VERSION INSTALLEE</div>
+        {# Les deux ne coincident que tant que le service n'a pas ete double
+           par un changement sur le disque. Garder « installee » dans ce cas
+           serait affirmer le contraire de ce que dit le bandeau juste en
+           dessous. #}
+        <div class="stat-label">
+          {%- if app_version.stale %}VERSION EN COURS D'EXECUTION
+          {%- else %}VERSION INSTALLEE{% endif -%}
+        </div>
         <div class="stat-value stat-value-small">
           {{ app_version.label }}
           {% if app_status.current_commit %}<span class="dim mono">({{ app_status.current_commit }})</span>{% endif %}
@@ -40,6 +47,31 @@
       </div>
       <a class="btn-link" href="https://github.com/tobilianok/NAS-Manager" target="_blank" rel="noopener">Voir le depot →</a>
     </div>
+
+    {# Le code est lu une seule fois, au demarrage du service. Quand le depot
+       a bouge depuis (resynchronisation, `git pull` a la main), le disque et
+       la memoire divergent : l'ecran affiche un numero ancien tout en
+       declarant que tout est deja a jour. Sans ce bandeau, la situation est
+       proprement incomprehensible. #}
+    {% if app_version.stale %}
+    <div class="warning-banner">
+      <strong>⚠ Redemarrage du service en attente</strong>
+      <p>
+        Le code a jour est deja sur le disque, mais ce n'est pas encore lui
+        qui tourne : {{ app_version.stale_reason }}. C'est pour ca qu'aucune
+        mise a jour n'est proposee ci-dessous alors que le numero affiche est
+        plus ancien — du point de vue du depot, tout est bien a jour.
+      </p>
+      <p>
+        Un redemarrage du service suffit. Il ne touche <strong>ni la machine,
+        ni les partages, ni les stacks Docker, ni les pools ZFS</strong> :
+        seule cette interface se coupe, quelques secondes.
+      </p>
+      <form method="post" action="/updates/restart-service">
+        <button type="submit" class="btn-primary">Redemarrer le service</button>
+      </form>
+    </div>
+    {% endif %}
 
     {% if not app_status.git_available %}
     <div class="info-panel">{{ app_status.fetch_error }}</div>
@@ -141,9 +173,21 @@
       <div class="warning-banner">
         ⚠ <strong>La branche locale est en retard de {{ app_status.behind_origin }} commit(s) sur GitHub</strong>{% if app_status.ahead_origin %}, et en avance de {{ app_status.ahead_origin }}{% endif %}.
         Ton prochain <span class="mono">git push origin main</span> sera refuse
-        (non-fast-forward). Pour resynchroniser, depuis le dossier du depot :
-        <span class="mono">git pull --no-rebase --no-edit origin main</span>,
-        puis pousse a nouveau.
+        (non-fast-forward).<br><br>
+        C'est le residu d'une mise a jour installee par une version anterieure
+        a la v1.4.3, qui deplacait la branche de force. Le correctif n'a pas pu
+        s'appliquer a sa propre installation : une remise a niveau est
+        necessaire une fois, puis ca ne se reproduira plus.
+        <div class="actions" style="margin-top:.8rem;">
+          <form method="post" action="/updates/resync">
+            <button type="submit" class="btn-primary btn-sm">Resynchroniser avec GitHub</button>
+          </form>
+        </div>
+        <span class="stat-sub">
+          Cela fusionne ce qui est sur GitHub dans la branche locale, sans rien
+          pousser. En cas de conflit la fusion est annulee et le depot reste
+          intact.
+        </span>
       </div>
       {% endif %}
 

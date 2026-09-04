@@ -382,6 +382,69 @@ def _build_launch_command(ref: str, label: str) -> list[str]:
     return ["setsid", "/bin/bash", UPDATER_SCRIPT, ref, label]
 
 
+def resync_with_origin() -> str:
+    """Fusionne ce qui est sur GitHub dans la branche locale (v1.5.1).
+
+    Pourquoi ce bouton existe : une mise a jour installee par une version
+    ANTERIEURE a la v1.4.3 deplacait la branche de force et la laissait en
+    retard sur origin/main - le push suivant etait rejete. Le correctif ne
+    peut pas s'appliquer a sa propre installation (le script execute est
+    celui present AVANT la mise a jour), donc la reparation doit se faire
+    une fois a la main. Autant qu'elle se fasse d'ici plutot qu'en SSH.
+
+    Volontairement une fusion et RIEN D'AUTRE : pas de push. Le jeton
+    recommande est en lecture seule, et pousser depuis une interface web
+    sur l'historique d'un depot demande une intention explicite.
+
+    En cas de conflit, la fusion est ANNULEE : mieux vaut un depot intact
+    et un message clair qu'un depot laisse au milieu d'une fusion, ou plus
+    rien ne fonctionne."""
+    if _git_out("rev-parse", "--git-dir") is None:
+        raise AppUpdateError("Ce dossier n'est pas un depot git.")
+
+    if _git_out("status", "--porcelain"):
+        raise AppUpdateError(
+            "Des fichiers du serveur ont ete modifies a la main : la fusion "
+            "les melangerait aux changements distants. Annule-les d'abord."
+        )
+
+    branch = _git_out("branch", "--show-current")
+    if not branch:
+        raise AppUpdateError(
+            "Le depot n'est sur aucune branche (HEAD detache). Place-toi "
+            "d'abord sur main : git checkout main"
+        )
+
+    code, _, err = _git("fetch", "--prune", "--tags", "origin", timeout=120)
+    if code != 0:
+        raise AppUpdateError(gitauth.explain_failure(err or "GitHub injoignable.",
+                                                     _git_out("remote", "get-url", "origin") or ""))
+
+    before = _git_out("rev-parse", "HEAD")
+    code, out, err = _git("merge", "--no-edit", "origin/main", timeout=120)
+    if code != 0:
+        # Ne jamais laisser le depot au milieu d'une fusion : le service
+        # tournerait alors sur des fichiers contenant des marqueurs de
+        # conflit.
+        _git("merge", "--abort")
+        raise AppUpdateError(
+            "La fusion s'est heurtee a un conflit et a ete annulee : le depot "
+            "est intact. Resous-le en SSH avec "
+            "'git pull --no-rebase origin main'. Detail : "
+            + (err or out or "")[:300]
+        )
+
+    after = _git_out("rev-parse", "HEAD")
+    if before == after:
+        return "La branche etait deja a jour avec GitHub : rien a fusionner."
+    logger.warning("Branche resynchronisee avec origin/main (%s -> %s)",
+                   (before or "")[:7], (after or "")[:7])
+    return (
+        "Branche resynchronisee avec GitHub. Ton prochain "
+        "'git push origin main --tags' sera accepte."
+    )
+
+
 def start_rollback() -> str:
     """Retour manuel a la version precedente, a partir du commit note lors
     de la derniere mise a jour."""

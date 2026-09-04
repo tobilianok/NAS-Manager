@@ -13,6 +13,80 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.5.2 — 2026-09-04
+
+Le code présent sur le disque n'est pas toujours celui qui tourne. Cette
+version le dit, et propose le bouton qui le corrige.
+
+### Le paradoxe qu'on a rencontré
+- Après une resynchronisation (ou un `git pull` fait à la main), les fichiers
+  à jour sont sur le disque — mais Python les a lus **une seule fois, au
+  démarrage du service**. L'écran affichait donc « v1.4.3 » tout en
+  déclarant les deux versions « déjà incluse » et « à jour » : du point de vue
+  du dépôt c'était exact, et du point de vue de l'utilisateur incompréhensible.
+- Un nouveau bandeau nomme la situation, donne les deux numéros et explique
+  pourquoi plus rien n'est proposé. L'étiquette passe de « VERSION INSTALLÉE »
+  à « VERSION EN COURS D'EXÉCUTION » dans ce cas : garder « installée » serait
+  affirmer le contraire de ce que dit le bandeau.
+- Détecté de deux façons indépendantes : le `VERSION` relu **dans le fichier**
+  comparé à celui chargé en mémoire, et le commit courant comparé à celui
+  capturé au démarrage. La seconde attrape aussi un correctif qui ne change
+  pas le numéro.
+
+### Bouton « Redémarrer le service »
+- Recharge le code déjà présent, sans SSH.
+- **Ce n'est pas un redémarrage de la machine** : partages, stacks Docker et
+  pools ZFS ne bougent pas, seule l'interface se coupe quelques secondes. Le
+  bandeau le dit explicitement, et un test vérifie que la commande ne peut
+  jamais contenir `reboot` ni `poweroff`.
+- Détaché via `systemd-run`, pour la même raison que la mise à jour : le
+  processus qui lance `systemctl restart` est celui que systemd va tuer.
+
+### Correctif : le numéro de version était figé au démarrage
+- `app_version` était un instantané pris à l'import, donc **jamais mis à
+  jour** : ni un fichier modifié à la main, ni un dépôt qui avance
+  n'apparaissaient dans le menu latéral. Il relit maintenant l'état réel, avec
+  un cache de dix secondes — sinon chaque page paierait quatre processus git,
+  et le tableau de bord se rafraîchit tout seul.
+
+---
+
+## v1.5.1 — 2026-09-04
+
+Bouton **« Resynchroniser avec GitHub »** dans Mises à jour, pour réparer
+depuis l'interface une branche locale désynchronisée.
+
+### Le problème que ça répare
+- Le correctif de la v1.4.3 (branche `main` avancée par fusion plutôt que
+  déplacée de force) **ne pouvait pas s'appliquer à sa propre installation** :
+  `scripts/self-update.sh` est lu sur le disque *avant* le basculement de
+  version, donc c'est l'ancien script qui a installé le nouveau. Le
+  `git checkout -B main` de la v1.4.2 a donc déplacé la branche locale une
+  dernière fois, hors des commits de fusion présents sur GitHub — d'où le
+  `! [rejected] main -> main (non-fast-forward)` au push suivant.
+- Ce résidu ne peut apparaître qu'une seule fois, et uniquement sur une
+  installation passée par une version antérieure à la v1.4.3.
+
+### Le bouton
+- La bannière de divergence explique désormais la cause et propose un bouton,
+  au lieu d'une ligne de commande à taper en SSH. Réparer le NAS depuis le NAS,
+  sans clavier ni écran sur la machine physique, c'est tout l'intérêt.
+- Le bouton fait un `git fetch` puis un `git merge --no-edit origin/main` :
+  une **fusion**, jamais un `reset --hard`. Rien de ce qui est sur le serveur
+  n'est jeté.
+- **En cas de conflit, la fusion est annulée** (`git merge --abort`) avant que
+  l'erreur ne remonte. Le service tourne sur ces fichiers : les laisser avec
+  des marqueurs de conflit (`<<<<<<<`) casserait l'interface au premier
+  redémarrage du service. Le dépôt est donc toujours rendu intact.
+- Le bouton refuse d'agir si le dépôt a des modifications non validées ou si
+  `HEAD` est détaché — deux situations où une fusion ferait plus de mal que de
+  bien, et qui demandent un œil humain.
+- **Il ne pousse jamais.** Le jeton GitHub recommandé est en lecture seule ; un
+  bouton qui pousserait donnerait une fausse impression de succès là où il n'y
+  a que le droit de lire.
+
+---
+
 ## v1.5.0 — 2026-09-04
 
 Carte horloge et commandes d'alimentation sur le tableau de bord, et README

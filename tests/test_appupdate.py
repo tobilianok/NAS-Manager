@@ -471,3 +471,83 @@ def test_the_deployed_version_itself_is_neither_available_nor_included(monkeypat
     stable = appupdate.get_status().target("stable")
     assert not stable.available
     assert not stable.already_included          # "a jour", pas "deja inclus"
+
+
+# ---------------------------------------------------------------------------
+# Resynchronisation avec GitHub (v1.5.1)
+# ---------------------------------------------------------------------------
+
+def _resync_git(monkeypatch, *, dirty=False, branch="main", fetch_code=0,
+                merge_code=0, head_before="aaa", head_after="bbb"):
+    calls = []
+    heads = iter([head_before, head_after])
+
+    def _git(*args, timeout=60):
+        calls.append(list(args))
+        key = " ".join(args)
+        if key == "rev-parse --git-dir":
+            return (0, ".git", "")
+        if key.startswith("status --porcelain"):
+            return (0, "M app/main.py" if dirty else "", "")
+        if key == "branch --show-current":
+            return (0, branch, "") if branch else (1, "", "")
+        if key.startswith("fetch"):
+            return (fetch_code, "", "" if fetch_code == 0 else "reseau injoignable")
+        if key == "rev-parse HEAD":
+            return (0, next(heads), "")
+        if key.startswith("merge --no-edit"):
+            return (merge_code, "", "" if merge_code == 0 else "CONFLICT dans README.md")
+        return (0, "", "")
+
+    monkeypatch.setattr(appupdate, "_git", _git)
+    return calls
+
+
+def test_resync_merges_and_reports(monkeypatch):
+    calls = _resync_git(monkeypatch)
+    message = appupdate.resync_with_origin()
+    assert "resynchronisee" in message
+    assert ["merge", "--no-edit", "origin/main"] in calls
+
+
+def test_resync_never_pushes(monkeypatch):
+    """Le jeton recommande est en lecture seule, et pousser l'historique
+    depuis une interface web demande une intention explicite."""
+    calls = _resync_git(monkeypatch)
+    appupdate.resync_with_origin()
+    assert not any(args[0] == "push" for args in calls)
+
+
+def test_resync_says_when_there_was_nothing_to_do(monkeypatch):
+    _resync_git(monkeypatch, head_before="aaa", head_after="aaa")
+    assert "deja a jour" in appupdate.resync_with_origin()
+
+
+def test_a_conflict_aborts_the_merge_and_leaves_the_repository_intact(monkeypatch):
+    """Un depot laisse au milieu d'une fusion ferait tourner le service sur
+    des fichiers contenant des marqueurs de conflit."""
+    calls = _resync_git(monkeypatch, merge_code=1)
+    with pytest.raises(appupdate.AppUpdateError, match="annulee"):
+        appupdate.resync_with_origin()
+    assert ["merge", "--abort"] in calls
+
+
+def test_resync_refuses_a_dirty_repository(monkeypatch):
+    calls = _resync_git(monkeypatch, dirty=True)
+    with pytest.raises(appupdate.AppUpdateError, match="modifies a la main"):
+        appupdate.resync_with_origin()
+    assert not any(args[0] == "merge" for args in calls)
+
+
+def test_resync_refuses_a_detached_head(monkeypatch):
+    calls = _resync_git(monkeypatch, branch="")
+    with pytest.raises(appupdate.AppUpdateError, match="aucune branche"):
+        appupdate.resync_with_origin()
+    assert not any(args[0] == "merge" for args in calls)
+
+
+def test_resync_reports_an_unreachable_github(monkeypatch):
+    calls = _resync_git(monkeypatch, fetch_code=1)
+    with pytest.raises(appupdate.AppUpdateError):
+        appupdate.resync_with_origin()
+    assert not any(args[0] == "merge" for args in calls)

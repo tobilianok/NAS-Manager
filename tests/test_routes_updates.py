@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app import (
     main, appupdate, auth, dockerstacks, liverun, replace_workflow,
-    sysupdate, zfs,
+    servicerestart, sysupdate, version as version_module, zfs,
 )
 
 
@@ -410,3 +410,101 @@ def test_a_repository_on_a_branch_shows_no_such_warning(client, monkeypatch):
     status = appupdate.AppUpdateStatus(current_commit="aaaaaaa", branch="main")
     monkeypatch.setattr(appupdate, "get_status", lambda fetch=True: status)
     assert "HEAD detache" not in client.get("/updates").text
+
+
+def test_the_diverged_banner_offers_a_button_rather_than_only_commands(client, monkeypatch):
+    """Louis a dit que passer par SSH n'etait pas pratique sur la machine
+    physique : la reparation doit pouvoir se faire d'ici."""
+    status = appupdate.AppUpdateStatus(current_commit="aaaaaaa", branch="main",
+                                       behind_origin=3)
+    monkeypatch.setattr(appupdate, "get_status", lambda fetch=True: status)
+    text = client.get("/updates").text
+    assert 'action="/updates/resync"' in text
+    assert "Resynchroniser avec GitHub" in text
+    # L'origine du probleme est expliquee : ce n'est pas une panne de plus.
+    assert "anterieure" in text and "v1.4.3" in text
+
+
+def test_the_resync_button_reports_success_and_failure(client, monkeypatch):
+    monkeypatch.setattr(appupdate, "resync_with_origin",
+                        lambda: "Branche resynchronisee avec GitHub.")
+    assert "resynchronisee" in client.post("/updates/resync").text
+
+    def refuse():
+        raise appupdate.AppUpdateError("La fusion a ete annulee : conflit.")
+    monkeypatch.setattr(appupdate, "resync_with_origin", refuse)
+    resp = client.post("/updates/resync")
+    assert resp.status_code == 400
+    assert "annulee" in resp.text
+
+
+# --- v1.5.2 : bandeau "redemarrage en attente" ----------------------------
+
+
+def test_the_banner_appears_only_when_disk_and_memory_disagree(client, monkeypatch):
+    """Quand tout concorde, aucun bandeau : un avertissement permanent finit
+    par ne plus etre lu."""
+    monkeypatch.setattr(version_module, "_cache", None)
+    monkeypatch.setattr(
+        version_module, "get_version_info",
+        lambda: version_module.VersionInfo(version="1.5.2", commit="abc1234",
+                                           boot_commit="abc1234ff",
+                                           disk_version="1.5.2"),
+    )
+    assert "Redemarrage du service en attente" not in client.get("/updates").text
+
+
+def test_the_banner_explains_the_paradox_and_offers_a_button(client, monkeypatch):
+    """Le cas vecu : la v1.5.0 est sur le disque, la v1.4.3 tourne, et la
+    page ne propose plus rien. Sans explication c'est incomprehensible."""
+    monkeypatch.setattr(version_module, "_cache", None)
+    monkeypatch.setattr(
+        version_module, "get_version_info",
+        lambda: version_module.VersionInfo(version="1.4.3", commit="6b62cfc",
+                                           boot_commit="6b62cfcaa",
+                                           disk_version="1.5.0"),
+    )
+    text = client.get("/updates").text
+    assert "Redemarrage du service en attente" in text
+    assert "/updates/restart-service" in text
+    assert "1.5.0" in text
+
+
+def test_the_banner_says_the_machine_is_not_touched(client, monkeypatch):
+    """Sur un NAS, « redemarrer » doit lever toute ambiguite : personne ne
+    doit craindre de couper ses partages en cliquant."""
+    monkeypatch.setattr(version_module, "_cache", None)
+    monkeypatch.setattr(
+        version_module, "get_version_info",
+        lambda: version_module.VersionInfo(version="1.4.3", commit="6b62cfc",
+                                           boot_commit="6b62cfcaa",
+                                           disk_version="1.5.0"),
+    )
+    text = client.get("/updates").text
+    for word in ("partages", "Docker", "ZFS"):
+        assert word in text
+
+
+def test_the_restart_button_reports_success_and_failure(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(servicerestart, "restart", lambda u="": calls.append(u))
+    resp = client.post("/updates/restart-service")
+    assert resp.status_code == 200
+    assert "Redemarrage du service lance" in resp.text
+    assert calls
+
+    def boom(username=""):
+        raise servicerestart.ServiceRestartError("systemd indisponible")
+
+    monkeypatch.setattr(servicerestart, "restart", boom)
+    resp = client.post("/updates/restart-service")
+    assert resp.status_code == 400
+    assert "systemd indisponible" in resp.text
+
+
+def test_restarting_requires_a_session(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    with TestClient(main.app) as anonymous:
+        resp = anonymous.post("/updates/restart-service", follow_redirects=False)
+    assert resp.status_code in (302, 307, 401, 403)
