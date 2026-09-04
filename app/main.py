@@ -170,7 +170,17 @@ def partial_sysstats(request: Request, username: str = Depends(require_login)):
         {
             "request": request, "stats": stats,
             "uptime_label": sysstats.format_uptime(stats.uptime_seconds),
+            "boot_label": sysstats.format_boot_date(stats.boot_epoch),
+            "format_frequency": sysstats.format_frequency,
+            "format_bytes": sysstats.format_bytes,
             "pools_with_alerts": pools_with_alerts,
+            # Le widget reseau est desormais une tuile de cette grille : il
+            # est rendu par le meme fragment, avec les memes aides.
+            "interfaces": netstats.list_interfaces(),
+            "format_bitrate": netstats.format_bitrate,
+            "sparkline_points": netstats.sparkline_points,
+            "sparkline_area": netstats.sparkline_area,
+            "shared_max": netstats.shared_max,
         },
     )
 

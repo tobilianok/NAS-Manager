@@ -437,6 +437,83 @@ tr.worrying td { color: var(--warning-text); }
 .stat-value-small { font-size: 1.1rem; font-weight: 600; margin: .3rem 0; }
 .stat-sub { font-size: .78rem; color: var(--text-muted); }
 
+/* ---------------------------------------------------------------------
+   Etat du systeme : tuiles detaillees CPU / RAM / reseau / disponibilite
+   --------------------------------------------------------------------- */
+
+/* Grille fixe a deux colonnes : "auto-fit" faisait sauter les tuiles d'une
+   ligne a l'autre au gre du rafraichissement HTMX toutes les 5 s. */
+.stat-grid-system { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+.stat-card-wide { grid-column: 1 / -1; }
+
+.stat-card-head { display: flex; align-items: center; justify-content: space-between; gap: .6rem; }
+.stat-chip {
+  font-size: .7rem; color: var(--text-muted); background: var(--bg);
+  border-radius: 999px; padding: .12rem .55rem; white-space: nowrap;
+}
+.stat-model {
+  font-size: .78rem; color: var(--text-dim); margin-top: .2rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.cpu-main { display: flex; align-items: baseline; gap: .9rem; }
+.cpu-main .stat-value { flex-shrink: 0; }
+.cpu-meta { font-size: .74rem; color: var(--text-muted); line-height: 1.45; }
+.cpu-ok { color: var(--text); }
+.cpu-warn { color: #fbbf24; }
+.cpu-crit { color: #f87171; }
+
+/* Barres verticales, une par coeur logique. Elles restent lisibles de 2 a
+   64 coeurs grace au flex : chaque barre partage la largeur disponible. */
+.core-bars {
+  display: flex; align-items: flex-end; gap: 3px;
+  height: 44px; margin: .55rem 0 .3rem;
+  padding: 3px; background: var(--bg); border-radius: var(--radius-sm);
+}
+/* Chaque coeur a son propre rail : sans fond, un coeur inactif disparait et
+   on ne sait plus si la barre manque ou si le coeur est simplement au repos. */
+.core-bar {
+  flex: 1 1 0; min-width: 4px; height: 100%;
+  display: flex; align-items: flex-end;
+  background: var(--surface-alt); border-radius: 2px;
+}
+.core-bar-fill { width: 100%; border-radius: 2px; transition: height .3s ease; }
+.core-ok { background: var(--success); }
+.core-warn { background: var(--warning); }
+.core-crit { background: var(--danger); }
+
+.ram-bar {
+  display: flex; height: 11px; border-radius: 6px; overflow: hidden;
+  background: var(--bg); margin: .55rem 0 .45rem;
+}
+.ram-seg { height: 100%; transition: width .3s ease; }
+.ram-apps { background: var(--accent); }
+.ram-cache { background: #64748b; }
+
+.ram-legend { display: flex; flex-wrap: wrap; gap: .2rem .9rem; font-size: .72rem; color: var(--text-muted); }
+.ram-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: .35rem; }
+.dot-apps { background: var(--accent); }
+.dot-cache { background: #64748b; }
+.dot-free { background: var(--bg); border: 1px solid var(--border); }
+
+.stat-sub-load { margin-top: .55rem; border-top: 1px solid var(--border-soft); padding-top: .45rem; }
+.stat-sub-load .badge { margin-left: .4rem; }
+
+.uptime-card { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.uptime-card .stat-value-small { margin-bottom: 0; }
+
+/* Le reseau est desormais une tuile de cette grille : sa carte ne doit plus
+   porter son propre fond ni son propre cadre, sinon on empile deux surfaces. */
+.stat-card-wide .net-grid { margin-top: .4rem; }
+.stat-card-wide .net-card { background: transparent; padding: 0; }
+.stat-card-wide .net-card + .net-card { border-top: 1px solid var(--border-soft); padding-top: .8rem; }
+.stat-card-wide .net-card.net-down { border-color: transparent; }
+.stat-card-wide .net-chart svg { height: 76px; }
+
+@media (max-width: 900px) {
+  .stat-grid-system { grid-template-columns: 1fr; }
+}
+
 .pool-alert-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-top: .5rem; }
 .pool-alert-card { display: block; background: var(--surface); border-radius: var(--radius); padding: 1rem 1.2rem; text-decoration: none; color: var(--text); border: 1px solid transparent; }
 .pool-alert-card.alert-warning { border-color: var(--warning-bg); }
@@ -524,10 +601,14 @@ tr.worrying td { color: var(--warning-text); }
   border-bottom: 1px solid var(--border-soft);
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
 }
+/* Pastille opaque : la valeur du pic passait auparavant sous la courbe et
+   devenait illisible des que le trafic montait. */
 .net-peak {
-  position: absolute; top: .25rem; right: .5rem;
-  font-size: .68rem; color: var(--text-dim); letter-spacing: .02em;
+  position: absolute; top: .25rem; right: .4rem;
+  font-size: .68rem; color: var(--text-muted); letter-spacing: .02em;
+  background: var(--surface); border-radius: 999px; padding: .05rem .45rem;
 }
+.stat-card-wide .net-peak { background: var(--bg); }
 
 .net-card-detail { margin-top: .6rem; font-size: .78rem; color: var(--danger-text); }
 
