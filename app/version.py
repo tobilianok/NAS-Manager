@@ -19,7 +19,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 
-VERSION = "1.5.3"
+VERSION = "1.6.0"
 
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -80,10 +80,17 @@ def _git(*args: str) -> str | None:
     """Appel git en lecture seule dans le depot deploye. Retourne None si
     git est absent, si ce n'est pas un depot, ou si la commande echoue :
     l'interface doit rester utilisable sans historique git (installation
-    depuis une archive, par exemple)."""
+    depuis une archive, par exemple).
+
+    `safe.directory` est force, comme dans `appupdate` et `self-update.sh` :
+    le depot appartient au compte qui a fait le `git clone`, alors que le
+    service tourne en root. Sans ca, git refuse le depot (« dubious
+    ownership ») sur une installation neuve faite sans sudo, et l'interface
+    perdrait le commit deploye, l'etat des fichiers modifies et la detection
+    du code non recharge - le tout sans le moindre message d'erreur."""
     try:
         result = subprocess.run(
-            ["git", "-C", REPO_DIR, *args],
+            ["git", "-C", REPO_DIR, "-c", f"safe.directory={REPO_DIR}", *args],
             capture_output=True, text=True, timeout=5,
         )
     except (OSError, subprocess.SubprocessError):

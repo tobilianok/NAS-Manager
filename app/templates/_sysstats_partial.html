@@ -91,19 +91,14 @@
     {% endif %}
   </div>
 
-  {# ---------------- RESEAU (entre RAM et DISPONIBILITE) ---------------- #}
+  {# ---------------- RESEAU ---------------- #}
+  {# La tuile DISPONIBILITE vivait ici jusqu'a la v1.6.0. Elle a rejoint la
+     carte horloge : « depuis quand la machine tourne » se lit naturellement
+     a cote de « quelle heure il est », et le compteur y avance en direct au
+     lieu d'attendre le rafraichissement de ce fragment. #}
   <div class="stat-card stat-card-wide">
     <div class="stat-label">RESEAU</div>
     {% include "_network_partial.html" %}
-  </div>
-
-  {# ---------------- DISPONIBILITE ---------------- #}
-  <div class="stat-card stat-card-wide uptime-card">
-    <div>
-      <div class="stat-label">DISPONIBILITE</div>
-      <div class="stat-value stat-value-small">{{ uptime_label }}</div>
-    </div>
-    <div class="stat-sub">Demarre le {{ boot_label }}</div>
   </div>
 </div>
 

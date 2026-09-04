@@ -366,13 +366,24 @@ class ServerClock:
     # d'horodatage ne suffirait pas, le navigateur formaterait alors l'heure
     # dans SON fuseau, pas dans celui du serveur.
     seconds_of_day: int = 0
+    # Disponibilite (v1.6.0). Elle vit ici plutot que dans une tuile a part :
+    # « depuis quand la machine tourne » se lit naturellement a cote de
+    # « quelle heure il est », et le navigateur peut faire avancer les deux
+    # compteurs avec le meme mecanisme, sans interroger le serveur.
+    uptime_seconds: int = 0
+    uptime_label: str = ""
+    boot_label: str = ""
 
 
 def get_server_clock() -> ServerClock:
     now = time.localtime()
+    uptime = _uptime_seconds()
     return ServerClock(
         epoch=time.time(),
         seconds_of_day=now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec,
+        uptime_seconds=int(uptime),
+        uptime_label=format_uptime(uptime),
+        boot_label=format_boot_date(time.time() - uptime) if uptime else "-",
         time_label=time.strftime("%H:%M:%S", now),
         date_label=(
             f"{_JOURS[now.tm_wday]} {now.tm_mday} "

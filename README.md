@@ -4,7 +4,7 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
-**Version actuelle : v1.5.3** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+**Version actuelle : v1.6.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
 est affiché en bas du menu latéral ; le survol donne le commit déployé et
 signale si des fichiers ont été modifiés à la main sur le serveur.
 
@@ -126,7 +126,7 @@ pytest tests/ -v
 ```
 
 Optionnel (pas nécessaire pour faire tourner NAS Manager), mais recommandé
-avant de valider une modification faite à la main. **914 tests** couvrent :
+avant de valider une modification faite à la main. **934 tests** couvrent :
 
 - **Stockage** : détection et identité des disques (étiquette ZFS plutôt que
   nom de périphérique), validation des pools, agrandissement, suppression en
@@ -136,8 +136,10 @@ avant de valider une modification faite à la main. **914 tests** couvrent :
   anti-verrouillage.
 - **Docker** : stacks Compose, nettoyage après échec de création, actions
   diffusées en direct, console interactive, orphelins.
-- **Système** : état CPU/mémoire/réseau, météo de santé, configuration réseau
-  avec retour arrière, sauvegarde et restauration, alimentation.
+- **Système** : état CPU/mémoire/réseau, météo de santé, températures
+  matérielles (traduction des noms de capteurs, jugement par rapport à la
+  limite de chaque composant), configuration réseau avec retour arrière,
+  sauvegarde et restauration, alimentation.
 - **Mises à jour** : simulations apt, liste blanche d'actions non
   interactives, mise à jour de NAS Manager (garde-fous, détachement, retour
   arrière), accès GitHub et état du dépôt.

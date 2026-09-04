@@ -92,7 +92,9 @@ a { color: inherit; }
   flex-shrink: 0;
 }
 
-.sidebar nav { display: flex; flex-direction: column; gap: .15rem; padding: 0 .7rem; }
+/* Un seul rythme vertical pour tout le menu : c'est l'ecart entre freres
+   qui donne la regularite, aucune entree ne porte de marge propre. */
+.sidebar nav { display: flex; flex-direction: column; gap: .3rem; padding: 0 .7rem; }
 
 .sidebar nav .nav-item {
   display: flex;
@@ -111,7 +113,7 @@ a { color: inherit; }
 .sidebar nav a.nav-item.active { background: var(--accent); color: #fff; }
 
 /* Rubriques repliables (<details>/<summary>) */
-.nav-group { border-radius: var(--radius-sm); }
+.nav-group { border-radius: var(--radius-sm); margin: 0; }
 .nav-summary { cursor: pointer; list-style: none; user-select: none; }
 .nav-summary::-webkit-details-marker { display: none; }   /* fleche native */
 .nav-summary-label { flex: 1; }
@@ -125,9 +127,12 @@ a { color: inherit; }
 .nav-group:not([open]) > .nav-summary.has-active { background: var(--accent-soft); }
 
 /* Filet vertical reliant les sous-entrees a leur rubrique. */
+/* Les sous-entrees sont detachees de leur rubrique par le meme ecart que
+   partout ailleurs, en haut comme en bas : une rubrique ouverte ne doit pas
+   coller a l'entree suivante ni s'en eloigner davantage. */
 .nav-children {
-  display: flex; flex-direction: column; gap: .15rem;
-  margin: .15rem 0 .3rem 1.35rem;
+  display: flex; flex-direction: column; gap: .3rem;
+  margin: .3rem 0 0 1.35rem;
   border-left: 1px solid var(--border); padding-left: .25rem;
 }
 /* Les libelles des sous-entrees sont longs ("Comptes de partage") pour une
@@ -166,9 +171,6 @@ a { color: inherit; }
 .topbar-crumb a:hover { color: var(--text); }
 .topbar-user { display: flex; align-items: center; gap: 1.1rem; font-size: .84rem; flex-shrink: 0; }
 .topbar-user .username { color: var(--text-muted); }
-.topbar-user .logout-link { color: var(--text-muted); text-decoration: none; display: flex; align-items: center; gap: .35rem; }
-.topbar-user .logout-link:hover { color: var(--text); }
-.topbar-user .logout-link svg { width: 15px; height: 15px; }
 
 main.page {
   padding: 2rem 2.5rem;
@@ -433,7 +435,12 @@ pre.logs {
   max-height: 75vh; word-break: break-all;
 }
 
-details { margin-top: .8rem; }
+/* Regle de CONTENU : elle doit rester dans la page. Non portee, elle
+   s'appliquait aussi aux rubriques repliables du menu lateral, qui gagnaient
+   12,8 px de marge haute : les entrees de premier niveau se retrouvaient
+   espacees de 15 px ou de 2 px selon qu'elles etaient suivies d'un lien
+   simple ou d'une rubrique. C'etait la cause du rythme irregulier. */
+main.page details { margin-top: .8rem; }
 details.glossary { background: var(--surface); border-radius: var(--radius); padding: 1rem 1.3rem; margin-top: 2rem; }
 details summary { cursor: pointer; font-weight: 600; font-size: .87rem; color: var(--accent); }
 details.glossary summary { color: var(--text); }
@@ -529,8 +536,6 @@ tr.worrying td { color: var(--warning-text); }
 .stat-sub-load { margin-top: .55rem; border-top: 1px solid var(--border-soft); padding-top: .45rem; }
 .stat-sub-load .badge { margin-left: .4rem; }
 
-.uptime-card { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
-.uptime-card .stat-value-small { margin-bottom: 0; }
 
 /* Le reseau est desormais une tuile de cette grille : sa carte ne doit plus
    porter son propre fond ni son propre cadre, sinon on empile deux surfaces. */
@@ -940,9 +945,72 @@ body.login-body { display: flex; align-items: center; justify-content: center; m
 .clock-date::first-letter { text-transform: uppercase; }
 .clock-tz { font-size: .72rem; color: var(--text-dim); margin-top: .15rem; }
 
+/* Disponibilite, entre l'heure et les boutons (v1.6.0). Encadree en haut
+   et en bas : elle separe visuellement « quand » de « quoi faire ». */
+.clock-uptime {
+  display: flex; align-items: center; gap: .6rem;
+  border-top: 1px solid var(--border-soft);
+  padding: .7rem .2rem;
+}
+.clock-uptime svg { width: 20px; height: 20px; color: var(--text-dim); flex: 0 0 auto; }
+.clock-uptime-value {
+  font-size: 1rem; font-weight: 600; line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+.clock-uptime-sub { font-size: .72rem; color: var(--text-dim); margin-top: .1rem; }
+
 .clock-actions {
   display: flex; gap: .45rem; flex-wrap: wrap; justify-content: center;
   border-top: 1px solid var(--border-soft); padding-top: .8rem;
 }
 .clock-actions .btn, .clock-actions button { flex: 1 1 auto; justify-content: center; }
 .clock-actions svg { width: 14px; height: 14px; }
+
+
+/* ---------------------------------------------------------------------
+   Detail des temperatures (v1.6.0)
+
+   Une barre par capteur, remplie par rapport a SA limite : c'est ce qui
+   rend deux capteurs differents comparables d'un coup d'oeil, la ou deux
+   nombres bruts demanderaient de connaitre les limites de chacun.
+   --------------------------------------------------------------------- */
+.temp-details { margin-top: .55rem; }
+.temp-details > summary {
+  font-size: .78rem; font-weight: 500; color: var(--text-muted);
+}
+.temp-details > summary:hover { color: var(--text); }
+
+.temp-group { margin-top: .6rem; }
+.temp-group-name {
+  font-size: .68rem; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-dim); margin-bottom: .25rem;
+}
+.temp-table { width: 100%; border-collapse: collapse; }
+.temp-table td { padding: .18rem 0; vertical-align: middle; font-size: .78rem; }
+.temp-name {
+  color: var(--text-muted); white-space: nowrap;
+  padding-right: .6rem !important; max-width: 12rem;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.temp-bar-cell { width: 100%; }
+.temp-bar-bg {
+  background: var(--border-soft); border-radius: 999px; height: 6px;
+  overflow: hidden; min-width: 40px;
+}
+.temp-bar { height: 100%; border-radius: 999px; background: var(--success); }
+.temp-bar-warn { background: var(--warning); }
+.temp-bar-crit { background: var(--danger); }
+.temp-value {
+  text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums;
+  padding-left: .6rem !important; font-weight: 600; color: var(--text);
+}
+.temp-warn .temp-value { color: var(--warning); }
+.temp-crit .temp-value { color: var(--danger); }
+.temp-limit {
+  text-align: right; white-space: nowrap; color: var(--text-dim);
+  font-size: .7rem; padding-left: .6rem !important;
+}
+.temp-note {
+  font-size: .72rem; color: var(--text-dim); line-height: 1.5;
+  margin-top: .7rem;
+}
