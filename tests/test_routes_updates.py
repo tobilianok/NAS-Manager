@@ -410,3 +410,21 @@ def test_the_test_button_reports_success_and_failure(token_client, monkeypatch):
     resp = token_client.post("/updates/github-test")
     assert resp.status_code == 400
     assert "authentification" in resp.text
+
+
+def test_a_detached_repository_is_flagged_with_the_way_out(client, monkeypatch):
+    status = appupdate.AppUpdateStatus(current_commit="aaaaaaa", branch="",
+                                       remote_url="https://github.com/x/y.git")
+    monkeypatch.setattr(appupdate, "get_status", lambda fetch=True: status)
+    text = client.get("/updates").text
+    assert "HEAD detache" in text
+    assert "git checkout main" in text
+    # Le symptome doit etre nomme : c'est lui qu'on cherche quand GitHub
+    # reste bloque sur une version anterieure.
+    assert "que les tags" in text
+
+
+def test_a_repository_on_a_branch_shows_no_such_warning(client, monkeypatch):
+    status = appupdate.AppUpdateStatus(current_commit="aaaaaaa", branch="main")
+    monkeypatch.setattr(appupdate, "get_status", lambda fetch=True: status)
+    assert "HEAD detache" not in client.get("/updates").text

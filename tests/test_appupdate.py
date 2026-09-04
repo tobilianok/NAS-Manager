@@ -369,3 +369,35 @@ def test_connection_test_explains_a_refusal(monkeypatch):
     monkeypatch.setattr(appupdate, "_git", _git)
     with pytest.raises(appupdate.AppUpdateError, match="jeton"):
         appupdate.test_connection()
+
+
+# ---------------------------------------------------------------------------
+# HEAD detache (correctif 12c)
+# ---------------------------------------------------------------------------
+
+def test_a_detached_head_is_detected(monkeypatch):
+    """Rencontre en reel : un `git pull` depuis un HEAD detache annonce
+    'Fast-forward' mais laisse la branche main en arriere, et le push suivant
+    ne pousse que les tags - sans rien signaler."""
+    mapping = dict(BASE_GIT)
+    mapping["branch --show-current"] = ""        # git n'affiche rien en detache
+    monkeypatch.setattr(appupdate, "_git", fake_git(mapping))
+    status = appupdate.get_status()
+    assert status.detached
+    assert status.branch == ""
+
+
+def test_a_repository_on_a_branch_is_not_flagged(monkeypatch):
+    mapping = dict(BASE_GIT)
+    mapping["branch --show-current"] = "main"
+    monkeypatch.setattr(appupdate, "_git", fake_git(mapping))
+    status = appupdate.get_status()
+    assert not status.detached
+    assert status.branch == "main"
+
+
+def test_a_non_git_directory_is_not_reported_as_detached(monkeypatch):
+    """Sans depot du tout, parler de HEAD detache n'aurait aucun sens."""
+    monkeypatch.setattr(appupdate, "_git", lambda *a, timeout=60: (1, "", "not a repo"))
+    status = appupdate.get_status()
+    assert not status.detached

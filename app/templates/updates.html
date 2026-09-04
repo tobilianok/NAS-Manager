@@ -120,6 +120,23 @@
         </div>
       </details>
 
+      {% if app_status.detached %}
+      <div class="warning-banner">
+        ⚠ <strong>Le depot n'est sur aucune branche</strong> (HEAD detache).
+        Dans cet etat, un <span class="mono">git pull</span> annonce
+        « Fast-forward » et fait bien avancer le code, mais laisse la branche
+        <span class="mono">main</span> en arriere : le
+        <span class="mono">git push origin main</span> qui suit ne pousse
+        alors que les tags, sans rien signaler. C'est ce qui explique un
+        GitHub qui reste sur une version anterieure.<br><br>
+        Pour revenir a la normale, depuis
+        <span class="mono">{{ app_status.remote_url and '/opt/nas-manager' or 'le dossier du depot' }}</span> :
+        <span class="mono">git checkout main</span>, puis refais ta livraison
+        habituelle. Les mises a jour lancees depuis cette page ne provoquent
+        plus cet etat depuis la v1.4.1.
+      </div>
+      {% endif %}
+
       {% if app_status.dirty %}
       <div class="warning-banner">
         ⚠ Des fichiers du serveur ont ete modifies a la main. La mise a jour est

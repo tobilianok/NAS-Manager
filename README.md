@@ -4,7 +4,7 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
-**Version actuelle : v1.4.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+**Version actuelle : v1.4.1** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
 est affiché en bas du menu latéral ; le survol donne le commit déployé et
 signale si des fichiers ont été modifiés à la main sur le serveur.
 
@@ -322,6 +322,17 @@ signale si des fichiers ont été modifiés à la main sur le serveur.
   mot de passe secret le condamnerait. Ces opérations durant des heures, elles
   sont confiées à un travail détaché qui survit à la fermeture du navigateur
   et au redémarrage du service — livré, en attente de test réel.
+- Phase 12c (**v1.4.1**) : correction d'un piège introduit en v1.1.0 et
+  rencontré en réel. Après une mise à jour vers une version stable depuis
+  l'interface, le dépôt se retrouvait **sur aucune branche** (HEAD détaché) :
+  la livraison suivante par bundle annonçait « Fast-forward », le push
+  affichait le tag… et GitHub restait sur la version précédente. Dans cet état
+  un `git pull` fait avancer `HEAD` mais laisse la **branche** `main` en
+  arrière, et le `git push origin main` ne pousse plus que les tags — sans
+  rien signaler, ce qui est le vrai coût du bug. Le script fait maintenant
+  toujours `git checkout -B main`, retour arrière compris, et l'interface
+  détecte un dépôt déjà détaché pour en expliquer le symptôme et donner la
+  commande qui le remet d'aplomb — livré, en attente de test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -448,7 +459,8 @@ des disques (étiquette ZFS plutôt que nom, filet de sécurité, disques non
 vierges) et l'effacement de disque (refus catégoriques, ce qui est réellement
 exécuté), les auto-tests SMART (analyse de la sortie de smartctl, liste
 blanche des types de test) et les effacements longs (refus catégoriques,
-détachement, état « frozen », progression) (818 tests).
+détachement, état « frozen », progression) et la détection d'un dépôt en HEAD
+détaché (823 tests).
 
 ## Développement
 

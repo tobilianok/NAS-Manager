@@ -80,6 +80,15 @@ class AppUpdateStatus:
     # met alors en avant l'enregistrement d'un jeton GitHub.
     auth_required: bool = False
     remote_url: str = ""
+    # Branche courante, ou "" si le depot est en HEAD detache. Cet etat
+    # merite d'etre signale : un `git pull` y annonce "Fast-forward" et fait
+    # avancer HEAD, mais laisse la BRANCHE en arriere - le `git push` suivant
+    # ne pousse alors rien d'autre que les tags, sans le dire.
+    branch: str = ""
+
+    @property
+    def detached(self) -> bool:
+        return self.git_available and not self.branch
 
     def target(self, kind: str) -> UpdateTarget | None:
         for candidate in self.targets:
@@ -143,6 +152,9 @@ def get_status(fetch: bool = True) -> AppUpdateStatus:
     status.dirty = bool(_git_out("status", "--porcelain"))
 
     status.remote_url = _git_out("remote", "get-url", "origin") or ""
+    # --show-current renvoie une chaine vide en HEAD detache : c'est
+    # exactement ce qu'on veut detecter.
+    status.branch = _git_out("branch", "--show-current") or ""
 
     if fetch:
         # --prune --tags : sans ca, un tag supprime en amont resterait

@@ -13,6 +13,35 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.4.1 — 2026-09-04
+
+Correction d'un piège introduit en v1.1.0, rencontré en conditions réelles.
+
+### La mise à jour laissait le dépôt sur aucune branche
+- **Le symptôme** : après une mise à jour vers une version stable depuis
+  l'interface, la livraison suivante par bundle semblait fonctionner —
+  `git pull` annonçait « Fast-forward », `git push origin main --tags`
+  affichait le tag poussé — mais GitHub restait sur la version précédente, et
+  NAS Manager ne voyait aucune mise à jour.
+- **La cause** : le script de mise à jour basculait sur le tag par un
+  `git checkout` détaché dès que la version visée n'était pas exactement la
+  pointe de `origin/main`. Dans cet état, un `git pull` fait bien avancer
+  `HEAD`… mais laisse la **branche** `main` en arrière. Le `git push origin
+  main` qui suit ne pousse donc que les tags — sans rien signaler d'anormal.
+  C'est ce silence qui rend le piège coûteux.
+- **La correction** : le script fait désormais **toujours**
+  `git checkout -B main`, y compris lors d'un retour arrière. Faire pointer
+  `main` sur ce qui est réellement déployé est de toute façon plus juste pour
+  un dépôt de déploiement : `git status` dit la vérité, et le cycle de
+  livraison habituel continue de fonctionner.
+- **Le rattrapage** : l'écran des mises à jour détecte un dépôt en HEAD
+  détaché et l'annonce, en expliquant le symptôme et en donnant la commande
+  qui remet les choses en place (`git checkout main`). Un dépôt déjà dans cet
+  état ne se répare pas tout seul — encore faut-il savoir qu'on y est.
+- 823 tests automatisés.
+
+---
+
 ## v1.4.0 — 2026-09-04
 
 La page Disques devient un vrai outil de maintenance : auto-tests SMART à la

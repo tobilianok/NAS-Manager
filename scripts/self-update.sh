@@ -122,7 +122,9 @@ rollback() {
     fi
     write_state running "Retour a la version precedente (${PREVIOUS_COMMIT:0:7})"
     log "== Retour arriere vers ${PREVIOUS_COMMIT}"
-    "${GIT[@]}" checkout --force "${PREVIOUS_COMMIT}" >> "${LOG_FILE}" 2>&1
+    # -B main la aussi : un retour arriere ne doit pas laisser le depot dans
+    # un etat ou la livraison suivante echouera silencieusement.
+    "${GIT[@]}" checkout -B main "${PREVIOUS_COMMIT}" >> "${LOG_FILE}" 2>&1
     bash "${REPO_DIR}/install.sh" >> "${LOG_FILE}" 2>&1
     systemctl restart "${SERVICE}" >> "${LOG_FILE}" 2>&1
 
@@ -148,19 +150,19 @@ fi
 # A partir d'ici seulement le depot est modifie : tout echec declenche le
 # retour arriere automatique.
 #
-# Si la cible est exactement la pointe de origin/main, on fait avancer la
-# BRANCHE main plutot que de basculer en HEAD detache : c'est ce qui permet
-# de continuer a livrer par 'git pull' comme d'habitude. Une version taguee
-# plus ancienne, elle, laisse forcement le depot en HEAD detache - c'est le
-# comportement correct, et l'interface le dit.
-TARGET_COMMIT="$("${GIT[@]}" rev-parse "${TARGET_REF}^{commit}" 2>/dev/null || echo '')"
-MAIN_COMMIT="$("${GIT[@]}" rev-parse origin/main 2>/dev/null || echo 'aucun')"
-
-if [[ -n "${TARGET_COMMIT}" && "${TARGET_COMMIT}" == "${MAIN_COMMIT}" ]]; then
-    if ! run_step "Bascule sur ${TARGET_LABEL}" "${GIT[@]}" checkout -B main "${TARGET_REF}"; then
-        rollback "La bascule vers ${TARGET_LABEL} a echoue."
-    fi
-elif ! run_step "Bascule sur ${TARGET_LABEL}" "${GIT[@]}" checkout --force "${TARGET_REF}"; then
+# TOUJOURS `checkout -B main`, jamais un checkout detache (correctif 12c).
+# La version precedente ne gardait la branche que si la cible etait
+# exactement la pointe de origin/main ; un tag plus ancien laissait le depot
+# en HEAD detache. C'etait defendable en theorie, et un piege en pratique :
+# un `git pull <bundle> main` depuis un HEAD detache annonce fierement
+# "Fast-forward", fait avancer HEAD... et laisse la BRANCHE main en arriere.
+# Le `git push origin main` qui suit ne pousse alors que les tags, sans rien
+# signaler d'anormal. Rencontre en reel le 2026-09-04.
+#
+# Faire pointer main sur ce qui est reellement deploye est de toute facon
+# plus juste pour un depot de deploiement : `git status` dit la verite, et
+# le cycle de livraison habituel continue de fonctionner.
+if ! run_step "Bascule sur ${TARGET_LABEL}" "${GIT[@]}" checkout -B main "${TARGET_REF}"; then
     rollback "La bascule vers ${TARGET_LABEL} a echoue."
 fi
 
