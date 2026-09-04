@@ -1,8 +1,11 @@
 {# Fragment HTMX : progression de la mise a jour de NAS Manager.
    Lu depuis le fichier d'etat ecrit par le script detache - le service web
    redemarre au milieu de l'operation, sa memoire ne survit pas. #}
-{% if progress.status == 'idle' %}
-{# Rien a afficher : aucune mise a jour n'a ete lancee depuis cette interface. #}
+{% if progress.status == 'idle' or progress.obsolete %}
+{# Rien a afficher : aucune mise a jour lancee depuis cette interface, ou un
+   compte rendu qui ne decrit plus la situation presente (v1.5.3). Le fichier
+   d'etat n'etant jamais efface, un succes ancien restait sinon affiche en
+   tete de page indefiniment, avec les consignes de l'epoque. #}
 
 {% elif progress.stale %}
 <div class="warning-banner">

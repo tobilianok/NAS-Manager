@@ -33,7 +33,7 @@ BASE_GIT = {
     "rev-parse --git-dir": ".git",
     "rev-parse --short HEAD": "aaaaaaa",
     "rev-parse HEAD": "aaaaaaa000",
-    "describe --tags --abbrev=0 origin/main": "v1.1.0",
+    "tag --sort=-v:refname --merged origin/main": "v1.1.0\nv1.0.0",
     "rev-list -n 1 v1.1.0": "bbbbbbb000",
     "rev-parse origin/main": "ccccccc000",
     "log --pretty=%s --no-merges -20 HEAD..ccccccc000": "feat: deux\nfix: un",
@@ -551,3 +551,99 @@ def test_resync_reports_an_unreachable_github(monkeypatch):
     with pytest.raises(appupdate.AppUpdateError):
         appupdate.resync_with_origin()
     assert not any(args[0] == "merge" for args in calls)
+
+
+# --- v1.5.3 : un compte rendu cesse d'etre une nouvelle -------------------
+
+
+def _report(**kwargs):
+    base = dict(status="success", target_label="v1.4.3",
+                finished_epoch=time.time(), message="ok")
+    base.update(kwargs)
+    return appupdate.UpdateProgress(**base)
+
+
+def test_a_success_announcing_the_running_version_is_still_shown():
+    report = _report(target_label=f"v{appupdate.version_module.VERSION}")
+    assert report.obsolete is False
+
+
+def test_a_success_announcing_an_older_version_is_dropped():
+    """Le cas vecu : « Mise a jour terminee - v1.4.3 » restait en tete de
+    page alors que la machine tournait deja en v1.5.2."""
+    assert _report(target_label="v1.4.3").obsolete is True
+
+
+def test_any_report_expires_after_a_day():
+    label = f"v{appupdate.version_module.VERSION}"
+    fresh = _report(target_label=label, finished_epoch=time.time())
+    old = _report(target_label=label,
+                  finished_epoch=time.time() - appupdate.REPORT_TTL_SECONDS - 60)
+    assert fresh.obsolete is False
+    assert old.obsolete is True
+
+
+def test_a_failure_is_never_hidden_by_the_version_comparison():
+    """Un echec annonce justement une version qui n'a PAS ete installee :
+    le critere de version le masquerait systematiquement, alors que c'est le
+    message le plus important de la page."""
+    assert _report(status="failed", target_label="v9.9.9").obsolete is False
+    assert _report(status="rolled_back", target_label="v9.9.9").obsolete is False
+
+
+def test_a_running_update_is_never_treated_as_obsolete():
+    assert _report(status="running", target_label="v1.4.3",
+                   started_epoch=time.time()).obsolete is False
+
+
+def test_a_development_target_is_not_compared_to_a_version_number():
+    """« main @ abc1234 » n'est pas un numero de version : le comparer
+    ferait disparaitre le compte rendu aussitot affiche."""
+    assert _report(target_label="main @ abc1234").obsolete is False
+
+
+# --- v1.5.3 : la version stable est la plus haute, pas la plus proche -----
+
+
+def test_the_stable_target_is_the_highest_tag_not_the_nearest(monkeypatch):
+    """Apres une fusion, l'ordre des parents peut mettre un ancien tag a
+    portee plus courte. `describe` annoncait alors v1.5.0 comme derniere
+    version publiee alors que v1.5.2 existait."""
+    seen = []
+
+    def fake_git(*args, timeout=60):
+        seen.append(args)
+        if args[0] == "tag":
+            return 0, "v1.5.2\nv1.5.1\nv1.5.0", ""
+        if args == ("rev-parse", "--git-dir"):
+            return 0, ".git", ""
+        if args[:2] == ("rev-list", "-n"):
+            return 0, "cccc222", ""
+        if args == ("rev-parse", "HEAD"):
+            return 0, "aaaa111", ""
+        if args == ("rev-parse", "origin/main"):
+            return 0, "aaaa111", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(appupdate, "_git", fake_git)
+    status = appupdate.get_status(fetch=False)
+    stable = status.target(appupdate.STABLE)
+    assert stable is not None and stable.label == "v1.5.2"
+    assert ("tag", "--sort=-v:refname", "--merged", "origin/main") in seen
+
+
+def test_the_tag_list_is_restricted_to_what_is_reachable(monkeypatch):
+    """Sans --merged, un tag pose sur une branche jamais fusionnee serait
+    propose comme version installable."""
+    calls = []
+
+    def fake_git(*args, timeout=60):
+        calls.append(args)
+        if args == ("rev-parse", "--git-dir"):
+            return 0, ".git", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(appupdate, "_git", fake_git)
+    appupdate.get_status(fetch=False)
+    tag_calls = [c for c in calls if c and c[0] == "tag"]
+    assert tag_calls and "--merged" in tag_calls[0]
