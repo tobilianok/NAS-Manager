@@ -92,7 +92,7 @@ def test_top_level_structure():
 @pytest.mark.parametrize("group,children", [
     ("Stockage", ["Pools ZFS", "Partages", "Disques"]),
     ("Comptes", ["Comptes de partage", "Comptes systeme"]),
-    ("Parametres", ["Reseau", "Sauvegarde", "Mises a jour"]),
+    ("Parametres", ["Reseau", "Date et heure", "Sauvegarde", "Mises a jour"]),
 ])
 def test_group_contents(group, children):
     entry = next(e for e in navigation.NAV if e.label == group)

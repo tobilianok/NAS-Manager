@@ -50,6 +50,10 @@ function liveRun(wsBase) {
     title: '', description: '', lines: [], seq: 0,
     countdown: 0, copied: false, ws: null, timer: null,
     reloadOnClose: true,
+    // Quand la fenetre se ferme sur autre chose que la page courante : a la
+    // creation d'une stack, on arrive sur une page de transit qui n'a rien a
+    // montrer une fois le demarrage termine.
+    closeHref: null,
 
     run(action, confirmText) {
       if (this.running) return;
@@ -136,6 +140,7 @@ function liveRun(wsBase) {
       this.open = false;
       // L'etat reel (containers, paquets installes) a pu changer : on relit
       // la page plutot que d'afficher un tableau perime.
+      if (this.closeHref) { location.assign(this.closeHref); return; }
       if (this.reloadOnClose) { location.reload(); }
     },
   };

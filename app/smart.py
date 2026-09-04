@@ -17,6 +17,8 @@ import logging
 import subprocess
 from dataclasses import dataclass, field
 
+from app import diskage
+
 logger = logging.getLogger("nas_manager.smart")
 
 # Attributs SATA/ATA classiques dont la RAW value est un simple compteur
@@ -92,6 +94,26 @@ class SmartReport:
     attributes: list[SmartAttribute] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     raw_error: str = ""
+    # Numero de serie : la seule identite stable d'un disque. `sdc` designe
+    # un autre disque apres un remplacement, le numero de serie non.
+    serial: str = ""
+    # Vrai quand l'age de CE disque a ete acquitte (v1.7.0). Le compteur
+    # d'heures reste affiche, il cesse simplement de peser sur le verdict.
+    age_acknowledged: bool = False
+    power_on_years: float | None = None
+    # Vrai quand le compteur d'heures depasse le seuil et n'a pas ete
+    # acquitte : c'est ce qui declenche la proposition d'acceptation.
+    age_warning: bool = False
+
+    @property
+    def only_aging(self) -> bool:
+        """L'age est le SEUL reproche fait a ce disque. Distinguer ce cas
+        change ce qu'on peut honnetement proposer : accepter l'age d'un
+        disque par ailleurs sain est raisonnable, le faire sur un disque qui
+        realloue des secteurs ne reglerait rien et masquerait un peu de la
+        situation."""
+        return (self.age_warning and len(self.warnings) == 1
+                and self.healthy is not False)
 
 
 def _run_smartctl(path: str) -> dict | None:
@@ -147,9 +169,15 @@ def get_smart_report(path: str) -> SmartReport:
     if isinstance(temp, int):
         report.temperature_c = temp
 
+    serial = data.get("serial_number")
+    if isinstance(serial, str):
+        report.serial = serial.strip()
+
     poh = data.get("power_on_time", {}).get("hours")
     if isinstance(poh, int):
         report.power_on_hours = poh
+        report.power_on_years = round(poh / 8760, 1)
+    report.age_acknowledged = diskage.is_acknowledged(report.serial)
 
     hard_warning = False
 
@@ -231,7 +259,16 @@ def get_smart_report(path: str) -> SmartReport:
             )
 
     # --- Age du disque ---
-    if report.power_on_hours is not None and report.power_on_hours >= _POWER_ON_HOURS_AGING:
+    # Un age acquitte ne produit plus d'avertissement (v1.7.0) : le compteur
+    # reste visible sur la page du disque, mais il cesse de peser sur le
+    # verdict. Tout le reste - secteurs realloues, erreurs, temperature,
+    # usure NVMe, verdict SMART global - continue d'alerter normalement.
+    report.age_warning = bool(
+        report.power_on_hours is not None
+        and report.power_on_hours >= _POWER_ON_HOURS_AGING
+        and not report.age_acknowledged
+    )
+    if report.age_warning:
         years = round(report.power_on_hours / 8760, 1)
         report.warnings.append(
             f"Disque en service depuis environ {years} ans ({report.power_on_hours} "

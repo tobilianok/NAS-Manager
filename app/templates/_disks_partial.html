@@ -32,7 +32,12 @@
         <span class="badge status-{{ r.status_label }}">SMART {{ r.status_label }}</span>
         <span class="stat-sub">
           {% if r.temperature_c is not none %}{{ r.temperature_c }} degC{% endif %}
-          {% if r.power_on_hours is not none %} &middot; {{ r.power_on_hours }} h{% endif %}
+          {% if r.power_on_hours is not none %}
+          &middot;
+          <span {% if r.age_acknowledged %}class="age-accepted" title="Age accepte : ces heures ne declenchent plus d'alerte"{% endif %}>
+            {{ r.power_on_hours }} h{% if r.power_on_years %} ({{ r.power_on_years }} ans){% endif %}
+          </span>
+          {% endif %}
         </span>
       </div>
     </div>
@@ -43,6 +48,38 @@
     <div class="stat-sub warn-text">⚠ {{ r.warnings[0] }}</div>
     {% elif r.raw_error %}
     <div class="stat-sub dim">{{ r.raw_error }}</div>
+    {% endif %}
+
+    {# ---------- Age du disque (v1.7.0) ----------
+       Beaucoup d'heures n'est pas un defaut : un disque reconditionne peut
+       afficher sept ans de service sans un seul secteur realloue. Laisser ce
+       compteur seul maintenir la meteo au gris apprend a ignorer les
+       avertissements, ce qui est plus dangereux qu'un disque age. #}
+    {% if r.age_acknowledged %}
+    <form method="post" action="/disks/{{ d.name }}/age-watch" class="age-row">
+      <span class="badge badge-neutral">age accepte</span>
+      <span class="stat-sub">
+        Les heures de fonctionnement de ce disque ne comptent plus dans son
+        verdict. Secteurs realloues, erreurs, temperature et verdict SMART
+        global restent surveilles.
+      </span>
+      <button type="submit" class="btn-muted btn-sm">Reprendre la surveillance</button>
+    </form>
+    {% elif r.age_warning %}
+    <form method="post" action="/disks/{{ d.name }}/age-acknowledge" class="age-row">
+      <span class="stat-sub">
+        {% if r.only_aging %}
+        Ce disque n'est signale que pour son <strong>age</strong> - aucun
+        secteur realloue, aucune erreur. Si tu le sais et qu'il fonctionne,
+        accepte-le : seules ses heures cesseront de compter.
+        {% else %}
+        Accepter l'age ne fera taire que le compteur d'heures. Ce disque a
+        <strong>d'autres signalements</strong> ci-dessus, qui continueront
+        d'alerter et meritent d'etre regardes d'abord.
+        {% endif %}
+      </span>
+      <button type="submit" class="btn-muted btn-sm">Accepter l'age</button>
+    </form>
     {% endif %}
 
     {# ---------- Effacement long en cours ou termine ---------- #}

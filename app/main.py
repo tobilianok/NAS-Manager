@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.parse
 from dataclasses import asdict
 from pathlib import Path
@@ -24,7 +25,7 @@ from app import (
     nasusers, dockerstacks, netstats, health, netconfig, dockerconsole, dockerops,
     sysaccounts, configbackup, poolexpand, navigation, version as version_module,
     sysupdate, appupdate, liverun, gitauth, diskwipe, smarttests, diskjobs,
-    power, servicerestart, sensors,
+    power, servicerestart, sensors, diskage, timezone, notifications,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -612,6 +613,47 @@ def disks_overview(request: Request, username: str = Depends(require_login),
             "test_kinds": smarttests.KINDS, "error": error, "notice": notice,
         },
     )
+
+
+@app.post("/disks/{name}/age-acknowledge")
+def disks_age_acknowledge(request: Request, name: str,
+                          username: str = Depends(require_login)):
+    """Accepte l'age de CE disque (v1.7.0). Le compteur d'heures cesse de
+    peser sur le verdict ; tout le reste continue d'alerter."""
+    disk = disks.get_disk(name)
+    if disk is None:
+        return _render_disks(request, username, error=f"Disque introuvable : {name}.",
+                             status_code=404)
+    report = smart_module.get_smart_report(disk.path)
+    try:
+        diskage.acknowledge(report.serial, report.power_on_hours or 0, username)
+    except ValueError as exc:
+        return _render_disks(request, username, error=str(exc), status_code=400)
+    return _render_disks(
+        request, username,
+        notice=(
+            f"Age accepte pour {disk.name}. Ses heures de fonctionnement ne "
+            f"declencheront plus d'alerte, mais secteurs realloues, erreurs, "
+            f"temperature et verdict SMART continuent d'etre surveilles."
+        ),
+    )
+
+
+@app.post("/disks/{name}/age-watch")
+def disks_age_watch(request: Request, name: str,
+                    username: str = Depends(require_login)):
+    """Reprend la surveillance de l'age de ce disque."""
+    disk = disks.get_disk(name)
+    if disk is None:
+        return _render_disks(request, username, error=f"Disque introuvable : {name}.",
+                             status_code=404)
+    report = smart_module.get_smart_report(disk.path)
+    if not diskage.forget(report.serial):
+        return _render_disks(request, username,
+                             error=f"L'age de {disk.name} n'etait pas accepte.",
+                             status_code=400)
+    return _render_disks(request, username,
+                         notice=f"Surveillance de l'age reprise pour {disk.name}.")
 
 
 @app.get("/disks/smart", response_class=HTMLResponse)
@@ -1481,8 +1523,12 @@ async def docker_create(
     name: str = Form(...), pool: str = Form(...), compose_content: str = Form(...),
     icon: UploadFile | None = File(None),
 ):
+    # prepare_stack et non create_stack (v1.7.0) : le demarrage est diffuse
+    # en direct dans une fenetre plutot qu'attendu en silence. Un `up -d` qui
+    # telecharge plusieurs images tient plusieurs minutes, pendant lesquelles
+    # l'utilisateur n'avait aucun retour et pouvait croire a un blocage.
     try:
-        stack, output = dockerstacks.create_stack(name, pool, compose_content)
+        stack = dockerstacks.prepare_stack(name, pool, compose_content)
     except (dockerstacks.DockerStackError, zfs.DatasetError) as exc:
         return templates.TemplateResponse(
             "docker_new.html",
@@ -1503,7 +1549,10 @@ async def docker_create(
             dockerstacks.save_icon(stack.name, icon.filename, content)
         except dockerstacks.DockerIconError as exc:
             logger.warning("Icone ignoree a la creation de la stack '%s' : %s", stack.name, exc)
-    return RedirectResponse(f"/docker/{stack.name}", status_code=302)
+    return templates.TemplateResponse(
+        "docker_created.html",
+        {"request": request, "username": username, "stack": stack},
+    )
 
 
 def _render_docker_detail(
@@ -2625,6 +2674,83 @@ def updates_resync(request: Request, username: str = Depends(require_login)):
     except appupdate.AppUpdateError as exc:
         return _render_updates_error(request, username, str(exc))
     return _render_updates_notice(request, username, message)
+
+
+def _relative_label(epoch: float) -> str:
+    """« il y a 3 h », pas un horodatage : sur une notification, ce qui
+    compte est la fraicheur, pas l'heure exacte."""
+    if epoch <= 0:
+        return "jamais"
+    seconds = max(0, int(time.time() - epoch))
+    if seconds < 90:
+        return "a l'instant"
+    if seconds < 5400:
+        return f"il y a {seconds // 60} min"
+    if seconds < 172800:
+        return f"il y a {seconds // 3600} h"
+    return f"il y a {seconds // 86400} j"
+
+
+def _notifications_context(request: Request) -> dict:
+    snapshot = notifications.read()
+    return {
+        "request": request, "snapshot": snapshot,
+        "checked_label": _relative_label(snapshot.checked_epoch),
+    }
+
+
+@app.get("/partials/notifications", response_class=HTMLResponse)
+def partial_notifications(request: Request, username: str = Depends(require_login)):
+    """Lecture seule : aucun acces reseau ici, sinon le rafraichissement
+    automatique du tableau de bord interrogerait GitHub en boucle."""
+    return templates.TemplateResponse(
+        "_notifications_partial.html", _notifications_context(request))
+
+
+@app.post("/notifications/refresh", response_class=HTMLResponse)
+def notifications_refresh(request: Request, username: str = Depends(require_login)):
+    """Verification explicite. Peut prendre quelques secondes : elle
+    interroge apt, GitHub et le registre Docker. Rien n'est telecharge ni
+    installe."""
+    notifications.refresh()
+    return templates.TemplateResponse(
+        "_notifications_partial.html", _notifications_context(request))
+
+
+def _datetime_context(request: Request, username: str, error: str | None = None,
+                      notice: str | None = None) -> dict:
+    zones = timezone.list_zones()
+    return {
+        "request": request, "username": username,
+        "clock": sysstats.get_server_clock(),
+        "current_zone": timezone.current_zone(),
+        "ntp": timezone.ntp_synchronised(),
+        "zones": zones, "grouped_zones": timezone.group_zones(zones),
+        "error": error, "notice": notice,
+    }
+
+
+@app.get("/datetime", response_class=HTMLResponse)
+def datetime_page(request: Request, username: str = Depends(require_login)):
+    return templates.TemplateResponse(
+        "datetime.html", _datetime_context(request, username))
+
+
+@app.post("/datetime/timezone")
+def datetime_set_timezone(request: Request, zone: str = Form(...),
+                          username: str = Depends(require_login)):
+    """Le nom vient du navigateur : `set_zone` le confronte a la liste que le
+    systeme publie avant de lancer quoi que ce soit."""
+    try:
+        message = timezone.set_zone(zone, username)
+    except timezone.TimezoneError as exc:
+        return templates.TemplateResponse(
+            "datetime.html",
+            _datetime_context(request, username, error=str(exc)),
+            status_code=400,
+        )
+    return templates.TemplateResponse(
+        "datetime.html", _datetime_context(request, username, notice=message))
 
 
 @app.post("/updates/restart-service")

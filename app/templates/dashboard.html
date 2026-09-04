@@ -16,6 +16,16 @@
     <div class="dash-row dash-row-top">
       <div class="dash-col-weather">
         {% include "_clock_card.html" %}
+
+        {# Rafraichi bien plus lentement que le reste : ce fragment ne fait
+           que relire un fichier, mais rien ne justifie de le redessiner
+           toutes les cinq secondes. #}
+        <div id="live-notifications"
+             hx-get="/partials/notifications"
+             hx-trigger="load, every 60s"
+             hx-swap="innerHTML">
+        </div>
+
         <h2 class="section-title">Sante &amp; securite</h2>
         <div id="live-health" hx-get="/partials/health" hx-trigger="load, every 30s" hx-swap="innerHTML">
           Chargement...

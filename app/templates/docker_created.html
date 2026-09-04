@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Demarrage de {{ stack.name }} - NAS Manager{% endblock %}
+{% block breadcrumb %}Tableau de bord / Docker / <strong>{{ stack.name }}</strong>{% endblock %}
+
+{% block content %}
+{# Page de transit : la stack est preparee, son demarrage est diffuse en
+   direct dans la fenetre qui s'ouvre toute seule. Elle se ferme d'elle-meme
+   apres une reussite et emmene sur la page de la stack ; en cas d'echec elle
+   reste ouverte pour qu'on puisse lire ce qui s'est passe. #}
+<div x-data="dockerRun('{{ stack.name }}')"
+     x-init="closeHref = '/docker/{{ stack.name }}'; run('up')">
+
+  <h1>{{ stack.name }}</h1>
+  <p class="page-intro">
+    La stack est creee sur <span class="mono">{{ stack.pool }}</span> et son
+    demarrage est en cours. Le telechargement des images peut prendre
+    plusieurs minutes a la premiere installation.
+  </p>
+
+  <div class="card">
+    <h2>Si le demarrage echoue</h2>
+    <p class="stat-sub">
+      La stack reste enregistree, avec son dataset et son
+      <span class="mono">docker-compose.yml</span> : rien n'est perdu et les
+      logs restent lisibles dans la fenetre. Corrige le fichier depuis la page
+      de la stack puis relance, ou supprime-la si tu preferes repartir de
+      zero. C'est volontaire : effacer automatiquement emporterait aussi le
+      message d'erreur qu'on cherche a lire.
+    </p>
+    <div class="actions">
+      <a class="btn btn-muted" href="/docker/{{ stack.name }}">Page de la stack</a>
+      <a class="btn btn-muted" href="/docker">Toutes les stacks</a>
+    </div>
+  </div>
+
+  {% include "_run_modal.html" %}
+</div>
+{% endblock %}
