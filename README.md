@@ -209,6 +209,23 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
   (3) la page de confirmation liste **avant** ce qui sera emporté, et la
   liste des partages signale d'un badge ceux dont le dataset a disparu —
   livré, en attente de test réel.
+- Phase 10c : refonte du panneau « État du système » du tableau de bord.
+  Le CPU affiche désormais son **modèle**, sa **fréquence** courante (lue
+  via `cpufreq`, avec le maximum matériel en repère), le nombre de cœurs
+  physiques **et** de threads, et surtout une **barre par cœur logique** :
+  une charge de 40 % répartie sur seize cœurs et un seul cœur à 100 % ne
+  décrivent pas du tout la même machine, or un pourcentage global les
+  confond. La RAM passe d'une barre unique à une **barre à trois segments**
+  (programmes / cache / libre) : le cache n'est pas de la mémoire perdue,
+  il est rendu instantanément dès qu'un programme en a besoin — l'afficher
+  à part évite de croire à tort que la machine sature, ce qui arrive vite
+  sur un serveur ZFS où l'ARC occupe volontiers la moitié de la RAM. Le
+  swap, la charge moyenne et l'heure de démarrage complètent le tableau,
+  avec un repère de saturation quand la charge dépasse le nombre de
+  threads. Enfin le **graphique réseau est rapatrié dans le panneau**,
+  entre RAM et Disponibilité : il ne vit plus dans son propre bloc HTMX,
+  donc tout le panneau se rafraîchit d'un seul coup au même rythme au lieu
+  de deux cycles indépendants — livré, en attente de test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -321,8 +338,10 @@ sortie), l'accès admin des comptes de partage (garde-fous, reconfirmation
 de mot de passe), la sauvegarde/restauration de configuration (contenu de
 l'archive, refus des archives piégées, restauration sélective) et les
 routes web, et l'agrandissement de pool (refus des configurations qui
-affaibliraient la redondance, essai à blanc, recalcul avant exécution)
-(545 tests).
+affaibliraient la redondance, essai à blanc, recalcul avant exécution),
+la cascade de suppression d'un pool (ordre des opérations, registres
+préservés si la destruction échoue) et le panneau d'état système enrichi
+(charge par cœur, topologie CPU, répartition mémoire) (567 tests).
 
 ## Développement
 

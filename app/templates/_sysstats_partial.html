@@ -1,34 +1,109 @@
-{# Fragment HTMX : rafraichi automatiquement (voir dashboard.html), pas de doctype/head/body ici. #}
-<div class="stat-grid">
+{# Fragment HTMX : rafraichi automatiquement (voir dashboard.html), pas de doctype/head/body ici.
+   Le reseau est rendu ICI (et non plus par son propre bloc HTMX) pour qu'il
+   partage la meme grille et le meme rythme de rafraichissement que le reste
+   de l'etat du systeme. #}
+<div class="stat-grid stat-grid-system">
+
+  {# ---------------- CPU ---------------- #}
   <div class="stat-card">
-    <div class="stat-label">CPU</div>
-    {% if stats.cpu_percent is not none %}
-      <div class="stat-value">{{ stats.cpu_percent }}%</div>
-    {% else %}
-      <div class="stat-value stat-value-small">Calcul en cours...</div>
+    <div class="stat-card-head">
+      <div class="stat-label">CPU</div>
+      <div class="stat-chip" title="Frequence moyenne constatee sur les coeurs{% if stats.cpu.mhz_max %} (maximum materiel : {{ format_frequency(stats.cpu.mhz_max) }}){% endif %}">
+        {{ format_frequency(stats.cpu.mhz_current) }}
+      </div>
+    </div>
+    <div class="stat-model" title="{{ stats.cpu.model }}">{{ stats.cpu.model }}</div>
+
+    <div class="cpu-main">
+      {% if stats.cpu_percent is not none %}
+        <div class="stat-value cpu-{{ 'crit' if stats.cpu_percent >= 90 else ('warn' if stats.cpu_percent >= 70 else 'ok') }}">{{ stats.cpu_percent }}%</div>
+      {% else %}
+        <div class="stat-value stat-value-small">Calcul...</div>
+      {% endif %}
+      <div class="cpu-meta">
+        {% if stats.cpu.physical_cores %}
+          {{ stats.cpu.physical_cores }} coeur(s) physique(s) &middot; {{ stats.cpu.threads }} thread(s)
+        {% else %}
+          {{ stats.cpu.threads }} coeur(s) logique(s)
+        {% endif %}
+        {% if stats.cpu.mhz_max %}<br>Max materiel {{ format_frequency(stats.cpu.mhz_max) }}{% endif %}
+      </div>
+    </div>
+
+    {% if stats.per_core_percent %}
+    {# Une barre verticale par coeur logique : on voit d'un coup d'oeil si la
+       charge est repartie ou si un seul coeur sature (typique d'une tache
+       mono-thread : un scrub ne se comporte pas comme un transcodage). #}
+    <div class="core-bars" role="img" aria-label="Charge par coeur">
+      {% for value in stats.per_core_percent %}
+      <div class="core-bar" title="Coeur {{ loop.index0 }} : {{ value }}%">
+        <div class="core-bar-fill core-{{ 'crit' if value >= 90 else ('warn' if value >= 70 else 'ok') }}" style="height: {{ [value, 3] | max }}%;"></div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="stat-sub">Charge par coeur ({{ stats.per_core_percent | length }})</div>
     {% endif %}
-    <div class="stat-sub">Charge moyenne : {{ stats.load1 }} / {{ stats.load5 }} / {{ stats.load15 }} ({{ stats.cpu_count }} coeur(s))</div>
+
+    <div class="stat-sub stat-sub-load" title="Nombre moyen de taches en attente d'execution sur 1, 5 et 15 minutes. Une valeur durablement superieure au nombre de threads ({{ stats.cpu.threads }}) signale une machine saturee.">
+      Charge moyenne : {{ stats.load1 }} / {{ stats.load5 }} / {{ stats.load15 }}
+      {% if stats.load1 > stats.cpu.threads %}<span class="badge badge-warn">saturation</span>{% endif %}
+    </div>
   </div>
 
+  {# ---------------- RAM ---------------- #}
+  {% set ram_apps_pct = (100 * stats.ram_apps_bytes / stats.ram_total_bytes) if stats.ram_total_bytes else 0 %}
+  {% set ram_cache_pct = (100 * stats.ram_cache_bytes / stats.ram_total_bytes) if stats.ram_total_bytes else 0 %}
   <div class="stat-card">
-    <div class="stat-label">RAM</div>
-    <div class="stat-value">{{ stats.ram_percent }}%</div>
-    <div class="bar-bg"><div class="bar-fill bar-{{ 'crit' if stats.ram_percent >= 90 else ('warn' if stats.ram_percent >= 75 else 'ok') }}" style="width: {{ stats.ram_percent }}%;"></div></div>
-    <div class="stat-sub">{{ (stats.ram_used_bytes / (1000**3)) | round(1) }} Go / {{ (stats.ram_total_bytes / (1000**3)) | round(1) }} Go</div>
+    <div class="stat-card-head">
+      <div class="stat-label">RAM</div>
+      <div class="stat-chip">{{ format_bytes(stats.ram_total_bytes) }} au total</div>
+    </div>
+    <div class="stat-model">&nbsp;</div>
+
+    <div class="cpu-main">
+      <div class="stat-value cpu-{{ 'crit' if stats.ram_percent >= 90 else ('warn' if stats.ram_percent >= 75 else 'ok') }}">{{ stats.ram_percent }}%</div>
+      <div class="cpu-meta">
+        {{ format_bytes(stats.ram_used_bytes) }} utilises<br>
+        {{ format_bytes(stats.ram_total_bytes - stats.ram_used_bytes) }} disponibles
+      </div>
+    </div>
+
+    {# Barre en trois segments : le cache n'est PAS de la memoire perdue, il
+       est rendu instantanement des qu'un programme en a besoin. L'afficher
+       a part evite de croire a tort que la machine manque de RAM. #}
+    <div class="ram-bar" role="img" aria-label="Repartition de la memoire">
+      <div class="ram-seg ram-apps" style="width: {{ ram_apps_pct | round(1) }}%;" title="Programmes : {{ format_bytes(stats.ram_apps_bytes) }}"></div>
+      <div class="ram-seg ram-cache" style="width: {{ ram_cache_pct | round(1) }}%;" title="Cache et tampons : {{ format_bytes(stats.ram_cache_bytes) }} - recuperable immediatement"></div>
+    </div>
+    <div class="ram-legend">
+      <span><i class="dot dot-apps"></i>Programmes {{ format_bytes(stats.ram_apps_bytes) }}</span>
+      <span><i class="dot dot-cache"></i>Cache {{ format_bytes(stats.ram_cache_bytes) }}</span>
+      <span><i class="dot dot-free"></i>Libre {{ format_bytes(stats.ram_free_bytes) }}</span>
+    </div>
+
+    {% if stats.swap_total_bytes > 0 %}
+    <div class="stat-sub stat-sub-load" title="Le swap est un debordement sur disque, bien plus lent que la RAM. Un usage durablement eleve indique qu'il manque de la memoire.">
+      Swap : {{ stats.swap_percent }}% &mdash; {{ format_bytes(stats.swap_used_bytes) }} / {{ format_bytes(stats.swap_total_bytes) }}
+      {% if stats.swap_percent >= 50 %}<span class="badge badge-warn">eleve</span>{% endif %}
+    </div>
+    {% else %}
+    <div class="stat-sub stat-sub-load">Aucun swap configure</div>
+    {% endif %}
   </div>
 
-  {% if stats.swap_total_bytes > 0 %}
-  <div class="stat-card">
-    <div class="stat-label">SWAP</div>
-    <div class="stat-value">{{ stats.swap_percent }}%</div>
-    <div class="stat-sub">{{ (stats.swap_used_bytes / (1000**3)) | round(1) }} Go / {{ (stats.swap_total_bytes / (1000**3)) | round(1) }} Go</div>
+  {# ---------------- RESEAU (entre RAM et DISPONIBILITE) ---------------- #}
+  <div class="stat-card stat-card-wide">
+    <div class="stat-label">RESEAU</div>
+    {% include "_network_partial.html" %}
   </div>
-  {% endif %}
 
-  <div class="stat-card">
-    <div class="stat-label">DISPONIBILITE</div>
-    <div class="stat-value stat-value-small">{{ uptime_label }}</div>
-    <div class="stat-sub">Temps de fonctionnement depuis le dernier demarrage</div>
+  {# ---------------- DISPONIBILITE ---------------- #}
+  <div class="stat-card stat-card-wide uptime-card">
+    <div>
+      <div class="stat-label">DISPONIBILITE</div>
+      <div class="stat-value stat-value-small">{{ uptime_label }}</div>
+    </div>
+    <div class="stat-sub">Demarre le {{ boot_label }}</div>
   </div>
 </div>
 
