@@ -40,7 +40,9 @@ def _create_stack_via_route(client, tmp_path, monkeypatch, name="myapp"):
     monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: str(mountpoint))
     monkeypatch.setattr(dockerstacks, "_run", lambda cmd, input_text=None, timeout=None: (0, "", ""))
     resp = client.post("/docker", data={"name": name, "pool": "tank", "compose_content": COMPOSE_YAML}, follow_redirects=False)
-    assert resp.status_code == 302
+    # v1.7.0 : la creation rend une page de transit qui diffuse le
+    # demarrage en direct, au lieu de rediriger apres un `up -d` muet.
+    assert resp.status_code == 200
     return mountpoint
 
 
@@ -175,7 +177,9 @@ def test_docker_create_with_icon_at_creation(client, tmp_path, monkeypatch):
         files={"icon": ("logo.png", io.BytesIO(b"fake-png-bytes"), "image/png")},
         follow_redirects=False,
     )
-    assert resp.status_code == 302
+    # v1.7.0 : la creation rend une page de transit qui diffuse le
+    # demarrage en direct, au lieu de rediriger apres un `up -d` muet.
+    assert resp.status_code == 200
 
     resp = client.get("/docker/myapp/icon")
     assert resp.status_code == 200
@@ -206,6 +210,8 @@ def test_docker_create_ignores_invalid_icon_but_keeps_stack(client, tmp_path, mo
         files={"icon": ("virus.exe", io.BytesIO(b"x"), "application/octet-stream")},
         follow_redirects=False,
     )
-    assert resp.status_code == 302
+    # v1.7.0 : la creation rend une page de transit qui diffuse le
+    # demarrage en direct, au lieu de rediriger apres un `up -d` muet.
+    assert resp.status_code == 200
     assert dockerstacks.get_stack("myapp") is not None
     assert client.get("/docker/myapp/icon").status_code == 404

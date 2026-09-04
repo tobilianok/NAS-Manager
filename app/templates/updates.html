@@ -73,6 +73,29 @@
     </div>
     {% endif %}
 
+    {# Le numero qui tourne depasse le dernier tag publie : le tag n'est pas
+       parti. Sans ce mot, la carte « Version stable » nomme une version plus
+       ancienne que celle affichee juste au-dessus, sans dire pourquoi. #}
+    {% if app_status.untagged and not app_version.stale %}
+    <div class="warning-banner">
+      <strong>⚠ Le tag de cette version n'est pas sur GitHub</strong>
+      <p>
+        {{ app_version.label }} tourne ici, mais le dernier tag publie est
+        {% if app_status.untagged_version %}<strong>{{ app_status.untagged_version }}</strong>
+        {%- else %}<strong>absent</strong>{% endif %}.
+        C'est pourquoi la carte « Version stable » ci-dessous en nomme une plus
+        ancienne : elle ne lit que les tags. La cause habituelle est un
+        <span class="mono">git push origin main</span> lance sans
+        <span class="mono">--tags</span> — les commits partent, le tag reste.
+      </p>
+      <p>
+        Rien n'est casse et aucune donnee n'est en jeu : il manque juste
+        l'etiquette. Depuis le serveur :
+        <span class="mono">git push origin --tags</span>
+      </p>
+    </div>
+    {% endif %}
+
     {% if not app_status.git_available %}
     <div class="info-panel">{{ app_status.fetch_error }}</div>
 

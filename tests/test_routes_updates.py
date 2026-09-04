@@ -508,3 +508,26 @@ def test_restarting_requires_a_session(monkeypatch):
     with TestClient(main.app) as anonymous:
         resp = anonymous.post("/updates/restart-service", follow_redirects=False)
     assert resp.status_code in (302, 307, 401, 403)
+
+
+def test_the_missing_tag_banner_names_the_command(client, monkeypatch):
+    """v1.7.1 : sans ce mot, la carte « Version stable » nomme une version
+    plus ancienne que celle affichee juste au-dessus, sans dire pourquoi."""
+    status = appupdate.AppUpdateStatus(current_commit="d761171", branch="main",
+                                       untagged_version="v1.5.3")
+    monkeypatch.setattr(appupdate, "get_status", lambda fetch=True: status)
+    monkeypatch.setattr(version_module, "_cache", None)
+    monkeypatch.setattr(version_module, "get_version_info",
+                        lambda: version_module.VersionInfo(
+                            version="1.6.0", commit="d761171",
+                            boot_commit="d761171aa", disk_version="1.6.0"))
+    text = client.get("/updates").text
+    assert "n&#39;est pas sur GitHub" in text or "pas sur GitHub" in text
+    assert "git push origin --tags" in text
+    assert "v1.5.3" in text
+
+
+def test_no_missing_tag_banner_when_everything_matches(client, monkeypatch):
+    status = appupdate.AppUpdateStatus(current_commit="d761171", branch="main")
+    monkeypatch.setattr(appupdate, "get_status", lambda fetch=True: status)
+    assert "git push origin --tags" not in client.get("/updates").text

@@ -647,3 +647,64 @@ def test_the_tag_list_is_restricted_to_what_is_reachable(monkeypatch):
     appupdate.get_status(fetch=False)
     tag_calls = [c for c in calls if c and c[0] == "tag"]
     assert tag_calls and "--merged" in tag_calls[0]
+
+
+# --- v1.7.1 : le tag de la version installee n'a pas ete pousse -----------
+
+
+def test_version_numbers_are_compared_as_numbers():
+    """v1.10.0 vient APRES v1.9.0 : un tri alphabetique inverserait les deux
+    et ferait passer une ancienne version pour la plus recente."""
+    assert appupdate.version_tuple("v1.10.0") > appupdate.version_tuple("v1.9.0")
+    assert appupdate.version_tuple("1.6.0") > appupdate.version_tuple("v1.5.3")
+    assert appupdate.version_tuple("v1.5.3") == appupdate.version_tuple("1.5.3")
+
+
+def test_an_unreadable_label_never_passes_for_the_newest():
+    assert appupdate.version_tuple("") == (0,)
+    assert appupdate.version_tuple("bidule") == (0,)
+
+
+def _status_with_tag(monkeypatch, tag):
+    def fake_git(*args, timeout=60):
+        if args == ("rev-parse", "--git-dir"):
+            return 0, ".git", ""
+        if args[0] == "tag":
+            return (0, tag, "") if tag else (1, "", "")
+        if args[:2] == ("rev-list", "-n"):
+            return 0, "bbbb222", ""
+        if args in (("rev-parse", "HEAD"), ("rev-parse", "origin/main")):
+            return 0, "aaaa111", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(appupdate, "_git", fake_git)
+    return appupdate.get_status(fetch=False)
+
+
+def test_a_running_version_ahead_of_every_tag_is_reported(monkeypatch):
+    """Le cas vecu : v1.6.0 installee, poussee avec `git push origin main`
+    sans --tags. L'ecran nommait v1.5.3 comme derniere version stable, ce qui
+    etait exact et incomprehensible."""
+    monkeypatch.setattr(appupdate.version_module, "VERSION", "1.6.0")
+    status = _status_with_tag(monkeypatch, "v1.5.3")
+    assert status.untagged
+    assert status.untagged_version == "v1.5.3"
+
+
+def test_nothing_is_reported_when_the_tag_matches(monkeypatch):
+    monkeypatch.setattr(appupdate.version_module, "VERSION", "1.5.3")
+    assert not _status_with_tag(monkeypatch, "v1.5.3").untagged
+
+
+def test_nothing_is_reported_when_a_newer_tag_exists(monkeypatch):
+    """Une version plus recente publiee est une mise a jour disponible, pas
+    un tag manquant."""
+    monkeypatch.setattr(appupdate.version_module, "VERSION", "1.5.3")
+    assert not _status_with_tag(monkeypatch, "v1.6.0").untagged
+
+
+def test_a_repository_without_any_tag_is_reported_too(monkeypatch):
+    monkeypatch.setattr(appupdate.version_module, "VERSION", "1.6.0")
+    status = _status_with_tag(monkeypatch, "")
+    assert status.untagged
+    assert status.untagged_version == ""

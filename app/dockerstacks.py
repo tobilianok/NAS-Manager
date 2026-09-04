@@ -160,7 +160,18 @@ def get_stack(name: str) -> Stack | None:
 # Creation / edition / suppression
 # ---------------------------------------------------------------------------
 
-def create_stack(name: str, pool_name: str, compose_content: str) -> tuple[Stack, str]:
+def prepare_stack(name: str, pool_name: str, compose_content: str) -> Stack:
+    """Tout ce qui precede le demarrage : validation, dataset, ecriture du
+    docker-compose.yml, verification de sa syntaxe, inscription au registre.
+
+    Extrait de `create_stack` pour la v1.7.0, afin que le demarrage puisse
+    etre DIFFUSE EN DIRECT au lieu d'etre attendu en silence : un `up -d` qui
+    telecharge plusieurs images tient plusieurs minutes, pendant lesquelles
+    l'utilisateur n'avait aucun retour.
+
+    Toute erreur ici nettoie le dataset cree pour la tentative : sinon le nom
+    resterait bloque par un dataset orphelin.
+    """
     import datetime
 
     name = name.strip()
@@ -215,18 +226,6 @@ def create_stack(name: str, pool_name: str, compose_content: str) -> tuple[Stack
         if code != 0:
             raise DockerStackError(f"docker-compose.yml invalide : {err or out}")
 
-        code, out, err = _run(
-            ["docker", "compose", "-p", name, "-f", str(compose_path), "up", "-d"], timeout=300,
-        )
-        if code != 0:
-            # 'up -d' peut avoir cree une partie des containers/reseaux avant
-            # d'echouer (ex : conflit de port sur le 2e service) - on les
-            # retire pour ne rien laisser trainer cote Docker non plus.
-            _run(
-                ["docker", "compose", "-p", name, "-f", str(compose_path), "down", "-v", "--remove-orphans"],
-                timeout=120,
-            )
-            raise DockerStackError(f"Le demarrage de la stack a echoue : {err or out}")
     except Exception as exc:
         cleaned = _rollback_dataset(dataset)
         if isinstance(exc, DockerStackError):
@@ -247,6 +246,50 @@ def create_stack(name: str, pool_name: str, compose_content: str) -> tuple[Stack
     stacks = _load_registry()
     stacks.append(stack)
     _save_registry(stacks)
+
+    logger.info("Stack Docker '%s' preparee", name)
+    return stack
+
+
+def unregister_stack(name: str) -> None:
+    """Retire une stack du registre SANS toucher a ses fichiers. Sert au
+    nettoyage quand le demarrage echoue juste apres la preparation."""
+    _save_registry([s for s in _load_registry() if s.name != name])
+
+
+def create_stack(name: str, pool_name: str, compose_content: str) -> tuple[Stack, str]:
+    """Prepare la stack puis la demarre, en une seule operation bloquante.
+
+    Le comportement historique est conserve : si le demarrage echoue, tout
+    est defait - containers, inscription au registre et dataset - pour que
+    le meme nom reste immediatement reutilisable."""
+    stack = prepare_stack(name, pool_name, compose_content)
+
+    code, out, err = _run(
+        ["docker", "compose", "-p", stack.name, "-f", stack.compose_path, "up", "-d"],
+        timeout=300,
+    )
+    if code != 0:
+        # 'up -d' peut avoir cree une partie des containers/reseaux avant
+        # d'echouer (ex : conflit de port sur le 2e service) - on les retire
+        # pour ne rien laisser trainer cote Docker non plus.
+        _run(
+            ["docker", "compose", "-p", stack.name, "-f", stack.compose_path,
+             "down", "-v", "--remove-orphans"],
+            timeout=120,
+        )
+        unregister_stack(stack.name)
+        cleaned = _rollback_dataset(stack.dataset)
+        suffix = (
+            " (le dataset cree pour cette tentative a ete nettoye automatiquement, "
+            "tu peux reessayer avec le meme nom)"
+            if cleaned else
+            f" (ATTENTION : le dataset '{stack.dataset}' n'a pas pu etre nettoye "
+            "automatiquement, supprime-le depuis Docker → Stockage avant de reessayer)"
+        )
+        raise DockerStackError(
+            f"Le demarrage de la stack a echoue : {err or out}" + suffix
+        )
 
     logger.info("Stack Docker '%s' creee et demarree", name)
     return stack, out

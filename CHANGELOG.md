@@ -13,6 +13,91 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.7.1 — 2026-09-04
+
+L'écran des mises à jour dit quand le tag d'une version n'a pas été poussé.
+
+### Le piège, rencontré trois fois
+- Un `git push origin main` **sans `--tags`** envoie les commits mais laisse le
+  tag sur le serveur. La branche est à jour sur GitHub, la version aussi — mais
+  aucune étiquette ne la nomme.
+- L'écran affichait alors « Version installée v1.6.0 » et, juste en dessous,
+  « Version stable : v1.5.3 ». Les deux étaient exacts (la carte ne lit que les
+  tags), et l'ensemble incompréhensible.
+- La page compare désormais le numéro qui **tourne** au dernier tag **trouvé**.
+  Quand le premier dépasse le second, un bandeau nomme la cause et donne la
+  commande : `git push origin --tags`. Il précise que rien n'est cassé — il
+  manque une étiquette, pas du code.
+- La comparaison porte sur des **nombres**, pas sur des chaînes : v1.10.0 vient
+  après v1.9.0, ce qu'un tri alphabétique inverserait. Une étiquette illisible
+  vaut zéro et ne peut donc jamais passer pour la plus récente.
+- Le bandeau s'efface quand un service en attente de redémarrage explique déjà
+  l'écart : deux avertissements pour une même cause se contredisent plus qu'ils
+  n'informent.
+
+---
+
+## v1.7.0 — 2026-09-04
+
+Seconde des deux livraisons demandées : le fonctionnel.
+
+### Accepter l'âge d'un disque
+- Un grand nombre d'heures de fonctionnement **n'est pas un défaut**. Un
+  disque reconditionné peut afficher sept ans de service sans un seul secteur
+  réalloué. Laisser ce seul compteur maintenir la météo au gris apprend à
+  ignorer les avertissements — plus dangereux qu'un disque âgé.
+- Un bouton **« Accepter l'âge »** par disque. Ses heures cessent de peser sur
+  le verdict ; **rien d'autre n'est masqué** : secteurs réalloués, erreurs de
+  lecture, température, usure NVMe et verdict SMART global continuent
+  d'alerter. Un test verrouille précisément ça.
+- La clé est le **numéro de série**, jamais `sdX` : un disque remplacé est
+  automatiquement réévalué, alors qu'un acquittement attaché au nom de
+  périphérique aurait fini par couvrir un disque que personne n'a examiné. Un
+  disque sans numéro de série est refusé, avec l'explication.
+- Réversible à tout moment, et le texte du bouton distingue le disque qui
+  n'est signalé *que* pour son âge de celui qui a d'autres problèmes — là,
+  accepter ne réglerait rien.
+
+### Notifications de mises à jour sur le tableau de bord
+- Une carte qui signale ce qui attend : paquets Ubuntu (dont les correctifs de
+  sécurité, mis en avant), redémarrage requis, nouvelle version de NAS
+  Manager, images Docker plus récentes.
+- **Le tableau de bord ne déclenche jamais la vérification.** Il se rafraîchit
+  tout seul en permanence ; interroger GitHub et le registre Docker à chaque
+  passage ferait des dizaines d'appels par minute. La vérification se lance
+  sur un bouton, son résultat est rangé dans un fichier, et le tableau de bord
+  ne fait que le relire — avec sa date, et un repère quand il vieillit.
+- Chaque source est isolée : une panne de GitHub n'empêche pas de savoir
+  qu'Ubuntu a des correctifs de sécurité en attente. Les sources en échec sont
+  **affichées** — sans ça, une panne générale ressemblerait à « rien de neuf ».
+
+### Fuseau horaire (Paramètres → Date et heure)
+- L'heure du serveur date les fichiers déposés dans les partages, les
+  instantanés ZFS et les journaux.
+- Le nom de fuseau venu du navigateur est confronté à la **liste publiée par
+  le système** avant toute commande — liste blanche, comme les actions Docker
+  et apt.
+- `time.tzset()` est appelé après le changement : sans lui, l'horloge du
+  tableau de bord aurait continué d'afficher l'ancien fuseau jusqu'au
+  redémarrage du service, Python gardant la configuration en cache.
+- La page signale aussi si l'horloge **n'est pas synchronisée par le réseau** :
+  régler la bonne zone ne sert à rien si l'heure elle-même dérive.
+
+### Création d'une stack Docker diffusée en direct
+- `docker compose up -d` qui télécharge plusieurs images tient plusieurs
+  minutes, sans le moindre retour : on croyait à un blocage.
+- La création rend maintenant une page qui **ouvre la fenêtre de logs** et
+  diffuse le démarrage. Elle se ferme toute seule après la réussite et emmène
+  sur la page de la stack ; en cas d'échec elle reste ouverte.
+- `create_stack` a été scindé en `prepare_stack` (validation, dataset, écriture
+  et vérification du compose, inscription) et le démarrage. **Le comportement
+  historique de `create_stack` est conservé à l'identique**, cleanup compris.
+- Différence assumée : si le démarrage échoue, la stack **reste** en place. La
+  supprimer automatiquement emporterait le message d'erreur qu'on cherche
+  justement à lire. La page l'explique et propose les deux issues.
+
+---
+
 ## v1.6.0 — 2026-09-04
 
 Première des deux livraisons demandées : tout ce qui se voit. La suite

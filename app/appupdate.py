@@ -103,6 +103,15 @@ class AppUpdateStatus:
     # ici plutot que de le laisser decouvrir au moment de livrer.
     behind_origin: int = 0
     ahead_origin: int = 0
+    # Dernier tag trouve, quand le code qui tourne porte deja un numero plus
+    # haut : le tag de la version installee n'a pas ete pousse. Chaine vide
+    # quand tout concorde ; peut valoir "" aussi lorsqu'aucun tag n'existe -
+    # `untagged` distingue les deux cas.
+    untagged_version: str | None = None
+
+    @property
+    def untagged(self) -> bool:
+        return self.untagged_version is not None
 
     @property
     def detached(self) -> bool:
@@ -154,6 +163,17 @@ def _git(*args: str, timeout: int = 60) -> tuple[int, str, str]:
 def _git_out(*args: str) -> str | None:
     code, out, _ = _git(*args)
     return out if code == 0 and out else None
+
+
+def version_tuple(label: str) -> tuple[int, ...]:
+    """« v1.10.0 » -> (1, 10, 0), pour comparer des numeros et non des
+    chaines : « v1.10.0 » est APRES « v1.9.0 », ce qu'un tri alphabetique
+    inverserait. Une etiquette illisible vaut (0,) : elle ne peut alors
+    jamais passer pour la plus recente."""
+    match = re.match(r"^v?(\d+(?:\.\d+)*)", (label or "").strip())
+    if not match:
+        return (0,)
+    return tuple(int(part) for part in match.group(1).split("."))
 
 
 def _is_ancestor(commit: str, of: str) -> bool:
@@ -210,6 +230,15 @@ def get_status(fetch: bool = True) -> AppUpdateStatus:
     # rate), et `--merged` garantit qu'on ne propose que du deja accessible.
     tags = _git_out("tag", "--sort=-v:refname", "--merged", "origin/main")
     latest_tag = tags.splitlines()[0].strip() if tags else None
+
+    # Le code qui tourne annonce un numero plus haut que le dernier tag
+    # trouve : c'est que le tag n'a pas ete pousse (un `git push origin main`
+    # sans `--tags`). L'ecran serait sinon coherent mais incomprehensible - il
+    # nommerait une version plus ancienne que celle affichee juste au-dessus,
+    # sans dire pourquoi (v1.7.1).
+    if version_tuple(version_module.VERSION) > version_tuple(latest_tag or ""):
+        status.untagged_version = latest_tag or ""
+
     if latest_tag:
         tag_commit = _git_out("rev-list", "-n", "1", latest_tag)
         # Une version DEJA contenue dans l'historique deploye ne doit pas

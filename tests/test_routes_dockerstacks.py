@@ -39,7 +39,9 @@ def _create_stack_via_route(client, tmp_path, monkeypatch, name="myapp"):
     monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: str(mountpoint))
     monkeypatch.setattr(dockerstacks, "_run", lambda cmd, input_text=None, timeout=None: (0, "", ""))
     resp = client.post("/docker", data={"name": name, "pool": "tank", "compose_content": COMPOSE_YAML}, follow_redirects=False)
-    assert resp.status_code == 302
+    # Depuis la v1.7.0 la creation rend une page de transit qui diffuse le
+    # demarrage en direct, au lieu de rediriger apres un `up -d` silencieux.
+    assert resp.status_code == 200
     return mountpoint
 
 
@@ -349,3 +351,82 @@ def test_docker_create_reports_orphan_hint(client, monkeypatch):
     resp = client.post("/docker", data={"name": "myapp", "pool": "tank", "compose_content": COMPOSE_YAML})
     assert resp.status_code == 400
     assert "Stockage" in resp.text
+
+
+# --- v1.7.0 : demarrage diffuse en direct ---------------------------------
+
+def test_creation_lands_on_a_page_that_streams_the_start(client, tmp_path, monkeypatch):
+    """Un `up -d` qui telecharge plusieurs images tient plusieurs minutes.
+    Sans retour, on croit a un blocage et on recharge la page."""
+    mountpoint = tmp_path / "mnt" / "myapp"
+    mountpoint.mkdir(parents=True)
+    monkeypatch.setattr(zfs, "get_pool", lambda pn: _fake_pool())
+    monkeypatch.setattr(zfs, "create_dataset", lambda path: None)
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: str(mountpoint))
+    monkeypatch.setattr(dockerstacks, "_run", lambda cmd, input_text=None, timeout=None: (0, "", ""))
+    resp = client.post("/docker", data={"name": "myapp", "pool": "tank",
+                                        "compose_content": COMPOSE_YAML})
+    assert resp.status_code == 200
+    assert "dockerRun('myapp')" in resp.text
+    assert "run('up')" in resp.text
+    assert "closeHref = '/docker/myapp'" in resp.text
+
+
+def test_the_stack_exists_before_the_start_is_streamed(client, tmp_path, monkeypatch):
+    """La fenetre diffuse une action sur une stack : celle-ci doit deja etre
+    enregistree, sinon l'action ne trouverait rien a demarrer."""
+    _create_stack_via_route(client, tmp_path, monkeypatch)
+    assert dockerstacks.get_stack("myapp") is not None
+
+
+def test_the_start_is_not_run_twice(client, tmp_path, monkeypatch):
+    """La preparation ne doit PAS demarrer la stack : le demarrage appartient
+    a la fenetre. Sinon les images seraient telechargees deux fois."""
+    calls = []
+    mountpoint = tmp_path / "mnt" / "myapp"
+    mountpoint.mkdir(parents=True)
+    monkeypatch.setattr(zfs, "get_pool", lambda pn: _fake_pool())
+    monkeypatch.setattr(zfs, "create_dataset", lambda path: None)
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: str(mountpoint))
+
+    def fake_run(cmd, input_text=None, timeout=None):
+        calls.append(list(cmd))
+        return 0, "", ""
+
+    monkeypatch.setattr(dockerstacks, "_run", fake_run)
+    client.post("/docker", data={"name": "myapp", "pool": "tank",
+                                 "compose_content": COMPOSE_YAML})
+    assert not any("up" in c for c in calls), calls
+
+
+def test_a_failed_start_keeps_the_stack_so_the_log_can_be_read(client, tmp_path, monkeypatch):
+    """Effacer automatiquement emporterait le message d'erreur qu'on cherche
+    justement a lire. La page le dit."""
+    mountpoint = tmp_path / "mnt" / "myapp"
+    mountpoint.mkdir(parents=True)
+    monkeypatch.setattr(zfs, "get_pool", lambda pn: _fake_pool())
+    monkeypatch.setattr(zfs, "create_dataset", lambda path: None)
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: str(mountpoint))
+    monkeypatch.setattr(dockerstacks, "_run", lambda cmd, input_text=None, timeout=None: (0, "", ""))
+    resp = client.post("/docker", data={"name": "myapp", "pool": "tank",
+                                        "compose_content": COMPOSE_YAML})
+    assert "Si le demarrage echoue" in resp.text
+    assert "rien n" in resp.text  # "rien n'est perdu"
+
+
+def test_an_invalid_compose_is_still_refused_before_anything_is_kept(client, monkeypatch, tmp_path):
+    """La verification de syntaxe reste AVANT : une stack au compose invalide
+    ne doit pas etre enregistree, meme avec le demarrage differe."""
+    mountpoint = tmp_path / "mnt" / "myapp"
+    mountpoint.mkdir(parents=True)
+    monkeypatch.setattr(zfs, "list_pools", lambda: [_fake_pool()])
+    monkeypatch.setattr(zfs, "get_pool", lambda pn: _fake_pool())
+    monkeypatch.setattr(zfs, "create_dataset", lambda path: None)
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: str(mountpoint))
+    monkeypatch.setattr(zfs, "destroy_dataset", lambda path: None)
+    monkeypatch.setattr(dockerstacks, "_run",
+                        lambda cmd, input_text=None, timeout=None: (1, "", "yaml invalide"))
+    resp = client.post("/docker", data={"name": "myapp", "pool": "tank",
+                                        "compose_content": COMPOSE_YAML})
+    assert resp.status_code == 400
+    assert dockerstacks.get_stack("myapp") is None

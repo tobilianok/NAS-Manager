@@ -68,6 +68,7 @@ NAV: tuple[NavLink | NavGroup, ...] = (
     )),
     NavGroup("Parametres", "settings", (
         NavLink("Reseau", "/network", "network"),
+        NavLink("Date et heure", "/datetime", "clock"),
         NavLink("Sauvegarde", "/backup", "backup"),
         NavLink("Mises a jour", "/updates", "update"),
     )),

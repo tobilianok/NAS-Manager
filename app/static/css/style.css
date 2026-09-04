@@ -1014,3 +1014,58 @@ body.login-body { display: flex; align-items: center; justify-content: center; m
   font-size: .72rem; color: var(--text-dim); line-height: 1.5;
   margin-top: .7rem;
 }
+
+/* Acceptation de l'age d'un disque (v1.7.0). Ligne discrete : c'est une
+   information de contexte, pas une action qu'on doit avoir envie de faire. */
+.age-row {
+  display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
+  margin-top: .5rem; padding-top: .5rem;
+  border-top: 1px dashed var(--border-soft);
+}
+.age-row .stat-sub { flex: 1 1 18rem; margin: 0; }
+.age-row button { flex: 0 0 auto; }
+.age-accepted { color: var(--text-dim); text-decoration: line-through; }
+
+/* Notifications de mises a jour (v1.7.0) */
+.notif-card { margin-bottom: 1rem; }
+.notif-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: .6rem; margin-bottom: .5rem;
+}
+.notif-head .stat-label { margin: 0; }
+.notif-clear {
+  display: flex; align-items: center; gap: .5rem;
+  color: var(--success); font-size: .85rem; font-weight: 500;
+}
+.notif-clear svg { width: 17px; height: 17px; }
+.notif-list { display: flex; flex-direction: column; gap: .4rem; }
+.notif-item {
+  display: flex; align-items: flex-start; gap: .6rem;
+  padding: .55rem .65rem; border-radius: var(--radius-sm);
+  background: var(--surface); text-decoration: none; color: var(--text);
+  border-left: 3px solid var(--accent);
+  transition: background .12s ease;
+}
+.notif-item:hover { background: var(--border-soft); }
+.notif-warn { border-left-color: var(--warning); }
+.notif-item strong { display: block; font-size: .84rem; }
+.notif-item .stat-sub { margin: 0; }
+.notif-count {
+  flex: 0 0 auto; min-width: 1.5rem; text-align: center;
+  background: var(--accent); color: #fff; border-radius: 999px;
+  font-size: .72rem; font-weight: 700; padding: .1rem .35rem;
+  font-variant-numeric: tabular-nums;
+}
+.notif-warn .notif-count { background: var(--warning); color: #422006; }
+.notif-errors { margin-top: .6rem; }
+.notif-errors > summary { font-size: .75rem; color: var(--warning); cursor: pointer; }
+.notif-age { font-size: .7rem; color: var(--text-dim); margin-top: .6rem; }
+
+/* Page Date et heure (v1.7.0) */
+.datetime-facts {
+  display: flex; flex-wrap: wrap; gap: 1.6rem;
+  margin-top: 1rem; padding-top: .9rem;
+  border-top: 1px solid var(--border-soft);
+}
+.datetime-facts .stat-label { margin-bottom: .25rem; }
+.datetime-facts .mono { font-size: .9rem; }

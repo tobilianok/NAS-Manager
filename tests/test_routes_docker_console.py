@@ -30,7 +30,9 @@ def _create_stack(client, tmp_path, monkeypatch, name="myapp"):
     monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: str(mountpoint))
     monkeypatch.setattr(dockerstacks, "_run", lambda cmd, input_text=None, timeout=None: (0, "", ""))
     resp = client.post("/docker", data={"name": name, "pool": "tank", "compose_content": COMPOSE_YAML}, follow_redirects=False)
-    assert resp.status_code == 302
+    # v1.7.0 : la creation rend une page de transit qui diffuse le
+    # demarrage en direct, au lieu de rediriger apres un `up -d` muet.
+    assert resp.status_code == 200
 
 
 def _running_container(service="web", name="myapp-web-1"):

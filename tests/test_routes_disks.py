@@ -1,7 +1,10 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main, auth, disks as disks_module, diskwipe, replace_workflow, smart as smart_module
+from app import (
+    main, auth, diskage, disks as disks_module, diskwipe, replace_workflow,
+    smart as smart_module,
+)
 
 
 def _disk(name="sdc", status="occupied", partitions=("sdc1",)):
@@ -315,3 +318,94 @@ def test_the_partial_refreshes_on_its_own(client, monkeypatch):
     resp = client.get("/partials/disks")
     assert resp.status_code == 200
     assert "/dev/sdc" in resp.text
+
+
+# --- v1.7.0 : accepter l'age d'un disque ----------------------------------
+
+def _aged_report(serial="WD-123", acknowledged=False, warnings=None):
+    from app import smart as smart_mod
+    report = smart_mod.SmartReport(
+        path="/dev/sdc", available=True, healthy=True, status_label="ATTENTION",
+        temperature_c=34, power_on_hours=61320, serial=serial,
+        age_acknowledged=acknowledged, power_on_years=7.0,
+        age_warning=not acknowledged,
+    )
+    report.warnings = warnings if warnings is not None else (
+        [] if acknowledged else ["Disque en service depuis environ 7.0 ans"])
+    return report
+
+
+def test_an_aged_disk_is_offered_the_acknowledgement(client, monkeypatch):
+    monkeypatch.setattr(disks_module, "list_disks", lambda: [_disk("sdc")])
+    monkeypatch.setattr(smart_module, "get_smart_report", lambda p: _aged_report())
+    text = client.get("/disks").text
+    assert "/disks/sdc/age-acknowledge" in text
+    assert "Accepter l" in text
+
+
+def test_a_young_disk_is_not(client, monkeypatch):
+    from app import smart as smart_mod
+    young = smart_mod.SmartReport(
+        path="/dev/sdc", available=True, healthy=True, status_label="OK",
+        temperature_c=34, power_on_hours=1200, serial="WD-123")
+    monkeypatch.setattr(disks_module, "list_disks", lambda: [_disk("sdc")])
+    monkeypatch.setattr(smart_module, "get_smart_report", lambda p: young)
+    assert "/disks/sdc/age-acknowledge" not in client.get("/disks").text
+
+
+def test_the_page_warns_when_the_disk_has_other_problems(client, monkeypatch):
+    """Accepter l'age ne reglerait rien la : le dire evite de croire que le
+    bouton fait disparaitre le probleme."""
+    monkeypatch.setattr(disks_module, "list_disks", lambda: [_disk("sdc")])
+    monkeypatch.setattr(smart_module, "get_smart_report",
+                        lambda p: _aged_report(warnings=["Disque age", "48 secteurs realloues"]))
+    text = client.get("/disks").text
+    assert "autres signalements" in text
+
+
+def test_acknowledging_records_it_and_reports_back(client, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(disks_module, "list_disks", lambda: [_disk("sdc")])
+    monkeypatch.setattr(disks_module, "get_disk", lambda n: _disk("sdc"))
+    monkeypatch.setattr(smart_module, "get_smart_report", lambda p: _aged_report())
+    monkeypatch.setattr(diskage, "acknowledge",
+                        lambda s, h, u: seen.update(serial=s, hours=h, user=u))
+    resp = client.post("/disks/sdc/age-acknowledge")
+    assert resp.status_code == 200
+    assert seen == {"serial": "WD-123", "hours": 61320, "user": "louis"}
+    # Le message doit dire ce qui reste surveille, pas seulement ce qui se tait.
+    assert "continuent d" in resp.text or "surveill" in resp.text
+
+
+def test_a_disk_without_a_serial_is_refused_with_an_explanation(client, monkeypatch):
+    monkeypatch.setattr(disks_module, "list_disks", lambda: [_disk("sdc")])
+    monkeypatch.setattr(disks_module, "get_disk", lambda n: _disk("sdc"))
+    monkeypatch.setattr(smart_module, "get_smart_report", lambda p: _aged_report(serial=""))
+    resp = client.post("/disks/sdc/age-acknowledge")
+    assert resp.status_code == 400
+    assert "numero de serie" in resp.text
+
+
+def test_an_unknown_disk_is_a_404(client, monkeypatch):
+    monkeypatch.setattr(disks_module, "list_disks", lambda: [])
+    monkeypatch.setattr(disks_module, "get_disk", lambda n: None)
+    assert client.post("/disks/sdz/age-acknowledge").status_code == 404
+
+
+def test_watching_can_be_resumed_from_the_page(client, monkeypatch):
+    monkeypatch.setattr(disks_module, "list_disks", lambda: [_disk("sdc")])
+    monkeypatch.setattr(disks_module, "get_disk", lambda n: _disk("sdc"))
+    monkeypatch.setattr(smart_module, "get_smart_report",
+                        lambda p: _aged_report(acknowledged=True))
+    monkeypatch.setattr(diskage, "forget", lambda s: True)
+    resp = client.post("/disks/sdc/age-watch")
+    assert resp.status_code == 200
+    assert "Surveillance de l" in resp.text
+
+
+def test_resuming_what_was_not_acknowledged_says_so(client, monkeypatch):
+    monkeypatch.setattr(disks_module, "list_disks", lambda: [_disk("sdc")])
+    monkeypatch.setattr(disks_module, "get_disk", lambda n: _disk("sdc"))
+    monkeypatch.setattr(smart_module, "get_smart_report", lambda p: _aged_report())
+    monkeypatch.setattr(diskage, "forget", lambda s: False)
+    assert client.post("/disks/sdc/age-watch").status_code == 400
