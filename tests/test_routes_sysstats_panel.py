@@ -116,19 +116,21 @@ def test_network_chart_is_rendered_inside_the_system_panel(client, monkeypatch):
     assert "RESEAU" in resp.text
 
 
-def test_network_tile_sits_between_ram_and_uptime(client, monkeypatch):
+def test_network_tile_comes_after_ram(client, monkeypatch):
     monkeypatch.setattr(sysstats, "get_system_stats", lambda: _stats())
     monkeypatch.setattr(netstats, "list_interfaces", lambda: [_iface()])
     text = client.get("/partials/sysstats").text
-    assert text.index(">RAM<") < text.index(">RESEAU<") < text.index(">DISPONIBILITE<")
+    assert text.index(">RAM<") < text.index(">RESEAU<")
 
 
-def test_panel_shows_the_boot_date(client, monkeypatch):
+def test_the_uptime_tile_left_the_panel(client, monkeypatch):
+    """Elle a rejoint la carte horloge (v1.6.0). La laisser aux deux endroits
+    aurait donne deux valeurs differentes, chacune rafraichie a son rythme."""
     monkeypatch.setattr(sysstats, "get_system_stats", lambda: _stats())
     monkeypatch.setattr(netstats, "list_interfaces", lambda: [])
-    resp = client.get("/partials/sysstats")
-    assert "1 j 1 h 0 min" in resp.text
-    assert "Demarre le" in resp.text
+    text = client.get("/partials/sysstats").text
+    assert "DISPONIBILITE" not in text
+    assert "Demarre le" not in text
 
 
 def test_dashboard_no_longer_has_a_separate_network_block(client, monkeypatch):

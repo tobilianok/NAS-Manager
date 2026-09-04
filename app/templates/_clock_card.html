@@ -6,13 +6,24 @@
    l'horodatage envoye par le serveur - pas besoin d'interroger le serveur
    chaque seconde pour faire tourner une horloge. #}
 <div class="card clock-card"
-     x-data="serverClock({{ clock.seconds_of_day }})"
+     x-data="serverClock({{ clock.seconds_of_day }}, {{ clock.uptime_seconds }})"
      x-init="start()">
 
   <div class="clock-face">
     <div class="clock-time" x-text="timeLabel">{{ clock.time_label }}</div>
     <div class="clock-date">{{ clock.date_label }}</div>
     <div class="clock-tz">heure du serveur ({{ clock.timezone }})</div>
+  </div>
+
+  {# Disponibilite (v1.6.0), rapatriee depuis sa tuile du tableau de bord.
+     Le compteur avance dans le navigateur, comme l'horloge : la duree
+     reste juste entre deux rafraichissements. #}
+  <div class="clock-uptime">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+    <div>
+      <div class="clock-uptime-value" x-text="uptimeLabel">{{ clock.uptime_label }}</div>
+      <div class="clock-uptime-sub">en marche depuis le {{ clock.boot_label }}</div>
+    </div>
   </div>
 
   <div class="clock-actions">
@@ -87,11 +98,13 @@
 // horodatage : formater une date dans le navigateur l'afficherait dans le
 // fuseau du poste de l'utilisateur, alors que c'est l'heure du serveur qui
 // nous interesse. Un poste a Tokyo doit voir l'heure du NAS.
-function serverClock(baseSeconds) {
+function serverClock(baseSeconds, baseUptime) {
   return {
     asked: null,
     timeLabel: '',
+    uptimeLabel: '',
     base: baseSeconds,
+    baseUptime: baseUptime,
     startedAt: Date.now(),
 
     start() {
@@ -105,6 +118,21 @@ function serverClock(baseSeconds) {
       var p = function (n) { return n < 10 ? '0' + n : '' + n; };
       this.timeLabel = p(Math.floor(t / 3600)) + ':' +
                        p(Math.floor(t / 60) % 60) + ':' + p(t % 60);
+      this.uptimeLabel = this.formatUptime(this.baseUptime + elapsed);
+    },
+
+    // Meme decoupage que format_uptime cote Python : les minutes sont
+    // toujours affichees, les heures des qu'il y a des jours. Une machine
+    // qui vient de demarrer montre « 3 min », pas « 0 j 0 h 3 min ».
+    formatUptime(total) {
+      var days = Math.floor(total / 86400);
+      var hours = Math.floor(total / 3600) % 24;
+      var minutes = Math.floor(total / 60) % 60;
+      var parts = [];
+      if (days) { parts.push(days + ' j'); }
+      if (hours || days) { parts.push(hours + ' h'); }
+      parts.push(minutes + ' min');
+      return parts.join(' ');
     },
 
     ask(key) { this.asked = key; },

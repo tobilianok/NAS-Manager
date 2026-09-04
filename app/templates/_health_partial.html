@@ -24,6 +24,44 @@
     <div>
       <strong>{{ c.label }}</strong>
       <div class="weather-check-detail">{{ c.detail }}</div>
+
+      {# Le detail des capteurs est attache a la ligne Temperatures plutot
+         que pose ailleurs : on deplie la ou on s'est pose la question.
+         Replie par defaut - la ligne resume suffit tant que tout va bien. #}
+      {% if c.key == 'temps' and temperatures %}
+      <details class="temp-details">
+        <summary>Voir les {{ temperature_count }} capteurs</summary>
+        {% for group, readings in temperatures %}
+        <div class="temp-group">
+          <div class="temp-group-name">{{ group }}</div>
+          <table class="temp-table">
+            {% for r in readings %}
+            <tr class="temp-{{ r.level }}">
+              <td class="temp-name" title="{{ r.technical }}">{{ r.name }}</td>
+              <td class="temp-bar-cell">
+                <div class="temp-bar-bg">
+                  <div class="temp-bar temp-bar-{{ r.level }}"
+                       style="width: {{ r.percent }}%;"></div>
+                </div>
+              </td>
+              <td class="temp-value">{{ '%.0f' | format(r.celsius) }} °C</td>
+              <td class="temp-limit">
+                {%- if r.limit %}limite {{ '%.0f' | format(r.limit) }} °C
+                {%- else %}limite non declaree{% endif -%}
+              </td>
+            </tr>
+            {% endfor %}
+          </table>
+        </div>
+        {% endfor %}
+        <p class="temp-note">
+          Chaque capteur est compare a <strong>sa propre limite</strong>, pas a
+          un chiffre unique : 70 °C sont banals pour un SSD NVMe limite a 85,
+          et deja notables pour un coeur limite a 80. Survole un nom pour voir
+          la mesure brute.
+        </p>
+      </details>
+      {% endif %}
     </div>
   </div>
   {% endfor %}

@@ -119,3 +119,21 @@ def test_the_cache_expires(monkeypatch):
     clock[0] += version_module._CACHE_TTL + 1
     version_module.get_version_info_cached()
     assert len(calls) == 2
+
+
+def test_git_calls_declare_the_repository_as_safe(monkeypatch):
+    """Le depot appartient au compte qui a clone, le service tourne en root :
+    sans safe.directory, git refuse le depot sur une installation neuve et
+    l'interface perd silencieusement commit, etat des fichiers et detection
+    du code non recharge."""
+    seen = {}
+
+    class Result:
+        returncode = 0
+        stdout = "abc1234"
+
+    monkeypatch.setattr(version_module.subprocess, "run",
+                        lambda cmd, **kw: (seen.setdefault("cmd", cmd), Result())[1])
+    version_module._git("rev-parse", "HEAD")
+    assert "-c" in seen["cmd"]
+    assert f"safe.directory={version_module.REPO_DIR}" in seen["cmd"]

@@ -242,13 +242,30 @@ def test_server_clock_is_readable_and_french(monkeypatch):
     fixed = _t.struct_time((2026, 9, 4, 14, 7, 52, 3, 247, 1))   # jeudi
     monkeypatch.setattr(sysstats.time, "localtime", lambda *a: fixed)
     monkeypatch.setattr(sysstats.time, "strftime",
-                        lambda fmt, t=None: {"%H:%M:%S": "14:07:52", "%Z": "CEST"}[fmt])
+                        lambda fmt, t=None: {"%H:%M:%S": "14:07:52", "%Z": "CEST",
+                                             "%d/%m/%Y a %H:%M": "03/09/2026 a 14:07"}[fmt])
+    monkeypatch.setattr(sysstats, "_uptime_seconds", lambda: 90000.0)
     clock = sysstats.get_server_clock()
     assert clock.time_label == "14:07:52"
     assert clock.date_label == "jeudi 4 septembre 2026"
     assert clock.timezone == "CEST"
     # 14*3600 + 7*60 + 52
     assert clock.seconds_of_day == 50872
+
+
+def test_the_clock_carries_the_uptime(monkeypatch):
+    """La disponibilite a rejoint la carte horloge (v1.6.0) : elle doit
+    voyager avec elle, sinon la carte dependrait d'un second appel."""
+    monkeypatch.setattr(sysstats, "_uptime_seconds", lambda: 90000.0)
+    clock = sysstats.get_server_clock()
+    assert clock.uptime_seconds == 90000
+    assert clock.uptime_label == "1 j 1 h 0 min"
+    assert clock.boot_label != "-"
+
+
+def test_a_machine_without_uptime_does_not_invent_a_boot_date(monkeypatch):
+    monkeypatch.setattr(sysstats, "_uptime_seconds", lambda: 0.0)
+    assert sysstats.get_server_clock().boot_label == "-"
 
 
 def test_server_clock_smoke():

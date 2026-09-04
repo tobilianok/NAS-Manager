@@ -24,7 +24,7 @@ from app import (
     nasusers, dockerstacks, netstats, health, netconfig, dockerconsole, dockerops,
     sysaccounts, configbackup, poolexpand, navigation, version as version_module,
     sysupdate, appupdate, liverun, gitauth, diskwipe, smarttests, diskjobs,
-    power, servicerestart,
+    power, servicerestart, sensors,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -233,9 +233,14 @@ def partial_network(request: Request, username: str = Depends(require_login)):
 
 @app.get("/partials/health", response_class=HTMLResponse)
 def partial_health(request: Request, username: str = Depends(require_login)):
+    readings = sensors.list_readings()
     return templates.TemplateResponse(
         "_health_partial.html",
-        {"request": request, "report": health.get_report()},
+        {
+            "request": request, "report": health.get_report(),
+            "temperatures": sensors.group_readings(readings),
+            "temperature_count": len(readings),
+        },
     )
 
 

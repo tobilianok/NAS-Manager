@@ -28,12 +28,11 @@
     <div class="main-area">
       <header class="topbar">
         <div class="topbar-crumb">{% block breadcrumb %}{% endblock %}</div>
+        {# Le lien de deconnexion vivait ici jusqu'a la v1.6.0. Il fait
+           doublon avec le bouton de la carte horloge du tableau de bord,
+           qui reste a un clic depuis n'importe quelle page. #}
         <div class="topbar-user">
           <span class="username">{{ username }}</span>
-          <a class="logout-link" href="/logout">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
-            Deconnexion
-          </a>
         </div>
       </header>
       <main class="page">

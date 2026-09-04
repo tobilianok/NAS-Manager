@@ -13,6 +13,66 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.6.0 — 2026-09-04
+
+Première des deux livraisons demandées : tout ce qui se voit. La suite
+(fuseau horaire, notifications de mises à jour, fenêtre de logs Docker,
+alerte SMART sur les heures) arrive en v1.7.0.
+
+### Tableau de bord
+- La tuile **DISPONIBILITÉ** a disparu du panneau système : l'information a
+  rejoint la **carte horloge**, où « depuis quand la machine tourne » se lit
+  naturellement à côté de « quelle heure il est ».
+- Le compteur y **avance en direct**, avec le même mécanisme que l'horloge :
+  la durée reste juste entre deux rafraîchissements au lieu d'être figée
+  jusqu'au suivant. Le découpage est identique à celui du serveur — « 3 min »
+  pour une machine qui vient de démarrer, pas « 0 j 0 h 3 min ».
+- Le lien **Déconnexion** de l'en-tête a été retiré : il faisait doublon avec
+  le bouton de la carte horloge. À savoir : ce bouton n'existe que sur le
+  tableau de bord, donc se déconnecter depuis une autre page demande d'y
+  revenir — un clic, le menu étant toujours visible.
+
+### Températures lisibles
+- Nouveau module `app/sensors.py` : `sensors -j` parle le langage des puces
+  (« coretemp-isa-0000 / Package id 0 », « k10temp / Tctl », « nvme /
+  Composite »). Chaque relevé est traduit en un nom qu'on lit sans
+  documentation — **Processeur (ensemble)**, **Cœur 3**, **SSD NVMe**,
+  **Carte mère** — et rangé par groupe. Le nom brut reste en infobulle.
+- Un tableau dépliable sous la ligne « Températures » de l'état de santé :
+  une barre par capteur, sa valeur, sa limite.
+- **Chaque capteur est jugé par rapport à sa propre limite**, pas à un seuil
+  unique. Les limites publiées par les puces varient énormément : 70 °C sont
+  banals pour un SSD NVMe limité à 85 et déjà notables pour un cœur limité à
+  80. Un chiffre unique se tromperait dans les deux sens. La barre montre la
+  part de limite atteinte, ce qui rend deux capteurs différents comparables
+  d'un coup d'œil.
+- C'est `_max` (température de fonctionnement à ne pas dépasser) qui sert de
+  référence, pas `_crit` (arrêt d'urgence) : alerter seulement à `_crit`,
+  c'est prévenir une fois le mal fait.
+- Les entrées auxiliaires non câblées des puces Super I/O (`AUXTIN0` et
+  consorts, souvent à 127 °C) sont écartées : les afficher ferait croire à
+  une surchauffe. Les limites invraisemblables déclarées par une puce
+  (registre par défaut à 127 °C) sont ignorées de même.
+
+### Menu latéral
+- Le rythme vertical était irrégulier : **15 px** entre certaines entrées,
+  **2 px** entre d'autres. Cause mesurée : la règle de contenu
+  `details { margin-top: .8rem }` s'appliquait aussi aux rubriques
+  repliables du menu, qui gagnaient une marge que les liens simples
+  n'avaient pas. La règle est désormais portée sur le contenu de page, et
+  aucune entrée de menu ne porte de marge propre — c'est le seul écart entre
+  frères qui donne la régularité.
+
+### Correctif : git refusé sur une installation neuve
+- `app/version.py` était le seul module git à ne pas forcer `safe.directory`.
+  Le dépôt appartient au compte qui a fait le `git clone`, le service tourne
+  en root : sur une installation neuve faite sans `sudo`, git aurait refusé
+  le dépôt (« dubious ownership ») et l'interface aurait perdu le commit
+  déployé, l'état des fichiers modifiés et la détection du code non rechargé
+  — **sans le moindre message d'erreur**.
+
+---
+
 ## v1.5.3 — 2026-09-04
 
 Deux défauts d'affichage qui rendaient l'écran des mises à jour trompeur.

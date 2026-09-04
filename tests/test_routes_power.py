@@ -48,9 +48,23 @@ def test_the_clock_ticks_from_the_server_time_not_the_browser(client, monkeypatc
     monkeypatch.setattr(sysstats, "get_server_clock", lambda: sysstats.ServerClock(
         epoch=1_757_000_000.0, time_label="14:07:52",
         date_label="jeudi 4 septembre 2026", timezone="CEST",
-        seconds_of_day=50872))
+        seconds_of_day=50872, uptime_seconds=90000,
+        uptime_label="1 j 1 h 0 min", boot_label="03/09/2026 a 14:07"))
     text = client.get("/").text
-    assert "serverClock(50872)" in text
+    assert "serverClock(50872, 90000)" in text
+
+
+def test_the_uptime_is_shown_in_the_clock_card(client, monkeypatch):
+    """Rapatriee depuis sa tuile du tableau de bord (v1.6.0) : la duree et la
+    date de demarrage se lisent a cote de l'heure."""
+    monkeypatch.setattr(sysstats, "get_server_clock", lambda: sysstats.ServerClock(
+        epoch=1_757_000_000.0, time_label="14:07:52",
+        date_label="jeudi 4 septembre 2026", timezone="CEST",
+        seconds_of_day=50872, uptime_seconds=90000,
+        uptime_label="1 j 1 h 0 min", boot_label="03/09/2026 a 14:07"))
+    text = client.get("/").text
+    assert "1 j 1 h 0 min" in text
+    assert "03/09/2026 a 14:07" in text
 
 
 def test_the_three_buttons_are_there(client):
