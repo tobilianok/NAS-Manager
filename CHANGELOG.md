@@ -13,6 +13,30 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.7.1 — 2026-09-04
+
+L'écran des mises à jour dit quand le tag d'une version n'a pas été poussé.
+
+### Le piège, rencontré trois fois
+- Un `git push origin main` **sans `--tags`** envoie les commits mais laisse le
+  tag sur le serveur. La branche est à jour sur GitHub, la version aussi — mais
+  aucune étiquette ne la nomme.
+- L'écran affichait alors « Version installée v1.6.0 » et, juste en dessous,
+  « Version stable : v1.5.3 ». Les deux étaient exacts (la carte ne lit que les
+  tags), et l'ensemble incompréhensible.
+- La page compare désormais le numéro qui **tourne** au dernier tag **trouvé**.
+  Quand le premier dépasse le second, un bandeau nomme la cause et donne la
+  commande : `git push origin --tags`. Il précise que rien n'est cassé — il
+  manque une étiquette, pas du code.
+- La comparaison porte sur des **nombres**, pas sur des chaînes : v1.10.0 vient
+  après v1.9.0, ce qu'un tri alphabétique inverserait. Une étiquette illisible
+  vaut zéro et ne peut donc jamais passer pour la plus récente.
+- Le bandeau s'efface quand un service en attente de redémarrage explique déjà
+  l'écart : deux avertissements pour une même cause se contredisent plus qu'ils
+  n'informent.
+
+---
+
 ## v1.7.0 — 2026-09-04
 
 Seconde des deux livraisons demandées : le fonctionnel.
