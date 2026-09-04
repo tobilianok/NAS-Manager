@@ -1,0 +1,271 @@
+{% extends "base.html" %}
+{% block title %}Mises a jour - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/">Tableau de bord</a> <span>/</span> <span>Parametres</span> <span>/</span> <span>Mises a jour</span>{% endblock %}
+{% block content %}
+<div x-data="liveRun('/ws/updates/system/')">
+
+  <h1>Mises a jour</h1>
+  <p class="subtitle">
+    Deux choses independantes : le systeme Ubuntu qui fait tourner la machine,
+    et NAS Manager lui-meme.
+  </p>
+
+  {% if error %}
+  <div class="warning-banner">⚠ {{ error }}</div>
+  {% endif %}
+
+  {# ================= NAS Manager ================= #}
+  <h2 class="section-title">NAS Manager</h2>
+
+  {# Zone de progression : rafraichie toute seule pendant l'operation. Elle
+     lit un fichier d'etat ecrit par le script detache, pas la memoire du
+     service - qui redemarre justement au milieu de la mise a jour. #}
+  <div id="update-progress"
+       hx-get="/partials/update-progress"
+       hx-trigger="load, every 3s"
+       hx-swap="innerHTML">
+  </div>
+
+  <div class="card">
+    <div class="update-current">
+      <div>
+        <div class="stat-label">VERSION INSTALLEE</div>
+        <div class="stat-value stat-value-small">
+          {{ app_version.label }}
+          {% if app_status.current_commit %}<span class="dim mono">({{ app_status.current_commit }})</span>{% endif %}
+        </div>
+      </div>
+      <a class="btn-link" href="https://github.com/tobilianok/NAS-Manager" target="_blank" rel="noopener">Voir le depot →</a>
+    </div>
+
+    {% if not app_status.git_available %}
+    <div class="info-panel">{{ app_status.fetch_error }}</div>
+
+    {% else %}
+      {% if app_status.fetch_error %}
+      <div class="warning-banner">⚠ {{ app_status.fetch_error }}</div>
+      {% endif %}
+
+      {% if app_status.dirty %}
+      <div class="warning-banner">
+        ⚠ Des fichiers du serveur ont ete modifies a la main. La mise a jour est
+        bloquee tant qu'ils sont la : elle les ecraserait sans prevenir.
+      </div>
+      {% endif %}
+
+      <div class="update-targets">
+        {% for target in app_status.targets %}
+        <div class="update-target {{ 'is-available' if target.available }}">
+          <div class="update-target-head">
+            <div>
+              <strong>{{ 'Version stable' if target.kind == 'stable' else 'Version de developpement' }}</strong>
+              <div class="stat-sub mono">{{ target.label }}</div>
+            </div>
+            {% if target.available %}
+              <span class="badge badge-warn">disponible</span>
+            {% else %}
+              <span class="badge badge-ok">a jour</span>
+            {% endif %}
+          </div>
+
+          <p class="stat-sub">
+            {% if target.kind == 'stable' %}
+            La derniere version publiee sous forme de tag. C'est le choix par defaut.
+            {% else %}
+            Le dernier commit de la branche main, tag ou non.
+            {% endif %}
+          </p>
+          {% if target.warning %}
+          <p class="stat-sub warn-text">⚠ {{ target.warning }}</p>
+          {% endif %}
+
+          <form method="post" action="/updates/app/{{ target.kind }}">
+            <button type="submit"
+                    class="{{ 'btn-primary' if target.kind == 'stable' else 'btn-warn' }}"
+                    {% if not target.available or app_status.dirty or progress.running %}disabled{% endif %}
+                    onsubmit="return false;">
+              Mettre a jour vers {{ target.label }}
+            </button>
+          </form>
+        </div>
+        {% endfor %}
+      </div>
+
+      {% if app_status.new_commits %}
+      <details class="changes-details">
+        <summary>Ce qui a change depuis la version installee ({{ app_status.new_commits | length }} commit(s))</summary>
+        <ul class="change-list">
+          {% for subject in app_status.new_commits %}
+          <li>{{ subject }}</li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% endif %}
+
+      <div class="info-panel">
+        <strong>Comment ca se passe.</strong> La mise a jour est confiee a un script
+        independant : il bascule le depot sur la version choisie, relance
+        l'installation, puis <strong>verifie que l'interface repond vraiment</strong>.
+        Si elle ne repond pas dans les deux minutes, il revient <strong>tout seul</strong>
+        a la version precedente et la reinstalle — tu ne peux pas te retrouver
+        enferme dehors par une mise a jour ratee.<br><br>
+        Tes donnees ne sont jamais concernees : partages, comptes, stacks et icones
+        vivent dans <span class="mono">/var/lib/nas-manager</span>, en dehors du code
+        mis a jour.
+      </div>
+
+      {% if progress.previous_commit and not progress.running %}
+      <form method="post" action="/updates/app-rollback" class="rollback-form">
+        <button type="submit" class="btn-muted btn-sm"
+                onclick="return confirm('Revenir a la version precedente ({{ progress.previous_commit }}) ? Le service va redemarrer.');">
+          Revenir a la version precedente ({{ progress.previous_commit }})
+        </button>
+      </form>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  {# ================= Ubuntu ================= #}
+  <h2 class="section-title">Systeme Ubuntu</h2>
+
+  {% if system.error %}
+  <div class="warning-banner">⚠ {{ system.error }}</div>
+  {% endif %}
+
+  {% if system.reboot_required %}
+  <div class="card reboot-card" x-data="{ open: false }">
+    <div class="reboot-head">
+      <div>
+        <strong>⚠ Un redemarrage est necessaire</strong>
+        <p class="stat-sub">
+          Des paquets deja installes ne seront reellement actifs qu'apres
+          redemarrage
+          {%- if system.reboot_packages %} : <span class="mono">{{ system.reboot_packages | join(', ') }}</span>{% endif %}.
+          C'est typiquement le cas d'un nouveau noyau.
+        </p>
+      </div>
+      <button type="button" class="btn-warn" @click="open = true">Redemarrer la machine…</button>
+    </div>
+
+    {% if running_stacks or resilvering_pools %}
+    <div class="warning-banner" style="margin-top:.8rem;">
+      {% if resilvering_pools %}
+      ⚠ Reconstruction en cours sur : <strong>{{ resilvering_pools | join(', ') }}</strong>.
+      ZFS la reprendra apres le redemarrage, mais le pool restera degrade plus
+      longtemps — mieux vaut attendre la fin.
+      {% endif %}
+      {% if running_stacks %}
+      <div>⚠ Stacks Docker en cours d'execution : <strong>{{ running_stacks | join(', ') }}</strong>.
+      Elles seront coupees puis relancees au demarrage si elles sont configurees pour.</div>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <div class="modal-overlay" x-show="open" x-cloak @keydown.escape.window="open = false">
+      <div class="modal-box" @click.outside="open = false">
+        <h2>Redemarrer le serveur</h2>
+        <p class="stat-sub">
+          Tous les partages seront coupes, les stacks Docker arretees, et
+          l'interface injoignable pendant une a deux minutes.
+        </p>
+        <form method="post" action="/updates/reboot">
+          <label>Tape <strong>REDEMARRER</strong> pour confirmer</label>
+          <input type="text" name="confirm" autocomplete="off" required>
+          <label>Ton mot de passe ({{ username }})</label>
+          <input type="password" name="password" autocomplete="current-password" required>
+          <div class="actions">
+            <button type="button" class="btn-muted" @click="open = false">Annuler</button>
+            <button type="submit" class="btn-danger">Redemarrer maintenant</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <div class="update-current">
+      <div>
+        <div class="stat-label">PAQUETS A METTRE A JOUR</div>
+        <div class="stat-value">{{ system.total }}</div>
+        <div class="stat-sub">
+          {% if system.security %}
+            dont <strong class="warn-text">{{ system.security | length }} de securite</strong>
+          {% elif system.total %}
+            aucune mise a jour de securite en attente
+          {% else %}
+            le systeme est a jour
+          {% endif %}
+        </div>
+      </div>
+      <button type="button" class="btn-muted btn-sm" @click="run('refresh')">
+        Rafraichir la liste
+      </button>
+    </div>
+
+    {% if system.pending %}
+    <details class="changes-details">
+      <summary>Voir les {{ system.total }} paquet(s) concerne(s)</summary>
+      <table>
+        <thead><tr><th>Paquet</th><th>Version actuelle</th><th>Nouvelle version</th><th>Origine</th></tr></thead>
+        <tbody>
+          {% for pkg in system.pending %}
+          <tr>
+            <td class="mono">{{ pkg.name }}</td>
+            <td class="dim mono">{{ pkg.current_version or '-' }}</td>
+            <td class="mono">{{ pkg.new_version }}</td>
+            <td>
+              {% if pkg.is_security %}<span class="badge badge-warn">securite</span>
+              {% else %}<span class="dim">{{ pkg.origin }}</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+    {% endif %}
+
+    <div class="update-actions">
+      {% for key in ['upgrade', 'security', 'autoremove'] %}
+      {% set action = actions[key] %}
+      <div class="update-action">
+        <div class="update-action-head">
+          <strong>
+            {% if key == 'upgrade' %}Mettre a jour les paquets
+            {% elif key == 'security' %}Securite uniquement
+            {% else %}Nettoyer les paquets inutiles{% endif %}
+          </strong>
+          <code class="mono dim">{{ action.label }}</code>
+        </div>
+        <p class="stat-sub">{{ action.description }}</p>
+        <button type="button"
+                class="{{ 'btn-primary' if key == 'upgrade' else 'btn-muted' }}"
+                @click="run('{{ key }}')">
+          Lancer
+        </button>
+      </div>
+      {% endfor %}
+
+      {# dist-upgrade passe par une page de validation : c'est la seule
+         action d'ici qui peut retirer un paquet en service. #}
+      {% set dist = actions['dist_upgrade'] %}
+      <div class="update-action update-action-risky">
+        <div class="update-action-head">
+          <strong>Mise a jour complete (dist-upgrade)</strong>
+          <code class="mono dim">{{ dist.label }}</code>
+        </div>
+        <p class="stat-sub">{{ dist.description }}</p>
+        {% if system.dist_upgrade_only %}
+        <p class="stat-sub">
+          Paquets que seule cette commande sait installer :
+          <span class="mono">{{ system.dist_upgrade_only | join(', ') }}</span>
+        </p>
+        {% endif %}
+        <a class="btn btn-warn" href="/updates/system/preview/dist_upgrade">Voir ce qui serait supprime…</a>
+      </div>
+    </div>
+  </div>
+
+  {% include "_run_modal.html" %}
+</div>
+{% endblock %}

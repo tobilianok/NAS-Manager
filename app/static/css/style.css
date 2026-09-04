@@ -817,3 +817,53 @@ body.login-body { display: flex; align-items: center; justify-content: center; m
   .topbar { padding: .8rem 1.2rem; }
   .dash-row, .dash-row-top { grid-template-columns: 1fr; }
 }
+
+/* ---------------------------------------------------------------------
+   Ecran des mises a jour (Phase 11b)
+   --------------------------------------------------------------------- */
+
+.update-current {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap; margin-bottom: .9rem;
+}
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.warn-text { color: var(--warning-text); }
+
+.update-targets { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin: 1rem 0; }
+.update-target {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 1rem 1.1rem; background: var(--bg);
+}
+.update-target.is-available { border-color: var(--accent); }
+.update-target-head { display: flex; align-items: flex-start; justify-content: space-between; gap: .8rem; margin-bottom: .5rem; }
+.update-target form { margin: .8rem 0 0; }
+
+.changes-details { margin: 1rem 0; }
+.changes-details summary { cursor: pointer; font-size: .85rem; color: var(--text-muted); padding: .4rem 0; }
+.changes-details summary:hover { color: var(--text); }
+.change-list { margin: .4rem 0 0; padding-left: 1.2rem; font-size: .83rem; color: var(--text-muted); line-height: 1.7; }
+
+.update-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; margin-top: 1.2rem; }
+.update-action {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 1rem 1.1rem; display: flex; flex-direction: column;
+}
+/* L'action risquee occupe toute la largeur : elle porte plus de texte que
+   les autres et ne doit pas se retrouver tassee dans une colonne etroite. */
+.update-action-risky { border-color: var(--warning-bg); grid-column: 1 / -1; }
+.update-action-head { display: flex; flex-direction: column; gap: .2rem; margin-bottom: .5rem; }
+.update-action p { flex: 1; }
+.update-action .btn, .update-action button { align-self: flex-start; margin-top: .6rem; }
+
+.reboot-card { border: 1px solid var(--warning-bg); }
+.reboot-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+
+.update-live { border-left: 4px solid var(--accent); margin-bottom: 1rem; }
+.update-live-head { display: flex; align-items: center; gap: .8rem; margin-bottom: .5rem; }
+.update-ok { border-left-color: var(--success); }
+.update-rollback { border-left-color: var(--warning); }
+.update-failed { border-left-color: var(--danger); }
+.run-log-inline { max-height: 240px; margin-top: .7rem; }
+
+.removal-list { margin: 0; padding-left: 1.2rem; columns: 2; font-size: .85rem; line-height: 1.8; }
+.rollback-form { margin-top: 1rem; }

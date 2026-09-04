@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Mise a jour complete - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/updates">Mises a jour</a> <span>/</span> <span>dist-upgrade</span>{% endblock %}
+{% block content %}
+<div x-data="liveRun('/ws/updates/system/')">
+
+  <h1>Mise a jour complete du systeme</h1>
+  <p class="subtitle"><code class="mono">{{ action.label }}</code></p>
+
+  <div class="info-panel">{{ action.description }}</div>
+
+  {% if preview_error %}
+  <div class="warning-banner">
+    ⚠ Impossible de calculer la liste des suppressions : {{ preview_error }}<br>
+    Sans cette liste, on ne sait pas ce que la commande retirerait — ne lance
+    rien tant que ce n'est pas resolu.
+  </div>
+
+  {% elif removals %}
+  <h2 class="section-title">Ces paquets seraient SUPPRIMES</h2>
+  <div class="card">
+    <ul class="removal-list">
+      {% for name in removals %}
+      <li class="mono">{{ name }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  <div class="warning-banner">
+    ⚠ Verifie cette liste avant de continuer. Si tu y vois un paquet dont le
+    NAS depend au quotidien — <span class="mono">zfsutils-linux</span>,
+    <span class="mono">samba</span>, <span class="mono">nfs-kernel-server</span>,
+    <span class="mono">docker-ce</span> — <strong>ne lance pas</strong> :
+    utilise la mise a jour simple, qui n'enleve jamais rien, et cherche
+    d'abord pourquoi apt veut le retirer.
+  </div>
+
+  {% else %}
+  <div class="card">
+    <strong>✅ Aucun paquet ne serait supprime.</strong>
+    <p class="stat-sub">
+      La mise a jour complete se comporterait ici comme une mise a jour simple,
+      en installant en plus les paquets bloques par des dependances.
+    </p>
+  </div>
+  {% endif %}
+
+  <div class="actions">
+    <a class="btn btn-muted" href="/updates">Annuler</a>
+    {% if not preview_error %}
+    <button type="button" class="btn-warn"
+            @click="run('{{ action.key }}', {{ 'true' if removals else 'false' }} ? 'Confirmer la suppression de {{ removals | length }} paquet(s) ?' : null)">
+      Lancer la mise a jour complete
+    </button>
+    {% endif %}
+  </div>
+
+  {% include "_run_modal.html" %}
+</div>
+{% endblock %}

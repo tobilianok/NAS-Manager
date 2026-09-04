@@ -1,0 +1,67 @@
+{# Fragment HTMX : progression de la mise a jour de NAS Manager.
+   Lu depuis le fichier d'etat ecrit par le script detache - le service web
+   redemarre au milieu de l'operation, sa memoire ne survit pas. #}
+{% if progress.status == 'idle' %}
+{# Rien a afficher : aucune mise a jour n'a ete lancee depuis cette interface. #}
+
+{% elif progress.stale %}
+<div class="warning-banner">
+  ⚠ Une mise a jour vers <strong>{{ progress.target_label }}</strong> a ete lancee
+  mais n'a plus donne signe de vie depuis plus de 30 minutes. Le script a
+  probablement ete interrompu. Verifie l'etat du service avec
+  <span class="mono">systemctl status nas-manager</span> avant de relancer.
+</div>
+
+{% elif progress.running %}
+<div class="card update-live">
+  <div class="update-live-head">
+    <span class="run-spinner"></span>
+    <div>
+      <strong>Mise a jour vers {{ progress.target_label }} en cours</strong>
+      <div class="stat-sub">{{ progress.step }}</div>
+    </div>
+  </div>
+  <p class="stat-sub">
+    Cette page se met a jour toute seule. L'interface va devenir injoignable
+    quelques secondes pendant le redemarrage du service — c'est normal, ne
+    ferme rien : le script continue de son cote, il ne depend pas de ce
+    navigateur.
+  </p>
+  {% if progress.log_tail %}
+  <pre class="run-log run-log-inline">{% for line in progress.log_tail %}{{ line }}
+{% endfor %}</pre>
+  {% endif %}
+</div>
+
+{% elif progress.status == 'success' %}
+<div class="card update-live update-ok">
+  <strong>✅ Mise a jour terminee — {{ progress.target_label }}</strong>
+  <p class="stat-sub">{{ progress.message }}</p>
+</div>
+
+{% elif progress.status == 'rolled_back' %}
+<div class="card update-live update-rollback">
+  <strong>↩ Retour automatique a la version precedente</strong>
+  <p class="stat-sub">{{ progress.message }}</p>
+  {% if progress.log_tail %}
+  <details class="changes-details">
+    <summary>Voir le journal de la tentative</summary>
+    <pre class="run-log run-log-inline">{% for line in progress.log_tail %}{{ line }}
+{% endfor %}</pre>
+  </details>
+  {% endif %}
+</div>
+
+{% else %}
+<div class="card update-live update-failed">
+  <strong>❌ La mise a jour a echoue</strong>
+  <p class="stat-sub">{{ progress.message or "Voir le journal ci-dessous." }}</p>
+  {% if progress.log_tail %}
+  <details class="changes-details" open>
+    <summary>Journal</summary>
+    <pre class="run-log run-log-inline">{% for line in progress.log_tail %}{{ line }}
+{% endfor %}</pre>
+  </details>
+  {% endif %}
+</div>
+{% endif %}

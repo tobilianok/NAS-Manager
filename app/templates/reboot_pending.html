@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Redemarrage - NAS Manager{% endblock %}
+{% block breadcrumb %}<span>Redemarrage</span>{% endblock %}
+{% block content %}
+<div class="result-card">
+  <h1>Redemarrage en cours</h1>
+  <p class="subtitle">
+    La commande de redemarrage a ete envoyee. Le serveur va etre injoignable
+    pendant une a deux minutes, le temps que le systeme, ZFS, Samba et Docker
+    reviennent.
+  </p>
+  <p class="stat-sub">
+    Cette page essaie de se reconnecter toute seule. Rien a faire, sinon
+    attendre — si elle ne revient pas au bout de quelques minutes, verifie la
+    machine physiquement.
+  </p>
+  <div class="actions">
+    <a class="btn btn-primary" href="/">Retourner au tableau de bord</a>
+  </div>
+</div>
+
+<script>
+// Recharge le tableau de bord des que le serveur repond a nouveau. On
+// interroge la page de sante (sans authentification) plutot que la racine :
+// elle repond des que l'application est prete, avant meme la session.
+setTimeout(function () {
+  setInterval(function () {
+    fetch('/healthz', { cache: 'no-store' })
+      .then(function (r) { if (r.ok) { location.href = '/'; } })
+      .catch(function () { /* toujours en train de redemarrer */ });
+  }, 5000);
+}, 15000);
+</script>
+{% endblock %}
