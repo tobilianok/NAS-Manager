@@ -24,7 +24,7 @@ from app import (
     nasusers, dockerstacks, netstats, health, netconfig, dockerconsole, dockerops,
     sysaccounts, configbackup, poolexpand, navigation, version as version_module,
     sysupdate, appupdate, liverun, gitauth, diskwipe, smarttests, diskjobs,
-    power,
+    power, servicerestart,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -62,7 +62,22 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 # le menu lateral et le numero de version apparaissent sur chaque page, les
 # oublier dans une seule reponse casserait la navigation de cette page.
 templates.env.globals["nav_entries"] = navigation.NAV
-templates.env.globals["app_version"] = version_module.get_version_info()
+
+
+class _LiveVersion:
+    """Relit l'etat du depot a chaque rendu, au lieu de le figer au demarrage.
+
+    Un instantane pris a l'import ne pouvait jamais changer : ni un fichier
+    modifie a la main, ni - surtout - un `git pull` applique sans redemarrage
+    n'apparaissaient dans le menu lateral. C'etait precisement le cas ou
+    l'interface devait parler (v1.5.2). L'appel sous-jacent est amorti dix
+    secondes, sinon chaque page paierait quatre processus git."""
+
+    def __getattr__(self, name: str):
+        return getattr(version_module.get_version_info_cached(), name)
+
+
+templates.env.globals["app_version"] = _LiveVersion()
 
 
 def require_login(request: Request) -> str:
@@ -2605,6 +2620,21 @@ def updates_resync(request: Request, username: str = Depends(require_login)):
     except appupdate.AppUpdateError as exc:
         return _render_updates_error(request, username, str(exc))
     return _render_updates_notice(request, username, message)
+
+
+@app.post("/updates/restart-service")
+def updates_restart_service(request: Request, username: str = Depends(require_login)):
+    """Recharge le code deja present sur le disque (v1.5.2). Ne redemarre
+    PAS la machine : partages, stacks Docker et pools ZFS ne bougent pas."""
+    try:
+        servicerestart.restart(username)
+    except servicerestart.ServiceRestartError as exc:
+        return _render_updates_error(request, username, str(exc))
+    return _render_updates_notice(
+        request, username,
+        "Redemarrage du service lance. Recharge la page dans quelques "
+        "secondes : le numero de version affiche sera celui installe.",
+    )
 
 
 @app.post("/updates/app-rollback")

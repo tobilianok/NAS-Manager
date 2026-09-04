@@ -13,6 +13,44 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.5.2 — 2026-09-04
+
+Le code présent sur le disque n'est pas toujours celui qui tourne. Cette
+version le dit, et propose le bouton qui le corrige.
+
+### Le paradoxe qu'on a rencontré
+- Après une resynchronisation (ou un `git pull` fait à la main), les fichiers
+  à jour sont sur le disque — mais Python les a lus **une seule fois, au
+  démarrage du service**. L'écran affichait donc « v1.4.3 » tout en
+  déclarant les deux versions « déjà incluse » et « à jour » : du point de vue
+  du dépôt c'était exact, et du point de vue de l'utilisateur incompréhensible.
+- Un nouveau bandeau nomme la situation, donne les deux numéros et explique
+  pourquoi plus rien n'est proposé. L'étiquette passe de « VERSION INSTALLÉE »
+  à « VERSION EN COURS D'EXÉCUTION » dans ce cas : garder « installée » serait
+  affirmer le contraire de ce que dit le bandeau.
+- Détecté de deux façons indépendantes : le `VERSION` relu **dans le fichier**
+  comparé à celui chargé en mémoire, et le commit courant comparé à celui
+  capturé au démarrage. La seconde attrape aussi un correctif qui ne change
+  pas le numéro.
+
+### Bouton « Redémarrer le service »
+- Recharge le code déjà présent, sans SSH.
+- **Ce n'est pas un redémarrage de la machine** : partages, stacks Docker et
+  pools ZFS ne bougent pas, seule l'interface se coupe quelques secondes. Le
+  bandeau le dit explicitement, et un test vérifie que la commande ne peut
+  jamais contenir `reboot` ni `poweroff`.
+- Détaché via `systemd-run`, pour la même raison que la mise à jour : le
+  processus qui lance `systemctl restart` est celui que systemd va tuer.
+
+### Correctif : le numéro de version était figé au démarrage
+- `app_version` était un instantané pris à l'import, donc **jamais mis à
+  jour** : ni un fichier modifié à la main, ni un dépôt qui avance
+  n'apparaissaient dans le menu latéral. Il relit maintenant l'état réel, avec
+  un cache de dix secondes — sinon chaque page paierait quatre processus git,
+  et le tableau de bord se rafraîchit tout seul.
+
+---
+
 ## v1.5.1 — 2026-09-04
 
 Bouton **« Resynchroniser avec GitHub »** dans Mises à jour, pour réparer
