@@ -94,7 +94,7 @@ a { color: inherit; }
 
 .sidebar nav { display: flex; flex-direction: column; gap: .15rem; padding: 0 .7rem; }
 
-.sidebar nav a {
+.sidebar nav .nav-item {
   display: flex;
   align-items: center;
   gap: .75rem;
@@ -106,15 +106,45 @@ a { color: inherit; }
   font-weight: 500;
   transition: background .12s ease, color .12s ease;
 }
-.sidebar nav a svg { width: 17px; height: 17px; flex-shrink: 0; }
-.sidebar nav a:hover { background: var(--surface); color: var(--text); }
-.sidebar nav a.active { background: var(--accent); color: #fff; }
+.sidebar nav .nav-item svg { width: 17px; height: 17px; flex-shrink: 0; }
+.sidebar nav .nav-item:hover { background: var(--surface); color: var(--text); }
+.sidebar nav a.nav-item.active { background: var(--accent); color: #fff; }
+
+/* Rubriques repliables (<details>/<summary>) */
+.nav-group { border-radius: var(--radius-sm); }
+.nav-summary { cursor: pointer; list-style: none; user-select: none; }
+.nav-summary::-webkit-details-marker { display: none; }   /* fleche native */
+.nav-summary-label { flex: 1; }
+.nav-chevron { width: 14px !important; height: 14px !important; opacity: .55; transition: transform .15s ease; }
+.nav-group[open] > .nav-summary .nav-chevron { transform: rotate(90deg); }
+
+/* La rubrique fermee qui contient la page courante doit rester reperable :
+   sans ce marqueur, replier une rubrique fait disparaitre toute indication
+   de l'endroit ou l'on se trouve. */
+.nav-summary.has-active { color: var(--text); }
+.nav-group:not([open]) > .nav-summary.has-active { background: var(--accent-soft); }
+
+/* Filet vertical reliant les sous-entrees a leur rubrique. */
+.nav-children {
+  display: flex; flex-direction: column; gap: .15rem;
+  margin: .15rem 0 .3rem 1.35rem;
+  border-left: 1px solid var(--border); padding-left: .25rem;
+}
+/* Les libelles des sous-entrees sont longs ("Comptes de partage") pour une
+   colonne de 236 px : police et gouttiere resserrees pour tenir sur une
+   ligne, un menu a hauteur de ligne irreguliere se lit mal. */
+.nav-child { padding: .5rem .6rem; gap: .55rem; font-size: .81rem; white-space: nowrap; }
+.nav-child svg { width: 15px !important; height: 15px !important; }
 
 .sidebar .sidebar-footer {
   margin-top: auto;
   padding: .8rem 1.3rem 0;
   font-size: .72rem;
   color: var(--text-dim);
+}
+.version-dirty {
+  color: var(--warning-text); background: var(--warning-bg);
+  border-radius: 999px; padding: .05rem .4rem; font-size: .66rem;
 }
 
 .main-area { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -781,7 +811,8 @@ body.login-body { display: flex; align-items: center; justify-content: center; m
 @media (max-width: 820px) {
   .app-shell { flex-direction: column; }
   .sidebar { position: static; width: 100%; height: auto; border-right: none; border-bottom: 1px solid var(--border); }
-  .sidebar nav { flex-direction: row; flex-wrap: wrap; }
+  .sidebar nav { flex-direction: row; flex-wrap: wrap; align-items: flex-start; }
+  .nav-group { width: 100%; }
   main.page { padding: 1.2rem; }
   .topbar { padding: .8rem 1.2rem; }
   .dash-row, .dash-row-top { grid-template-columns: 1fr; }

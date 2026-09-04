@@ -1,3 +1,4 @@
+{% from "_nav.html" import nav_menu %}
 <!doctype html>
 <html lang="fr">
 <head>
@@ -14,45 +15,15 @@
   <div class="app-shell">
     <aside class="sidebar">
       <a class="brand" href="/"><span class="logo-dot"></span> NAS Manager</a>
-      <nav>
-        <a href="/" class="{{ 'active' if request.url.path == '/' else '' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-          Tableau de bord
-        </a>
-        <a href="/pools" class="{{ 'active' if request.url.path.startswith('/pools') else '' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
-          Pools ZFS
-        </a>
-        <a href="/shares" class="{{ 'active' if request.url.path.startswith('/shares') else '' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-          Partages
-        </a>
-        <a href="/share-users" class="{{ 'active' if request.url.path.startswith('/share-users') else '' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20c0-3.6 2.9-6.5 6.5-6.5s6.5 2.9 6.5 6.5"/><circle cx="18" cy="8.5" r="2.3"/><path d="M15.7 13.8c2.6.4 4.6 2.6 4.8 5.4"/></svg>
-          Comptes de partage
-        </a>
-        <a href="/docker" class="{{ 'active' if request.url.path.startswith('/docker') else '' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="9" width="18" height="11" rx="1.2"/><path d="M7 9V5.5a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1V9"/><path d="M7 13h4M13 13h4M7 9h10"/></svg>
-          Docker
-        </a>
-        <a href="/network" class="{{ 'active' if request.url.path.startswith('/network') else '' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>
-          Reseau
-        </a>
-        <a href="/disks/smart" class="{{ 'active' if request.url.path.startswith('/disks') else '' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l1.6-4 3 8 1.8-4H21"/></svg>
-          SMART
-        </a>
-        <a href="/backup" class="{{ 'active' if request.url.path.startswith('/backup') else '' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h17A1.5 1.5 0 0 1 22 4.5V8H2z"/><path d="M12 12v5"/><path d="M9.5 14.5 12 12l2.5 2.5"/></svg>
-          Sauvegarde
-        </a>
-        <a href="/admin-accounts" class="{{ 'active' if request.url.path.startswith('/admin-accounts') else '' }}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3.6v5.4c0 5-3.4 8.8-8 10-4.6-1.2-8-5-8-10V5.6z"/><path d="M9 12l2 2 4-4.5"/></svg>
-          Comptes système
-        </a>
-      </nav>
-      <div class="sidebar-footer">NAS Manager</div>
+      {# Le menu est decrit dans app/navigation.py, pas ici : ajouter une
+         page ne demande plus de toucher au gabarit commun. #}
+      {{ nav_menu(nav_entries, request.url.path) }}
+      <div class="sidebar-footer" title="{{ app_version.detail }}">
+        {{ app_version.label }}
+        {%- if app_version.dirty %}
+        <span class="version-dirty" title="Des fichiers du serveur different de la version installee : la prochaine mise a jour les ecrasera.">modifie</span>
+        {%- endif %}
+      </div>
     </aside>
     <div class="main-area">
       <header class="topbar">
