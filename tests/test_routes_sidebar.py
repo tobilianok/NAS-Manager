@@ -66,7 +66,7 @@ def test_only_one_link_is_highlighted_at_a_time(client):
 
 def test_sidebar_shows_the_version(client):
     text = client.get("/").text
-    assert "v1.4.3" in text
+    assert "v1.5.0" in text
 
 
 def test_sidebar_is_identical_on_every_page(client):
@@ -77,4 +77,4 @@ def test_sidebar_is_identical_on_every_page(client):
         resp = client.get(path)
         assert resp.status_code == 200, path
         assert "Parametres" in resp.text, path
-        assert "v1.4.3" in resp.text, path
+        assert "v1.5.0" in resp.text, path

@@ -13,6 +13,45 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.5.0 — 2026-09-04
+
+Carte horloge et commandes d'alimentation sur le tableau de bord, et README
+remis à plat.
+
+### Horloge et alimentation
+- Nouvelle carte en tête de la colonne de gauche : **heure, date et trois
+  boutons** — déconnexion, redémarrage, extinction.
+- L'heure affichée est celle du **serveur**, pas du navigateur. Sur un NAS
+  c'est celle qui compte : un décalage visible ici trahit un problème de
+  synchronisation horaire, qui fausserait les horodatages des fichiers
+  partagés. Le compteur avance côté navigateur à partir des secondes écoulées
+  depuis minuit *heure serveur* — envoyer un horodatage aurait fait reformater
+  l'heure dans le fuseau du poste consultant la page.
+- Les noms de jours et de mois sont écrits en dur : le service tourne en
+  locale C, où `strftime` rendrait « Thursday » et « September ».
+- **Redémarrer et éteindre ne sont pas la même chose** : le premier revient
+  tout seul, le second demande d'aller appuyer sur un bouton. Sur un serveur
+  administré à distance, c'est la différence entre attendre deux minutes et se
+  déplacer. Les mots de confirmation diffèrent donc volontairement —
+  `REDEMARRER` et `ETEINDRE` — pour qu'on ne puisse pas éteindre par habitude
+  en croyant redémarrer. Les deux exigent aussi le mot de passe de
+  l'administrateur connecté.
+- Avant de couper, la fenêtre annonce ce qui est en cours : une reconstruction
+  ZFS (elle reprendra, mais le pool restera dégradé plus longtemps) et surtout
+  un **effacement de disque**, qui dure des heures et **ne reprend pas** —
+  couper la machine, c'est tout recommencer.
+- Le redémarrage de l'écran des mises à jour passe désormais par la même route
+  que ces boutons, au lieu d'avoir sa propre implémentation.
+
+### Documentation
+- Le README résumait le projet phase par phase, sur 500 lignes. Il tient
+  maintenant en un paragraphe de bêta et renvoie au CHANGELOG pour
+  l'historique détaillé. **À partir d'ici on ne parle plus de phases mais de
+  versions.**
+- 878 tests automatisés.
+
+---
+
 ## v1.4.3 — 2026-09-04
 
 Suite (et fin) du correctif 12c : la mise à jour ne casse plus la branche

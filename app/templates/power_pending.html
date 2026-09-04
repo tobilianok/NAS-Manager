@@ -1,14 +1,13 @@
 {% extends "base.html" %}
-{% block title %}Redemarrage - NAS Manager{% endblock %}
-{% block breadcrumb %}<span>Redemarrage</span>{% endblock %}
+{% block title %}{{ action.label }} - NAS Manager{% endblock %}
+{% block breadcrumb %}<span>{{ action.label }}</span>{% endblock %}
 {% block content %}
 <div class="result-card">
-  <h1>Redemarrage en cours</h1>
-  <p class="subtitle">
-    La commande de redemarrage a ete envoyee. Le serveur va etre injoignable
-    pendant une a deux minutes, le temps que le systeme, ZFS, Samba et Docker
-    reviennent.
-  </p>
+  <h1>{% if action.key == 'reboot' %}Redemarrage en cours{% else %}Extinction en cours{% endif %}</h1>
+  <p class="subtitle">{{ action.description }}</p>
+  <p class="stat-sub">{{ action.consequence }}</p>
+
+  {% if action.key == 'reboot' %}
   <p class="stat-sub">
     Cette page essaie de se reconnecter toute seule. Rien a faire, sinon
     attendre — si elle ne revient pas au bout de quelques minutes, verifie la
@@ -17,8 +16,15 @@
   <div class="actions">
     <a class="btn btn-primary" href="/">Retourner au tableau de bord</a>
   </div>
+  {% else %}
+  <div class="warning-banner">
+    La machine ne redemarrera pas toute seule : il faudra appuyer sur son
+    bouton d'alimentation. Cette page ne se rechargera pas.
+  </div>
+  {% endif %}
 </div>
 
+{% if action.key == 'reboot' %}
 <script>
 // Recharge le tableau de bord des que le serveur repond a nouveau. On
 // interroge la page de sante (sans authentification) plutot que la racine :
@@ -31,4 +37,5 @@ setTimeout(function () {
   }, 5000);
 }, 15000);
 </script>
+{% endif %}
 {% endblock %}

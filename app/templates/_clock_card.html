@@ -1,0 +1,113 @@
+{# Horloge du serveur et commandes d'alimentation.
+
+   L'heure affichee est celle du SERVEUR, pas du navigateur : sur un NAS
+   c'est elle qui compte, un decalage visible ici trahit un probleme de
+   synchronisation horaire. Le compteur avance en JavaScript a partir de
+   l'horodatage envoye par le serveur - pas besoin d'interroger le serveur
+   chaque seconde pour faire tourner une horloge. #}
+<div class="card clock-card"
+     x-data="serverClock({{ clock.seconds_of_day }})"
+     x-init="start()">
+
+  <div class="clock-face">
+    <div class="clock-time" x-text="timeLabel">{{ clock.time_label }}</div>
+    <div class="clock-date">{{ clock.date_label }}</div>
+    <div class="clock-tz">heure du serveur ({{ clock.timezone }})</div>
+  </div>
+
+  <div class="clock-actions">
+    <a class="btn btn-muted btn-sm" href="/logout">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+      Deconnexion
+    </a>
+    {% for action in power_actions.values() %}
+    <button type="button"
+            class="btn-sm {{ 'btn-warn' if action.key == 'reboot' else 'btn-danger' }}"
+            @click="ask('{{ action.key }}')">
+      {% if action.key == 'reboot' %}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v5h-5"/></svg>
+      Redemarrer
+      {% else %}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v9"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>
+      Eteindre
+      {% endif %}
+    </button>
+    {% endfor %}
+  </div>
+
+  {# Une seule fenetre pour les deux actions : son contenu depend de celle
+     qui a ete demandee. #}
+  {% for action in power_actions.values() %}
+  <div class="modal-overlay" x-show="asked === '{{ action.key }}'" x-cloak
+       @keydown.escape.window="asked = null">
+    <div class="modal-box" @click.outside="asked = null">
+      <h2>{{ action.label }}</h2>
+
+      <div class="danger-banner">{{ action.consequence }}</div>
+      <p class="stat-sub">{{ action.description }}</p>
+
+      {% if power_warnings.severe %}
+      <div class="warning-banner">
+        {% if power_warnings.resilvering_pools %}
+        ⚠ <strong>Reconstruction en cours</strong> sur
+        <span class="mono">{{ power_warnings.resilvering_pools | join(', ') }}</span>.
+        Elle reprendra apres, mais le pool restera degrade plus longtemps.
+        {% endif %}
+        {% if power_warnings.erasing_disks %}
+        <div>⚠ <strong>Effacement de disque en cours</strong> sur
+        <span class="mono">{{ power_warnings.erasing_disks | join(', ') }}</span>.
+        Il ne reprend pas apres une coupure : tout sera a recommencer.</div>
+        {% endif %}
+      </div>
+      {% elif power_warnings.running_stacks %}
+      <div class="stat-sub">
+        Stacks Docker en cours : <span class="mono">{{ power_warnings.running_stacks | join(', ') }}</span>.
+      </div>
+      {% endif %}
+
+      <form method="post" action="/power/{{ action.key }}">
+        <label>Tape <strong>{{ action.confirm_word }}</strong> pour confirmer</label>
+        <input type="text" name="confirm" autocomplete="off" spellcheck="false" required>
+        <label>Ton mot de passe ({{ username }})</label>
+        <input type="password" name="password" autocomplete="current-password" required>
+        <div class="actions">
+          <button type="button" class="btn-muted" @click="asked = null">Annuler</button>
+          <button type="submit" class="{{ 'btn-warn' if action.key == 'reboot' else 'btn-solid-danger' }}">
+            {{ action.label }}
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<script>
+// On fait avancer les SECONDES DEPUIS MINUIT cote serveur, pas un
+// horodatage : formater une date dans le navigateur l'afficherait dans le
+// fuseau du poste de l'utilisateur, alors que c'est l'heure du serveur qui
+// nous interesse. Un poste a Tokyo doit voir l'heure du NAS.
+function serverClock(baseSeconds) {
+  return {
+    asked: null,
+    timeLabel: '',
+    base: baseSeconds,
+    startedAt: Date.now(),
+
+    start() {
+      this.tick();
+      setInterval(() => this.tick(), 1000);
+    },
+
+    tick() {
+      var elapsed = Math.floor((Date.now() - this.startedAt) / 1000);
+      var t = (this.base + elapsed) % 86400;
+      var p = function (n) { return n < 10 ? '0' + n : '' + n; };
+      this.timeLabel = p(Math.floor(t / 3600)) + ':' +
+                       p(Math.floor(t / 60) % 60) + ':' + p(t % 60);
+    },
+
+    ask(key) { this.asked = key; },
+  };
+}
+</script>

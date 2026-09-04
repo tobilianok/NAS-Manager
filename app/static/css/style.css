@@ -921,3 +921,28 @@ body.login-body { display: flex; align-items: center; justify-content: center; m
 
 .test-actions { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
 .test-actions form { margin: 0; }
+
+/* ---------------------------------------------------------------------
+   Carte horloge et commandes d'alimentation (v1.5.0)
+   --------------------------------------------------------------------- */
+
+.clock-card { margin-bottom: 1rem; }
+.clock-face { text-align: center; padding: .2rem 0 .9rem; }
+.clock-time {
+  font-size: 2.4rem; font-weight: 700; letter-spacing: .02em; line-height: 1.1;
+  /* Chiffres a chasse fixe : sans ca, la largeur change a chaque seconde
+     et l'horloge tressaute. */
+  font-variant-numeric: tabular-nums;
+}
+/* capitalize mettrait une majuscule a CHAQUE mot ("Jeudi 4 Septembre") :
+   en francais, seule la premiere lettre en prend une. */
+.clock-date { font-size: .9rem; color: var(--text-muted); margin-top: .2rem; }
+.clock-date::first-letter { text-transform: uppercase; }
+.clock-tz { font-size: .72rem; color: var(--text-dim); margin-top: .15rem; }
+
+.clock-actions {
+  display: flex; gap: .45rem; flex-wrap: wrap; justify-content: center;
+  border-top: 1px solid var(--border-soft); padding-top: .8rem;
+}
+.clock-actions .btn, .clock-actions button { flex: 1 1 auto; justify-content: center; }
+.clock-actions svg { width: 14px; height: 14px; }

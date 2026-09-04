@@ -343,6 +343,45 @@ def format_uptime(seconds: float) -> str:
     return " ".join(parts)
 
 
+# Noms ecrits en dur plutot que via `locale` : le service tourne le plus
+# souvent en locale C, ou strftime rendrait "Thursday" et "September". Une
+# dependance a la locale du systeme pour afficher une date serait de toute
+# facon fragile.
+_JOURS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+_MOIS = ["janvier", "fevrier", "mars", "avril", "mai", "juin", "juillet",
+         "aout", "septembre", "octobre", "novembre", "decembre"]
+
+
+@dataclass
+class ServerClock:
+    """Heure du SERVEUR, pas du navigateur. C'est celle qui compte sur un
+    NAS : un decalage visible ici trahit un probleme de synchronisation
+    horaire, qui fausserait les horodatages des fichiers partages."""
+    epoch: float
+    time_label: str        # "14:07:52"
+    date_label: str        # "jeudi 4 septembre 2026"
+    timezone: str          # "CEST"
+    # Secondes ecoulees depuis minuit, HEURE DU SERVEUR. C'est cette valeur
+    # que l'horloge du navigateur fait avancer : un simple decalage
+    # d'horodatage ne suffirait pas, le navigateur formaterait alors l'heure
+    # dans SON fuseau, pas dans celui du serveur.
+    seconds_of_day: int = 0
+
+
+def get_server_clock() -> ServerClock:
+    now = time.localtime()
+    return ServerClock(
+        epoch=time.time(),
+        seconds_of_day=now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec,
+        time_label=time.strftime("%H:%M:%S", now),
+        date_label=(
+            f"{_JOURS[now.tm_wday]} {now.tm_mday} "
+            f"{_MOIS[now.tm_mon - 1]} {now.tm_year}"
+        ),
+        timezone=time.strftime("%Z", now),
+    )
+
+
 def format_boot_date(epoch: float) -> str:
     if epoch <= 0:
         return "-"

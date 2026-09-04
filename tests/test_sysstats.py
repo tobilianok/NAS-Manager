@@ -233,3 +233,26 @@ def test_format_uptime():
     assert sysstats.format_uptime(59) == "0 min"
     assert sysstats.format_uptime(3661) == "1 h 1 min"
     assert sysstats.format_uptime(90000) == "1 j 1 h 0 min"
+
+
+def test_server_clock_is_readable_and_french(monkeypatch):
+    """Les noms de jours et de mois sont ecrits en dur : le service tourne
+    en locale C, ou strftime rendrait 'Thursday' et 'September'."""
+    import time as _t
+    fixed = _t.struct_time((2026, 9, 4, 14, 7, 52, 3, 247, 1))   # jeudi
+    monkeypatch.setattr(sysstats.time, "localtime", lambda *a: fixed)
+    monkeypatch.setattr(sysstats.time, "strftime",
+                        lambda fmt, t=None: {"%H:%M:%S": "14:07:52", "%Z": "CEST"}[fmt])
+    clock = sysstats.get_server_clock()
+    assert clock.time_label == "14:07:52"
+    assert clock.date_label == "jeudi 4 septembre 2026"
+    assert clock.timezone == "CEST"
+    # 14*3600 + 7*60 + 52
+    assert clock.seconds_of_day == 50872
+
+
+def test_server_clock_smoke():
+    clock = sysstats.get_server_clock()
+    assert 0 <= clock.seconds_of_day < 86400
+    assert len(clock.time_label) == 8
+    assert clock.date_label

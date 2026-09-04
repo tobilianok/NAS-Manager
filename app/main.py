@@ -24,6 +24,7 @@ from app import (
     nasusers, dockerstacks, netstats, health, netconfig, dockerconsole, dockerops,
     sysaccounts, configbackup, poolexpand, navigation, version as version_module,
     sysupdate, appupdate, liverun, gitauth, diskwipe, smarttests, diskjobs,
+    power,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -137,11 +138,10 @@ def _share_dashboard_rows() -> list[dict]:
     ]
 
 
-@app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request, username: str = Depends(require_login)):
+def _dashboard_response(request: Request, username: str,
+                        warning: str | None = None, status_code: int = 200):
     disk_list = disks.list_disks()
-    warning = None
-    if not disk_list:
+    if warning is None and not disk_list:
         warning = (
             "Aucun disque detecte. Soit ce serveur n'a reellement aucun "
             "disque visible, soit la commande 'lsblk' a echoue cote "
@@ -156,8 +156,17 @@ def dashboard(request: Request, username: str = Depends(require_login)):
             "replacement_state": replacement_state, "step_label": step_label,
             "docker_rows": _docker_dashboard_rows(),
             "share_rows": _share_dashboard_rows(),
+            "clock": sysstats.get_server_clock(),
+            "power_actions": power.ACTIONS,
+            "power_warnings": _power_warnings(),
         },
+        status_code=status_code,
     )
+
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard(request: Request, username: str = Depends(require_login)):
+    return _dashboard_response(request, username)
 
 
 @app.get("/api/disks")
@@ -2524,26 +2533,51 @@ def updates_system_preview(request: Request, action_key: str,
     )
 
 
-@app.post("/updates/reboot", response_class=HTMLResponse)
-def updates_reboot(request: Request, username: str = Depends(require_login),
-                   password: str = Form(...), confirm: str = Form("")):
-    """Redemarrage de la machine. Exige le mot de passe de l'admin connecte
-    (meme regle que toutes les actions sensibles depuis la Phase 8b) et la
-    saisie du mot 'REDEMARRER'."""
-    if confirm.strip().upper() != "REDEMARRER":
-        return _render_updates_error(request, username,
-                                     "Confirmation incorrecte : tape REDEMARRER pour valider.")
-    if not auth.authenticate(username, password):
-        return _render_updates_error(request, username, "Mot de passe incorrect.")
-
-    logger.warning("Redemarrage de la machine demande par %s", username)
+def _power_warnings() -> power.PowerWarnings:
+    """Ce qui rend le moment mal choisi pour couper la machine. Un
+    effacement de disque en cours est le plus couteux : il dure des heures
+    et ne reprend pas."""
+    erasing = []
     try:
-        subprocess.Popen(["systemctl", "reboot"])
-    except OSError as exc:
-        return _render_updates_error(request, username, f"Redemarrage impossible : {exc}")
-    return templates.TemplateResponse(
-        "reboot_pending.html", {"request": request, "username": username}
+        erasing = [name for name, state in diskjobs.all_states().items()
+                   if state.running and not state.stale]
+    except Exception:  # noqa: BLE001
+        logger.debug("Etat des effacements indisponible", exc_info=True)
+    return power.PowerWarnings(
+        resilvering_pools=_resilvering_pool_names(),
+        erasing_disks=erasing,
+        running_stacks=_running_stack_names(),
     )
+
+
+@app.post("/power/{action_key}", response_class=HTMLResponse)
+def power_action(request: Request, action_key: str,
+                 username: str = Depends(require_login),
+                 password: str = Form(...), confirm: str = Form("")):
+    """Redemarrage ou extinction. Exige le mot de passe de l'admin connecte
+    (regle constante depuis la Phase 8b) ET le mot de confirmation propre a
+    l'action - REDEMARRER et ETEINDRE sont volontairement differents : on ne
+    doit pas pouvoir eteindre par habitude en croyant redemarrer."""
+    try:
+        action = power.resolve(action_key)
+    except power.PowerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    if not auth.authenticate(username, password):
+        return _render_dashboard_error(request, username, "Mot de passe incorrect.")
+    try:
+        power.execute(action_key, confirm, username)
+    except power.PowerError as exc:
+        return _render_dashboard_error(request, username, str(exc))
+
+    return templates.TemplateResponse(
+        "power_pending.html",
+        {"request": request, "username": username, "action": action},
+    )
+
+
+def _render_dashboard_error(request: Request, username: str, message: str):
+    return _dashboard_response(request, username, warning=message, status_code=400)
 
 
 def _render_updates_error(request: Request, username: str, message: str):

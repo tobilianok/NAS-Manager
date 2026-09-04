@@ -220,31 +220,13 @@ def test_preview_of_an_unknown_action_is_a_404(client):
 # Redemarrage de la machine
 # ---------------------------------------------------------------------------
 
-def test_reboot_requires_the_exact_confirmation_word(client, monkeypatch):
-    called = []
-    monkeypatch.setattr(main.subprocess, "Popen", lambda cmd: called.append(cmd))
-    resp = client.post("/updates/reboot", data={"confirm": "oui", "password": "x"})
-    assert resp.status_code == 400
-    assert called == []
-
-
-def test_reboot_requires_the_admin_password(client, monkeypatch):
-    called = []
-    monkeypatch.setattr(main.subprocess, "Popen", lambda cmd: called.append(cmd))
-    monkeypatch.setattr(auth, "authenticate", lambda u, p: False)
-    resp = client.post("/updates/reboot", data={"confirm": "REDEMARRER", "password": "faux"})
-    assert resp.status_code == 400
-    assert "Mot de passe incorrect" in resp.text
-    assert called == []
-
-
-def test_reboot_proceeds_when_both_checks_pass(client, monkeypatch):
-    called = []
-    monkeypatch.setattr(main.subprocess, "Popen", lambda cmd: called.append(cmd))
-    resp = client.post("/updates/reboot", data={"confirm": "redemarrer", "password": "x"})
-    assert resp.status_code == 200
-    assert called == [["systemctl", "reboot"]]
-    assert "Redemarrage en cours" in resp.text
+def test_the_updates_page_points_at_the_shared_power_route(client, monkeypatch):
+    """Le redemarrage n'a plus sa propre implementation ici : il passe par la
+    meme route que les boutons du tableau de bord."""
+    monkeypatch.setattr(sysupdate, "get_status",
+                        lambda: sysupdate.SystemUpdateStatus(reboot_required=True))
+    text = client.get("/updates").text
+    assert 'action="/power/reboot"' in text
 
 
 # ---------------------------------------------------------------------------

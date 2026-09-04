@@ -17,7 +17,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 
-VERSION = "1.4.3"
+VERSION = "1.5.0"
 
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

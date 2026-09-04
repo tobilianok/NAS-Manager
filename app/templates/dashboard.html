@@ -15,6 +15,7 @@
 
     <div class="dash-row dash-row-top">
       <div class="dash-col-weather">
+        {% include "_clock_card.html" %}
         <h2 class="section-title">Sante &amp; securite</h2>
         <div id="live-health" hx-get="/partials/health" hx-trigger="load, every 30s" hx-swap="innerHTML">
           Chargement...
