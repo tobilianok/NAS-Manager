@@ -464,15 +464,24 @@ def pool_create(
     )
 
 
+def _pool_delete_context(request: Request, username: str, pool, error: str | None = None) -> dict:
+    """Ce qu'une suppression de pool emporterait avec elle. Affiche AVANT,
+    jamais decouvert apres : un partage ou une stack dont le dataset a
+    disparu avec le pool ne fonctionne plus, et laisse une entree morte
+    dans les registres."""
+    return {
+        "request": request, "username": username, "pool": pool, "error": error,
+        "pool_shares": shares.list_shares_on_pool(pool.name),
+        "pool_stacks": dockerstacks.list_stacks_on_pool(pool.name),
+    }
+
+
 @app.get("/pools/{name}/delete", response_class=HTMLResponse)
 def pool_delete_form(request: Request, name: str, username: str = Depends(require_login)):
     pool = zfs.get_pool(name)
     if pool is None:
         raise HTTPException(status_code=404, detail=f"Pool '{name}' introuvable.")
-    return templates.TemplateResponse(
-        "pool_delete.html",
-        {"request": request, "username": username, "pool": pool, "error": None},
-    )
+    return templates.TemplateResponse("pool_delete.html", _pool_delete_context(request, username, pool))
 
 
 @app.post("/pools/{name}/delete", response_class=HTMLResponse)
@@ -489,21 +498,39 @@ def pool_delete_submit(
     if confirm_name.strip() != name.strip():
         return templates.TemplateResponse(
             "pool_delete.html",
-            {
-                "request": request, "username": username, "pool": pool,
-                "error": "Le nom tape ne correspond pas au nom du pool - rien n'a ete supprime.",
-            },
+            _pool_delete_context(
+                request, username, pool,
+                "Le nom tape ne correspond pas au nom du pool - rien n'a ete supprime.",
+            ),
             status_code=400,
         )
+
+    # Ordre important : on arrete les stacks TANT QUE le pool existe encore
+    # (leur docker-compose.yml y vit). Une fois le pool detruit, il serait
+    # trop tard : il resterait des containers pointant vers un chemin mort.
+    try:
+        dockerstacks.stop_stacks_on_pool(name)
+    except Exception:  # noqa: BLE001 - best-effort, ne doit jamais bloquer la suppression
+        logger.exception("Arret des stacks du pool '%s' impossible", name)
 
     try:
         zfs.destroy_pool(name)
     except zfs.PoolDestructionError as exc:
         return templates.TemplateResponse(
-            "pool_delete.html",
-            {"request": request, "username": username, "pool": pool, "error": str(exc)},
+            "pool_delete.html", _pool_delete_context(request, username, pool, str(exc)),
             status_code=500,
         )
+
+    # Le pool est detruit : ses datasets n'existent plus. On nettoie les
+    # registres APRES seulement, pour ne jamais perdre des definitions si la
+    # destruction avait echoue. Sans ce nettoyage, les partages restaient
+    # dans smb.conf en pointant vers un chemin mort - et devenaient meme
+    # impossibles a supprimer depuis l'interface.
+    try:
+        shares.purge_pool_shares(name)
+        dockerstacks.forget_stacks_on_pool(name)
+    except Exception:  # noqa: BLE001 - le pool est deja detruit, on ne bloque pas l'utilisateur
+        logger.exception("Nettoyage des registres apres destruction du pool '%s' impossible", name)
 
     return RedirectResponse("/pools", status_code=302)
 
@@ -926,9 +953,16 @@ def share_users_delete(request: Request, name: str, username: str = Depends(requ
 
 @app.get("/shares", response_class=HTMLResponse)
 def shares_list(request: Request, username: str = Depends(require_login)):
+    # On verifie en direct que le dataset de chaque partage existe encore :
+    # sinon l'utilisateur voit un partage d'apparence normale qui ne
+    # fonctionne plus (pool detruit, dataset supprime a la main...) sans
+    # comprendre pourquoi.
+    rows = [
+        {"share": s, "dataset_missing": not zfs.dataset_exists(s.dataset)}
+        for s in shares.list_shares()
+    ]
     return templates.TemplateResponse(
-        "shares.html",
-        {"request": request, "username": username, "shares": shares.list_shares()},
+        "shares.html", {"request": request, "username": username, "rows": rows},
     )
 
 

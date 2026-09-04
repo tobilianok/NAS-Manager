@@ -756,3 +756,81 @@ def test_forget_ghost_stack(isolated_registry, isolated_icons, monkeypatch):
     dockerstacks.forget_ghost_stack("gone")
     assert dockerstacks.get_stack("gone") is None
     assert dockerstacks.get_stack("alive") is not None
+
+
+# ---------------------------------------------------------------------------
+# Suppression d'un pool : les stacks qui vivaient dessus (Phase 10b)
+# ---------------------------------------------------------------------------
+
+def test_list_stacks_on_pool(isolated_registry, tmp_path):
+    dockerstacks._save_registry([
+        dockerstacks.Stack(name="nginx", pool="tank", dataset="tank/docker/nginx", directory=str(tmp_path)),
+        dockerstacks.Stack(name="jelly", pool="tank", dataset="tank/docker/jelly", directory=str(tmp_path)),
+        dockerstacks.Stack(name="autre", pool="poulette", dataset="poulette/docker/autre", directory=str(tmp_path)),
+    ])
+    assert sorted(s.name for s in dockerstacks.list_stacks_on_pool("tank")) == ["jelly", "nginx"]
+    assert dockerstacks.list_stacks_on_pool("inconnu") == []
+
+
+def test_stop_stacks_on_pool_runs_down_while_compose_still_exists(isolated_registry, tmp_path, monkeypatch):
+    """L'arret doit avoir lieu AVANT la destruction du pool : apres, le
+    docker-compose.yml a disparu avec lui et 'down -v' ne pourrait plus
+    nettoyer containers, volumes et reseaux."""
+    mountpoint = tmp_path / "nginx"
+    mountpoint.mkdir()
+    (mountpoint / "docker-compose.yml").write_text(COMPOSE_YAML)
+    dockerstacks._save_registry([
+        dockerstacks.Stack(name="nginx", pool="tank", dataset="tank/docker/nginx", directory=str(mountpoint)),
+        dockerstacks.Stack(name="autre", pool="poulette", dataset="poulette/docker/autre", directory=str(tmp_path)),
+    ])
+    calls = []
+    monkeypatch.setattr(
+        dockerstacks, "_run",
+        lambda cmd, input_text=None, timeout=None: (calls.append(cmd), (0, "", ""))[1],
+    )
+
+    assert dockerstacks.stop_stacks_on_pool("tank") == ["nginx"]
+    down = [c for c in calls if "down" in c]
+    assert len(down) == 1
+    assert "-v" in down[0] and "--remove-orphans" in down[0]
+    assert str(mountpoint / "docker-compose.yml") in down[0]
+
+
+def test_stop_stacks_on_pool_tolerates_failure(isolated_registry, tmp_path, monkeypatch):
+    """Une stack qui refuse de s'arreter ne doit pas empecher les autres ni
+    bloquer la suppression du pool."""
+    dockerstacks._save_registry([
+        dockerstacks.Stack(name="ko", pool="tank", dataset="tank/docker/ko", directory=str(tmp_path)),
+        dockerstacks.Stack(name="ok", pool="tank", dataset="tank/docker/ok", directory=str(tmp_path)),
+    ])
+    monkeypatch.setattr(
+        dockerstacks, "_run",
+        lambda cmd, input_text=None, timeout=None: (1, "", "boom") if "ko" in cmd else (0, "", ""),
+    )
+    assert dockerstacks.stop_stacks_on_pool("tank") == ["ok"]
+
+
+def test_forget_stacks_on_pool_deregisters_and_removes_icons(isolated_registry, isolated_icons, tmp_path, monkeypatch):
+    dockerstacks._save_registry([
+        dockerstacks.Stack(name="nginx", pool="tank", dataset="tank/docker/nginx", directory=str(tmp_path)),
+        dockerstacks.Stack(name="autre", pool="poulette", dataset="poulette/docker/autre", directory=str(tmp_path)),
+    ])
+    isolated_icons.mkdir(parents=True, exist_ok=True)
+    (isolated_icons / "nginx.png").write_bytes(b"PNG")
+
+    # Aucun dataset ne doit etre detruit : le pool n'existe deja plus.
+    def must_not_be_called(path):
+        raise AssertionError("forget_stacks_on_pool ne doit toucher a aucun dataset")
+    monkeypatch.setattr(zfs, "destroy_dataset", must_not_be_called)
+
+    assert dockerstacks.forget_stacks_on_pool("tank") == ["nginx"]
+    assert [s.name for s in dockerstacks.list_stacks()] == ["autre"]
+    assert not (isolated_icons / "nginx.png").exists()
+
+
+def test_forget_stacks_on_pool_is_a_noop_when_nothing_matches(isolated_registry, tmp_path):
+    dockerstacks._save_registry([
+        dockerstacks.Stack(name="nginx", pool="tank", dataset="tank/docker/nginx", directory=str(tmp_path)),
+    ])
+    assert dockerstacks.forget_stacks_on_pool("inconnu") == []
+    assert [s.name for s in dockerstacks.list_stacks()] == ["nginx"]
