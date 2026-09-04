@@ -104,6 +104,27 @@ def test_create_archive_contains_every_section(sandbox):
         assert expected in names, expected
 
 
+def test_the_github_token_never_ends_up_in_a_backup(sandbox, tmp_path):
+    """L'archive est telechargee puis circule (mail, cle USB) : un secret
+    d'acces au depot n'a rien a y faire. Les fichiers sont repris un par un
+    precisement pour ca."""
+    from app import gitauth
+    token_file = sandbox / "state" / "github_token"
+    token_file.write_text("github_pat_secret_qui_ne_doit_pas_sortir_0123456789\n")
+
+    archive = configbackup.create_archive(sandbox / "out")
+    assert not any("github_token" in name for name in _members(archive))
+    # L'archive est compressee : chercher la chaine dans les octets bruts ne
+    # prouverait rien. On relit donc le contenu reel de chaque fichier.
+    with tarfile.open(archive, "r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            content = tar.extractfile(member).read()
+            assert b"github_pat_secret" not in content, member.name
+    assert gitauth  # le module existe : ce test protege un risque reel
+
+
 def test_create_archive_manifest_describes_contents(sandbox):
     archive = configbackup.create_archive(sandbox / "out")
     with tarfile.open(archive, "r:gz") as tar:

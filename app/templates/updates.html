@@ -13,6 +13,9 @@
   {% if error %}
   <div class="warning-banner">⚠ {{ error }}</div>
   {% endif %}
+  {% if notice %}
+  <div class="notice-banner">✅ {{ notice }}</div>
+  {% endif %}
 
   {# ================= NAS Manager ================= #}
   <h2 class="section-title">NAS Manager</h2>
@@ -45,6 +48,77 @@
       {% if app_status.fetch_error %}
       <div class="warning-banner">⚠ {{ app_status.fetch_error }}</div>
       {% endif %}
+
+      {# Acces a GitHub. Mis en avant (rubrique depliee) quand c'est
+         justement ce qui bloque, discret le reste du temps. #}
+      <details class="changes-details github-auth" {% if app_status.auth_required %}open{% endif %}>
+        <summary>
+          Acces a GitHub —
+          {% if has_token %}<span class="badge badge-ok">jeton enregistre</span>
+          {% else %}<span class="badge badge-neutral">aucun jeton</span>{% endif %}
+        </summary>
+
+        <div class="info-panel">
+          Le service tourne en <span class="mono">root</span>, alors que tes
+          identifiants git appartiennent a ton compte administrateur. Sur un
+          depot <strong>prive</strong>, il lui faut donc ses propres
+          identifiants pour consulter les versions disponibles.<br><br>
+          <strong>Comment obtenir un jeton :</strong> sur GitHub,
+          <span class="mono">Settings → Developer settings → Personal access
+          tokens → Fine-grained tokens</span>, puis
+          <span class="mono">Generate new token</span>. Limite-le au seul
+          depot <span class="mono">NAS-Manager</span> et donne-lui
+          uniquement <span class="mono">Repository permissions → Contents →
+          Read-only</span> : ce jeton ne doit jamais pouvoir ecrire.<br><br>
+          Le jeton est range dans
+          <span class="mono">/var/lib/nas-manager</span>, lisible par root
+          seul, et n'est jamais inscrit dans l'URL du depot ni affiche en
+          clair ici. Il n'est pas inclus dans les sauvegardes de
+          configuration.
+          {% if app_status.remote_url %}
+          <br><br>Depot distant actuel :
+          <span class="mono">{{ app_status.remote_url }}</span>
+          {% endif %}
+        </div>
+
+        <form method="post" action="/updates/github-token" class="token-form">
+          <label>Jeton d'acces GitHub</label>
+          <input type="password" name="token" autocomplete="off" required
+                 placeholder="{{ 'Remplacer le jeton (' ~ masked_token ~ ')' if has_token else 'github_pat_...' }}">
+          <label>Ton mot de passe ({{ username }})</label>
+          <input type="password" name="password" autocomplete="current-password" required>
+          <div class="actions">
+            <button type="submit" class="btn-primary">Enregistrer le jeton</button>
+          </div>
+        </form>
+
+        <div class="token-extra">
+          <form method="post" action="/updates/github-test">
+            <button type="submit" class="btn-muted btn-sm">Tester la connexion</button>
+          </form>
+          {% if has_token %}
+          <form method="post" action="/updates/github-token/delete" x-data="{ open: false }">
+            <button type="button" class="btn-muted btn-sm" @click="open = true">Supprimer le jeton</button>
+            <div class="modal-overlay" x-show="open" x-cloak @keydown.escape.window="open = false">
+              <div class="modal-box" @click.outside="open = false">
+                <h2>Supprimer le jeton GitHub</h2>
+                <p class="stat-sub">
+                  Les mises a jour de NAS Manager ne pourront plus consulter le
+                  depot tant qu'aucun autre jeton n'est enregistre. Rien
+                  d'autre n'est affecte.
+                </p>
+                <label>Ton mot de passe ({{ username }})</label>
+                <input type="password" name="password" autocomplete="current-password" required>
+                <div class="actions">
+                  <button type="button" class="btn-muted" @click="open = false">Annuler</button>
+                  <button type="submit" class="btn-danger">Supprimer</button>
+                </div>
+              </div>
+            </div>
+          </form>
+          {% endif %}
+        </div>
+      </details>
 
       {% if app_status.dirty %}
       <div class="warning-banner">

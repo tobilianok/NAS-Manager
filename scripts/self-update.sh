@@ -35,7 +35,23 @@ chmod 700 "${STATE_DIR}"
 : > "${LOG_FILE}"
 chmod 600 "${LOG_FILE}"
 
+# Identifiants GitHub (Phase 11c). Le depot est prive et ce script tourne en
+# root : sans jeton, `git fetch` demanderait un nom d'utilisateur sur un
+# terminal qui n'existe pas. GIT_TERMINAL_PROMPT=0 garantit un echec immediat
+# et lisible plutot qu'un blocage. Le jeton est lu depuis le fichier d'etat et
+# passe par l'ENVIRONNEMENT : il n'apparait ni dans la ligne de commande (donc
+# pas dans `ps`), ni dans l'URL du depot.
+export GIT_TERMINAL_PROMPT=0
 GIT=(git -C "${REPO_DIR}" -c "safe.directory=${REPO_DIR}")
+TOKEN_FILE="${STATE_DIR}/github_token"
+if [[ -r "${TOKEN_FILE}" ]]; then
+    NAS_MANAGER_GIT_TOKEN="$(tr -d '\r\n' < "${TOKEN_FILE}")"
+    export NAS_MANAGER_GIT_TOKEN
+    if [[ -n "${NAS_MANAGER_GIT_TOKEN}" ]]; then
+        GIT+=(-c "credential.helper=")
+        GIT+=(-c 'credential.helper=!f() { test "$1" = get && echo username=x-access-token && echo password=$NAS_MANAGER_GIT_TOKEN; }; f')
+    fi
+fi
 
 PREVIOUS_COMMIT="$("${GIT[@]}" rev-parse HEAD 2>/dev/null || echo '')"
 STARTED="$(date +%s)"

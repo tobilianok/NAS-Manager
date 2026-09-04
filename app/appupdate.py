@@ -33,7 +33,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
-from app import version as version_module
+from app import gitauth, version as version_module
 
 logger = logging.getLogger("nas_manager.appupdate")
 
@@ -76,6 +76,10 @@ class AppUpdateStatus:
     new_commits: list[str] = field(default_factory=list)   # sujets, du plus recent au plus ancien
     fetch_error: str = ""
     git_available: bool = True
+    # Vrai quand l'echec vient des identifiants et non du reseau : la page
+    # met alors en avant l'enregistrement d'un jeton GitHub.
+    auth_required: bool = False
+    remote_url: str = ""
 
     def target(self, kind: str) -> UpdateTarget | None:
         for candidate in self.targets:
@@ -89,12 +93,26 @@ class AppUpdateStatus:
 # ---------------------------------------------------------------------------
 
 def _git(*args: str, timeout: int = 60) -> tuple[int, str, str]:
-    """Appel git dans le depot deploye. `safe.directory` est force : le
-    depot appartient a l'utilisateur admin alors que le service tourne en
-    root, ce que git refuse par defaut (« dubious ownership »)."""
-    cmd = ["git", "-C", REPO_DIR, "-c", f"safe.directory={REPO_DIR}", *args]
+    """Appel git dans le depot deploye.
+
+    `safe.directory` est force : le depot appartient a l'utilisateur admin
+    alors que le service tourne en root, ce que git refuse par defaut
+    (« dubious ownership »).
+
+    L'environnement vient de `gitauth` : il interdit toute invite au
+    clavier (il n'y a pas de terminal ici) et fournit, si un jeton est
+    enregistre, de quoi s'authentifier aupres de GitHub."""
+    cmd = [
+        "git", "-C", REPO_DIR,
+        "-c", f"safe.directory={REPO_DIR}",
+        *gitauth.git_config_args(),
+        *args,
+    ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+            env={**os.environ, **gitauth.git_env()},
+        )
     except FileNotFoundError:
         return 127, "", "git n'est pas installe."
     except subprocess.SubprocessError as exc:
@@ -124,12 +142,16 @@ def get_status(fetch: bool = True) -> AppUpdateStatus:
     status.current_tag = _git_out("describe", "--tags", "--exact-match", "HEAD")
     status.dirty = bool(_git_out("status", "--porcelain"))
 
+    status.remote_url = _git_out("remote", "get-url", "origin") or ""
+
     if fetch:
         # --prune --tags : sans ca, un tag supprime en amont resterait
         # proposable indefiniment.
         code, _, err = _git("fetch", "--prune", "--tags", "origin", timeout=120)
         if code != 0:
-            status.fetch_error = err or "Impossible de contacter GitHub."
+            raw = err or "Impossible de contacter GitHub."
+            status.auth_required = gitauth.looks_like_auth_failure(raw)
+            status.fetch_error = gitauth.explain_failure(raw, status.remote_url)
 
     head = _git_out("rev-parse", "HEAD")
 
@@ -160,6 +182,18 @@ def get_status(fetch: bool = True) -> AppUpdateStatus:
             status.new_commits = log.splitlines() if log else []
 
     return status
+
+
+def test_connection() -> str:
+    """Verifie que le depot distant est joignable ET lisible, sans rien
+    modifier. `ls-remote` suffit : il interroge GitHub sans ecrire dans le
+    depot local, donc on peut le lancer autant de fois qu'on veut."""
+    remote = _git_out("remote", "get-url", "origin") or ""
+    code, out, err = _git("ls-remote", "--heads", "origin", timeout=60)
+    if code != 0:
+        raise AppUpdateError(gitauth.explain_failure(err or "Echec inconnu.", remote))
+    branches = len(out.splitlines())
+    return f"Connexion a GitHub reussie ({branches} branche(s) visible(s))."
 
 
 # ---------------------------------------------------------------------------
@@ -238,8 +272,11 @@ def start_update(kind: str) -> UpdateTarget:
     if not status.git_available:
         raise AppUpdateError(status.fetch_error)
     if status.fetch_error:
+        # Le message d'authentification est deja explicite et actionnable :
+        # le prefixer d'un "Impossible de recuperer..." le noierait.
         raise AppUpdateError(
-            f"Impossible de recuperer les versions depuis GitHub : {status.fetch_error}"
+            status.fetch_error if status.auth_required
+            else f"Impossible de recuperer les versions depuis GitHub : {status.fetch_error}"
         )
     if status.dirty:
         raise AppUpdateError(

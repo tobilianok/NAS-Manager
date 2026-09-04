@@ -6,7 +6,7 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
-**Version actuelle : v1.1.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+**Version actuelle : v1.2.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
 est affiché en bas du menu latéral ; le survol donne le commit déployé et
 signale si des fichiers ont été modifiés à la main sur le serveur.
 
@@ -267,6 +267,23 @@ signale si des fichiers ont été modifiés à la main sur le serveur.
   redémarre le service ne peut pas être celui qu'on redémarre. Les données
   (`/var/lib/nas-manager`) sont hors du code mis à jour, donc jamais
   concernées — livré, en attente de test réel.
+- Phase 11c (**v1.2.0**) : correction d'un blocage rencontré dès la première
+  utilisation — `fatal: could not read Username for 'https://github.com'`. Le
+  dépôt est privé et le service tourne en `root`, alors que les identifiants
+  git appartiennent au compte administrateur : `git fetch` demandait un login
+  sur un terminal qui n'existe pas. Les appels git interdisent désormais toute
+  invite (`GIT_TERMINAL_PROMPT=0`) et **l'échec est traduit en explication
+  actionnable** — différente selon qu'aucun jeton n'est enregistré, qu'un jeton
+  est refusé, ou que le dépôt est en SSH (c'est alors la clé de root qui est en
+  jeu, pas un jeton). Nouvelle section « Accès à GitHub » : saisie d'un jeton
+  d'accès personnel, vérification immédiate auprès de GitHub à
+  l'enregistrement, bouton de test (`git ls-remote`, qui ne modifie rien),
+  suppression — le tout protégé par le mot de passe admin. Le jeton est créé
+  directement en 0600, n'est jamais inscrit dans l'URL du dépôt (elle
+  apparaîtrait dans `git remote -v` et dans les messages d'erreur), jamais
+  passé en argument (il serait visible dans `ps`), jamais réaffiché en clair,
+  et n'entre pas dans les sauvegardes de configuration — livré, en attente de
+  test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -388,7 +405,8 @@ menu latéral (correspondance page/entrée, rubriques, version affichée), les
 mises à jour système (analyse des simulations apt, liste blanche d'actions
 non interactives, redémarrage requis) et la mise à jour de NAS Manager
 lui-même (garde-fous avant lancement, détachement du processus, fichier
-d'état, retour arrière) (677 tests).
+d'état, retour arrière) et l'accès GitHub (traitement du jeton, diagnostic des
+échecs d'authentification, absence du secret dans les sauvegardes) (716 tests).
 
 ## Développement
 

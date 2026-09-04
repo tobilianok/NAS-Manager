@@ -304,3 +304,109 @@ def test_ws_streams_the_whitelisted_commands(client, monkeypatch):
     assert executed == [["apt-get", "update"]]
     assert events[-1]["ok"] is True
     assert any(e["type"] == "out" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Acces a GitHub (Phase 11c)
+# ---------------------------------------------------------------------------
+
+VALID_TOKEN = "github_pat_11ABCDEFG0abcdefghij_KLMNOPQRSTUVWXYZ0123456789"
+
+
+@pytest.fixture
+def token_client(client, monkeypatch, tmp_path):
+    from app import gitauth
+    monkeypatch.setattr(gitauth, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(gitauth, "TOKEN_FILE", tmp_path / "github_token")
+    return client
+
+
+def test_page_opens_the_github_section_when_authentication_is_what_blocks(client, monkeypatch):
+    status = appupdate.AppUpdateStatus(
+        current_commit="aaaaaaa", auth_required=True,
+        fetch_error="GitHub demande une authentification : le depot est prive...")
+    monkeypatch.setattr(appupdate, "get_status", lambda fetch=True: status)
+    text = client.get("/updates").text
+    assert "Acces a GitHub" in text
+    # La rubrique doit etre depliee : c'est le probleme a resoudre.
+    assert 'class="changes-details github-auth" open' in text
+
+
+def test_github_section_stays_folded_when_everything_works(client):
+    text = client.get("/updates").text
+    assert "Acces a GitHub" in text
+    assert 'github-auth" open' not in text
+
+
+def test_saving_a_token_requires_the_admin_password(token_client, monkeypatch):
+    from app import gitauth
+    monkeypatch.setattr(auth, "authenticate", lambda u, p: False)
+    resp = token_client.post("/updates/github-token",
+                             data={"token": VALID_TOKEN, "password": "faux"})
+    assert resp.status_code == 400
+    assert not gitauth.has_token()
+
+
+def test_saving_a_token_verifies_it_immediately(token_client, monkeypatch):
+    """Un jeton accepte a la saisie mais refuse par GitHub ne serait
+    decouvert qu'a la prochaine mise a jour."""
+    from app import gitauth
+    monkeypatch.setattr(appupdate, "test_connection",
+                        lambda: "Connexion a GitHub reussie (1 branche(s) visible(s)).")
+    resp = token_client.post("/updates/github-token",
+                             data={"token": VALID_TOKEN, "password": "x"})
+    assert resp.status_code == 200
+    assert "Jeton enregistre" in resp.text
+    assert gitauth.get_token() == VALID_TOKEN
+
+
+def test_a_token_refused_by_github_is_reported(token_client, monkeypatch):
+    def refuse():
+        raise appupdate.AppUpdateError("GitHub a refuse le jeton enregistre.")
+    monkeypatch.setattr(appupdate, "test_connection", refuse)
+    resp = token_client.post("/updates/github-token",
+                             data={"token": VALID_TOKEN, "password": "x"})
+    assert resp.status_code == 400
+    assert "refuse" in resp.text
+
+
+def test_a_malformed_token_is_refused_before_being_written(token_client):
+    from app import gitauth
+    resp = token_client.post("/updates/github-token",
+                             data={"token": "trop-court", "password": "x"})
+    assert resp.status_code == 400
+    assert not gitauth.has_token()
+
+
+def test_the_token_is_never_echoed_back_to_the_page(token_client, monkeypatch):
+    from app import gitauth
+    gitauth.save_token(VALID_TOKEN)
+    text = token_client.get("/updates").text
+    assert VALID_TOKEN not in text
+    assert "jeton enregistre" in text
+
+
+def test_deleting_a_token_requires_the_admin_password(token_client, monkeypatch):
+    from app import gitauth
+    gitauth.save_token(VALID_TOKEN)
+    monkeypatch.setattr(auth, "authenticate", lambda u, p: False)
+    resp = token_client.post("/updates/github-token/delete", data={"password": "faux"})
+    assert resp.status_code == 400
+    assert gitauth.has_token()
+
+    monkeypatch.setattr(auth, "authenticate", lambda u, p: True)
+    resp = token_client.post("/updates/github-token/delete", data={"password": "x"})
+    assert resp.status_code == 200
+    assert not gitauth.has_token()
+
+
+def test_the_test_button_reports_success_and_failure(token_client, monkeypatch):
+    monkeypatch.setattr(appupdate, "test_connection", lambda: "Connexion a GitHub reussie (3 branche(s) visible(s)).")
+    assert "reussie" in token_client.post("/updates/github-test").text
+
+    def refuse():
+        raise appupdate.AppUpdateError("GitHub demande une authentification.")
+    monkeypatch.setattr(appupdate, "test_connection", refuse)
+    resp = token_client.post("/updates/github-test")
+    assert resp.status_code == 400
+    assert "authentification" in resp.text

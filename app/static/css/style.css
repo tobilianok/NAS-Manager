@@ -867,3 +867,16 @@ body.login-body { display: flex; align-items: center; justify-content: center; m
 
 .removal-list { margin: 0; padding-left: 1.2rem; columns: 2; font-size: .85rem; line-height: 1.8; }
 .rollback-form { margin-top: 1rem; }
+
+/* Bandeau de confirmation (Phase 11c) — pendant vert du warning-banner. */
+.notice-banner {
+  background: var(--success-bg); color: var(--success-text);
+  padding: .8rem 1rem; border-radius: var(--radius); margin-bottom: 1rem; font-size: .89rem;
+}
+
+.github-auth { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: .6rem .9rem; }
+.github-auth summary { color: var(--text); font-weight: 600; }
+.token-form { margin-top: 1rem; max-width: 520px; }
+.token-form input { width: 100%; }
+.token-extra { display: flex; gap: .6rem; flex-wrap: wrap; margin-top: .4rem; }
+.token-extra form { margin: 0; }
