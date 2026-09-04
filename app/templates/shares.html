@@ -7,16 +7,26 @@
       <a class="btn btn-primary" href="/shares/new">+ Nouveau partage</a>
     </div>
 
-    {% if not shares %}
+    {% if not rows %}
     <div class="empty-state">Aucun partage pour l'instant. Clique sur "Nouveau partage" pour en creer un.</div>
     {% endif %}
 
-    {% for s in shares %}
+    {% if rows | selectattr('dataset_missing') | list %}
+    <div class="msg msg-warning">
+      Un ou plusieurs partages pointent vers un dataset qui n'existe plus (pool détruit, dataset
+      supprimé à la main…). Ils ne fonctionnent plus : ouvre-les et supprime-les, le nettoyage
+      retirera l'entrée et la configuration Samba/NFS correspondante.
+    </div>
+    {% endif %}
+
+    {% for row in rows %}
+    {% set s = row.share %}
     <a class="link-card" href="/shares/{{ s.name }}" style="display:flex; justify-content:space-between; align-items:center;">
       <div>
         <span class="item-title">{{ s.name }}</span>
         {% if 'smb' in s.protocols %}<span class="badge proto-smb">SMB</span>{% endif %}
         {% if 'nfs' in s.protocols %}<span class="badge proto-nfs">NFS</span>{% endif %}
+        {% if row.dataset_missing %}<span class="badge badge-danger">dataset introuvable</span>{% endif %}
         <div class="meta" style="margin-top:.3rem;">{{ s.mountpoint }} · pool "{{ s.pool }}" · {{ s.users | length }} utilisateur(s)</div>
       </div>
     </a>

@@ -137,6 +137,7 @@ def test_delete_share_destroys_dataset_and_removes_from_registry(isolated_paths,
     shares.create_share("photos", "tank", ["smb"])
 
     destroy_calls = []
+    monkeypatch.setattr(zfs, "dataset_exists", lambda path: True)
     monkeypatch.setattr(zfs, "destroy_dataset", lambda path: destroy_calls.append(path))
 
     shares.delete_share("photos")
@@ -279,3 +280,72 @@ def test_remove_group_from_share(isolated_paths, monkeypatch):
     shares.remove_group_from_share("photos", "famille")
     share = shares.get_share("photos")
     assert share.groups == []
+
+
+# ---------------------------------------------------------------------------
+# Suppression d'un pool : les partages qui vivaient dessus (Phase 10b)
+# ---------------------------------------------------------------------------
+
+def test_delete_share_works_even_when_dataset_is_gone(isolated_paths, monkeypatch):
+    """Le bug rencontre par Louis : apres la destruction du pool, le partage
+    restait dans le registre ET dans smb.conf, et devenait IMPOSSIBLE a
+    supprimer ('le dataset n'existe pas'). Un nettoyage ne doit jamais etre
+    bloque parce que ce qu'on nettoie a deja disparu."""
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool())
+    monkeypatch.setattr(zfs, "create_dataset", lambda path: "")
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: "/tank/partages/photos")
+    shares.create_share("photos", "tank", ["smb"])
+
+    # Le pool a ete detruit entre-temps : plus aucun dataset.
+    monkeypatch.setattr(zfs, "dataset_exists", lambda path: False)
+    def must_not_be_called(path):
+        raise AssertionError("destroy_dataset ne doit pas etre appele si le dataset n'existe plus")
+    monkeypatch.setattr(zfs, "destroy_dataset", must_not_be_called)
+
+    shares.delete_share("photos")
+    assert shares.get_share("photos") is None
+    assert "photos" not in shares.SMB_CONF_PATH.read_text()
+
+
+def test_list_shares_on_pool(isolated_paths, monkeypatch):
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool(name))
+    monkeypatch.setattr(zfs, "create_dataset", lambda path: "")
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: "/mnt/x")
+    shares.create_share("photos", "tank", ["smb"])
+    shares.create_share("videos", "tank", ["smb"])
+    shares.create_share("docs", "autre", ["smb"])
+
+    assert sorted(s.name for s in shares.list_shares_on_pool("tank")) == ["photos", "videos"]
+    assert [s.name for s in shares.list_shares_on_pool("autre")] == ["docs"]
+    assert shares.list_shares_on_pool("inconnu") == []
+
+
+def test_purge_pool_shares_removes_only_that_pool(isolated_paths, monkeypatch):
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool(name))
+    monkeypatch.setattr(zfs, "create_dataset", lambda path: "")
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: "/mnt/x")
+    shares.create_share("photos", "tank", ["smb"])
+    shares.create_share("docs", "autre", ["smb"])
+
+    # Aucun dataset ne doit etre detruit : le pool n'existe deja plus.
+    def must_not_be_called(path):
+        raise AssertionError("purge_pool_shares ne doit toucher a aucun dataset")
+    monkeypatch.setattr(zfs, "destroy_dataset", must_not_be_called)
+
+    removed, _ = shares.purge_pool_shares("tank")
+    assert removed == ["photos"]
+    assert [s.name for s in shares.list_shares()] == ["docs"]
+    # La configuration Samba est regeneree sans le partage disparu.
+    conf = shares.SMB_CONF_PATH.read_text()
+    assert "photos" not in conf and "docs" in conf
+
+
+def test_purge_pool_shares_is_a_noop_when_nothing_matches(isolated_paths, monkeypatch):
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool())
+    monkeypatch.setattr(zfs, "create_dataset", lambda path: "")
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: "/mnt/x")
+    shares.create_share("photos", "tank", ["smb"])
+
+    removed, messages = shares.purge_pool_shares("pool-inexistant")
+    assert removed == [] and messages == []
+    assert [s.name for s in shares.list_shares()] == ["photos"]

@@ -195,6 +195,22 @@ Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
   l'étirement horizontal (`vector-effect="non-scaling-stroke"`), et le pic
   de la période affiché en clair dans le coin — livré, en attente de test
   réel.
+- Phase 10b : correction d'un bug rencontré en usage réel. Supprimer un pool
+  laissait derrière lui les partages et les stacks qui vivaient dessus :
+  entrées mortes dans les registres, partages toujours déclarés dans
+  `smb.conf` en pointant vers un chemin inexistant — et **impossibles à
+  supprimer**, `delete_share` échouant sur « le dataset n'existe pas ».
+  Trois correctifs : (1) supprimer un partage fonctionne désormais même si
+  son dataset a déjà disparu (un nettoyage ne doit jamais être bloqué parce
+  que ce qu'on nettoie n'est plus là) ; (2) supprimer un pool arrête d'abord
+  les stacks qui s'y trouvent — pendant que leur `docker-compose.yml` est
+  encore lisible et les bind-mounts encore montés, sinon `down -v` ne
+  nettoierait plus rien — détruit le pool, puis seulement ensuite retire
+  partages et stacks des registres et régénère `smb.conf`/`exports` (dans
+  cet ordre : si la destruction échoue, aucune définition n'est perdue) ;
+  (3) la page de confirmation liste **avant** ce qui sera emporté, et la
+  liste des partages signale d'un badge ceux dont le dataset a disparu —
+  livré, en attente de test réel.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
@@ -309,7 +325,7 @@ de mot de passe), la sauvegarde/restauration de configuration (contenu de
 l'archive, refus des archives piégées, restauration sélective) et les
 routes web, et l'agrandissement de pool (refus des configurations qui
 affaibliraient la redondance, essai à blanc, recalcul avant exécution)
-(530 tests).
+(545 tests).
 
 ## Développement
 

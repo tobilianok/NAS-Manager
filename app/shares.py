@@ -303,17 +303,59 @@ def create_share(name: str, pool_name: str, protocols: list[str]) -> tuple[Share
 
 
 def delete_share(name: str) -> list[str]:
+    """Supprime un partage : detruit son dataset ZFS, puis le retire du
+    registre et regenere la configuration Samba/NFS.
+
+    Cas particulier IMPORTANT : si le dataset n'existe plus (pool detruit
+    entre-temps, `zfs destroy` fait a la main...), on ne bloque pas. Avant,
+    `destroy_dataset` levait "le dataset n'existe pas" et le partage
+    devenait IMPOSSIBLE a supprimer depuis l'interface - il restait
+    indefiniment dans le registre et dans smb.conf, en pointant vers un
+    chemin mort. Un nettoyage ne doit jamais etre bloque par le fait que ce
+    qu'on nettoie a deja disparu."""
     shares = _load_registry()
     share = next((s for s in shares if s.name == name), None)
     if share is None:
         raise ShareError(f"Le partage '{name}' n'existe pas.")
 
-    zfs.destroy_dataset(share.dataset)  # leve zfs.DatasetError si probleme - laisse remonter
+    if zfs.dataset_exists(share.dataset):
+        zfs.destroy_dataset(share.dataset)  # leve zfs.DatasetError si probleme - laisse remonter
+        logger.warning("Partage '%s' supprime (dataset '%s' detruit)", name, share.dataset)
+    else:
+        logger.warning(
+            "Partage '%s' retire du registre : son dataset '%s' n'existe plus "
+            "(pool detruit ?) - rien a detruire cote ZFS",
+            name, share.dataset,
+        )
 
     remaining = [s for s in shares if s.name != name]
     _save_registry(remaining)
-    logger.warning("Partage '%s' supprime (dataset '%s' detruit)", name, share.dataset)
     return _apply_config(remaining)
+
+
+def list_shares_on_pool(pool_name: str) -> list[Share]:
+    """Partages heberges par ce pool. Sert a montrer a l'avance ce qu'une
+    suppression de pool emporterait avec elle."""
+    return [s for s in _load_registry() if s.pool == pool_name]
+
+
+def purge_pool_shares(pool_name: str) -> tuple[list[str], list[str]]:
+    """Retire du registre tous les partages d'un pool DEJA detruit, et
+    regenere smb.conf / exports sans eux. Ne touche a aucun dataset : le
+    pool n'existe plus, il n'y a rien a detruire. Renvoie (noms retires,
+    messages de l'application de la config)."""
+    shares = _load_registry()
+    removed = [s.name for s in shares if s.pool == pool_name]
+    if not removed:
+        return [], []
+
+    remaining = [s for s in shares if s.pool != pool_name]
+    _save_registry(remaining)
+    logger.warning(
+        "Partages retires du registre suite a la destruction du pool '%s' : %s",
+        pool_name, ", ".join(removed),
+    )
+    return removed, _apply_config(remaining)
 
 
 def _apply_filesystem_acl(share: Share) -> None:

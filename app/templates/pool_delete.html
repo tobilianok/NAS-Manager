@@ -16,6 +16,20 @@
         <li>Espace utilise : {{ (pool.alloc_bytes / (1000**3)) | round(2) }} GB</li>
       </ul>
 
+      {% if pool_shares or pool_stacks %}
+      <div class="msg msg-warning">
+        <strong>Ce pool héberge des éléments qui seront supprimés avec lui :</strong>
+        <ul style="margin:.5rem 0 0; padding-left:1.2rem;">
+          {% for sh in pool_shares %}
+          <li>Partage <strong>{{ sh.name }}</strong> ({{ sh.protocols | join(', ') }}) — retiré des partages et de la configuration Samba/NFS.</li>
+          {% endfor %}
+          {% for st in pool_stacks %}
+          <li>Stack Docker <strong>{{ st.name }}</strong> — arrêtée (<code>down -v</code>) puis retirée de la liste.</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
       {% if error %}
       <div class="msg msg-error">{{ error }}</div>
       {% endif %}

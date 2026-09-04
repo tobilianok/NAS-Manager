@@ -312,6 +312,52 @@ def delete_stack(name: str) -> str:
     return out
 
 
+def list_stacks_on_pool(pool_name: str) -> list[Stack]:
+    """Stacks hebergees par ce pool - pour montrer a l'avance ce qu'une
+    suppression de pool emporterait."""
+    return [s for s in _load_registry() if s.pool == pool_name]
+
+
+def stop_stacks_on_pool(pool_name: str) -> list[str]:
+    """Arrete proprement les stacks d'un pool AVANT que celui-ci ne soit
+    detruit : a ce moment-la le docker-compose.yml est encore lisible et les
+    bind-mounts encore montes, donc `down -v` fait un vrai nettoyage
+    (containers, volumes nommes, reseaux). Une fois le pool detruit, il
+    serait trop tard - il resterait des containers casses pointant vers un
+    chemin mort. Best-effort : l'echec d'une stack n'empeche pas les
+    autres ni la suite."""
+    stopped = []
+    for stack in list_stacks_on_pool(pool_name):
+        code, _, err = _run(
+            ["docker", "compose", "-p", stack.name, "-f", stack.compose_path,
+             "down", "-v", "--remove-orphans"],
+            timeout=300,
+        )
+        if code == 0:
+            stopped.append(stack.name)
+        else:
+            logger.warning("Arret de la stack '%s' avant destruction du pool : %s", stack.name, err)
+    return stopped
+
+
+def forget_stacks_on_pool(pool_name: str) -> list[str]:
+    """Retire du registre les stacks d'un pool DEJA detruit (leur dataset a
+    disparu avec lui) et supprime leurs icones. Ne detruit aucune donnee :
+    il n'y en a plus."""
+    stacks = _load_registry()
+    removed = [s.name for s in stacks if s.pool == pool_name]
+    if not removed:
+        return []
+    _save_registry([s for s in stacks if s.pool != pool_name])
+    for name in removed:
+        delete_icon(name)
+    logger.warning(
+        "Stacks retirees du registre suite a la destruction du pool '%s' : %s",
+        pool_name, ", ".join(removed),
+    )
+    return removed
+
+
 def _rollback_dataset(dataset: str) -> bool:
     """Nettoyage best-effort d'un dataset cree pour une tentative de creation
     qui a echoue. Ne leve jamais : on est deja en train de remonter l'erreur

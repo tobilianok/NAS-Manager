@@ -284,6 +284,7 @@ def test_share_delete_flow(client, monkeypatch):
     assert shares.get_share("photos") is not None
 
     destroy_calls = []
+    monkeypatch.setattr(zfs, "dataset_exists", lambda path: True)
     monkeypatch.setattr(zfs, "destroy_dataset", lambda path: destroy_calls.append(path))
     resp = client.post("/shares/photos/delete", data={"confirm_name": "photos"}, follow_redirects=False)
     assert resp.status_code == 302
