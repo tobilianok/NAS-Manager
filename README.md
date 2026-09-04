@@ -1,5 +1,7 @@
 ![Tableau de bord NAS Manager](docs/screenshots/dashboard.png)
 
+
+
 # NAS Manager
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
@@ -348,6 +350,7 @@ signale si des fichiers ont été modifiés à la main sur le serveur.
 
 Voir la feuille de route complète dans le projet Claude ("Création OS pour NAS"
 → doc `roadmap.md`).
+
 
 ## Stack
 
