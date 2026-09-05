@@ -13,6 +13,51 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.11.0 — 2026-09-05
+
+Une nouvelle page **Cluster** : plusieurs machines NAS Manager peuvent
+désormais former un cluster de calcul avec Docker Swarm. Première étape d'un
+chantier découpé en cinq (voir `claude/v2-cluster-analyse.md`) — celle-ci
+n'apporte **que la mise en grappe des machines**, pas la redondance du
+stockage.
+
+### Ce que la page permet
+- Former un nouveau cluster, ou en rejoindre un existant à partir d'un jeton.
+- Voir l'état de la grappe : rôle de la machine locale (manager ou worker),
+  liste des nœuds, statut Swarm de chacun.
+- Gérer les nœuds depuis un manager : promotion, rétrogradation,
+  disponibilité (actif / vidange / pause), retrait.
+- Récupérer les deux jetons de jonction (manager et worker) pour ajouter
+  d'autres machines.
+
+### Périmètre volontairement limité
+- **Docker Swarm natif uniquement.** `docker stack deploy` et le déploiement
+  d'applications sur plusieurs nœuds ne sont **pas** de cette version : la
+  page Docker existante continue de piloter les stacks Compose de la machine
+  locale, sans changement.
+- **Aucune redondance de stockage.** Les pools ZFS restent attachés à leur
+  machine. Un nœud qui tombe emporte ses données avec lui — c'est l'objet des
+  phases suivantes, et il faut le savoir avant de bâtir quoi que ce soit
+  dessus.
+
+### Garde-fous
+- **L'adresse d'annonce est revérifiée au moment de l'action** contre les
+  cartes réseau physiques réellement présentes, jamais reprise telle quelle
+  depuis le formulaire : une adresse qui n'existe plus sur la machine forme un
+  cluster injoignable, que rien ne signale ensuite.
+- **Reconfirmation du mot de passe** de l'administrateur connecté pour quitter
+  le cluster, rétrograder ou retirer un nœud — même exigence que pour les
+  comptes système depuis la Phase 8b.
+- **Le dernier manager est protégé.** Quitter, rétrograder ou retirer le
+  dernier manager d'un cluster laisserait la grappe sans chef, donc
+  définitivement impilotable : refusé sauf confirmation explicite.
+- Retirer un nœud qui répond encore est refusé sans confirmation : c'est
+  presque toujours le signe qu'on visait le mauvais nœud.
+
+**1120 tests** passent (60 de plus), sans régression sur le reste.
+
+---
+
 ## v1.10.0 — 2026-09-05
 
 Une nouvelle page **Système** (Paramètres → Système) : l'heure du serveur y

@@ -6,7 +6,7 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
-**Version actuelle : v1.10.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+**Version actuelle : v1.11.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
 est affiché en bas du menu latéral ; le survol donne le commit déployé et
 signale si des fichiers ont été modifiés à la main sur le serveur.
 
@@ -26,7 +26,10 @@ NAS Manager lui-même depuis l'interface — avec retour arrière automatique si
 l'interface ne répond plus — et une page Système (Paramètres → Système)
 regroupant l'heure du serveur, les seuils de température de la carte Santé
 & sécurité et, quand la carte mère l'expose (PWM), des profils de
-ventilation Silence/Normal/Performance. Le tout s'installe par un script
+ventilation Silence/Normal/Performance. Depuis la v1.11.0, une page Cluster
+permet de réunir plusieurs machines NAS Manager en une grappe Docker Swarm
+(mise en cluster des machines uniquement — le stockage n'est pas encore
+répliqué d'un nœud à l'autre). Le tout s'installe par un script
 unique après une installation fraîche d'Ubuntu Server 26.04 LTS.
 
 Ce qui reste à éprouver en conditions réelles : NFS et les permissions
@@ -132,7 +135,7 @@ pytest tests/ -v
 ```
 
 Optionnel (pas nécessaire pour faire tourner NAS Manager), mais recommandé
-avant de valider une modification faite à la main. **1060 tests** couvrent :
+avant de valider une modification faite à la main. **1120 tests** couvrent :
 
 - **Stockage** : détection et identité des disques (étiquette ZFS plutôt que
   nom de périphérique), validation des pools, agrandissement, suppression en
@@ -148,6 +151,10 @@ avant de valider une modification faite à la main. **1060 tests** couvrent :
   ventilation PWM (détection hwmon, plancher de vitesse infranchissable,
   reprise du profil au redémarrage du service), configuration réseau avec
   retour arrière, sauvegarde et restauration, alimentation.
+- **Cluster** : lecture de l'état Swarm, formation et jonction d'un cluster,
+  gestion des nœuds, et les trois garde-fous (adresse d'annonce revérifiée
+  contre les cartes réseau réelles, mot de passe reconfirmé, dernier manager
+  protégé).
 - **Mises à jour** : simulations apt, liste blanche d'actions non
   interactives, mise à jour de NAS Manager (garde-fous, détachement, retour
   arrière), accès GitHub et état du dépôt.
