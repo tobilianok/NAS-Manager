@@ -53,8 +53,10 @@ WEATHER_LABELS = {
     "inconnu": "Etat indetermine",
 }
 
-TEMP_WARNING_C = 65
-TEMP_CRITICAL_C = 80
+# Les seuils vivaient ici en dur avant la v1.10.0. Ils sont desormais
+# reglables (Parametres -> Systeme), portes par app.systemsettings - qui
+# retombe sur ces memes valeurs tant que personne n'y a touche, donc aucun
+# changement de comportement pour qui n'ouvre jamais cette page.
 
 # Etats de container consideres comme un probleme actif (boucle de
 # redemarrage ou processus mort) - "exited" seul n'est PAS un probleme en
@@ -203,10 +205,13 @@ def check_temperatures() -> HealthCheck:
     if not temps:
         return HealthCheck("temps", "Temperatures", LEVEL_INCONNU, "Aucune valeur de temperature exploitable.")
 
+    from app import systemsettings
+    thresholds = systemsettings.get_temp_thresholds()
+
     worst = max(temps)
-    if worst >= TEMP_CRITICAL_C:
+    if worst >= thresholds.critical_c:
         return HealthCheck("temps", "Temperatures", LEVEL_CRITIQUE, f"Temperature critique detectee : {worst:.0f} degC.")
-    if worst >= TEMP_WARNING_C:
+    if worst >= thresholds.warning_c:
         return HealthCheck("temps", "Temperatures", LEVEL_ATTENTION, f"Temperature elevee : {worst:.0f} degC.")
     return HealthCheck("temps", "Temperatures", LEVEL_OK, f"Temperature maximale relevee : {worst:.0f} degC.")
 

@@ -122,6 +122,36 @@ def test_check_temperatures_ok(monkeypatch):
     assert check.level == health.LEVEL_OK
 
 
+def test_check_temperatures_uses_the_configured_thresholds(monkeypatch, tmp_path):
+    """Seuils reglables depuis la v1.10.0 (page Systeme) : une valeur
+    normalement OK doit pouvoir devenir CRITIQUE si Louis a durci les
+    seuils, sans toucher au code."""
+    from app import systemsettings
+    monkeypatch.setattr(systemsettings, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(systemsettings, "STATE_FILE", tmp_path / "system_settings.json")
+    systemsettings.set_temp_thresholds("30", "40")
+
+    monkeypatch.setattr(health.shutil, "which", lambda name: "/usr/bin/sensors")
+    fake_output = '{"coretemp-isa-0000": {"Package id 0": {"temp1_input": 45.0}}}'
+    monkeypatch.setattr(health, "_run", lambda cmd: (0, fake_output, ""))
+    check = health.check_temperatures()
+    assert check.level == health.LEVEL_CRITIQUE
+
+
+def test_check_temperatures_falls_back_to_historical_defaults(monkeypatch, tmp_path):
+    """Personne n'a jamais ouvert la page Systeme : le comportement doit
+    rester exactement celui d'avant la v1.10.0 (65/80 degC)."""
+    from app import systemsettings
+    monkeypatch.setattr(systemsettings, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(systemsettings, "STATE_FILE", tmp_path / "does_not_exist.json")
+
+    monkeypatch.setattr(health.shutil, "which", lambda name: "/usr/bin/sensors")
+    fake_output = '{"coretemp-isa-0000": {"Package id 0": {"temp1_input": 70.0}}}'
+    monkeypatch.setattr(health, "_run", lambda cmd: (0, fake_output, ""))
+    check = health.check_temperatures()
+    assert check.level == health.LEVEL_ATTENTION  # 65 <= 70 < 80
+
+
 def test_check_firewall_not_installed(monkeypatch):
     monkeypatch.setattr(health.shutil, "which", lambda name: None)
     assert health.check_firewall().level == health.LEVEL_INCONNU

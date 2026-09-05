@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}Systeme - NAS Manager{% endblock %}
+{% block breadcrumb %}Tableau de bord / Parametres / <strong>Systeme</strong>{% endblock %}
+
+{% block content %}
+<h1>Systeme</h1>
+<p class="page-intro">
+  Reglages qui touchent la machine elle-meme plutot qu'une fonctionnalite
+  precise du NAS : l'heure du serveur, les seuils qui declenchent une alerte
+  de temperature sur le tableau de bord, et la vitesse des ventilateurs
+  pilotables.
+</p>
+
+{% if error %}<div class="danger-banner">{{ error }}</div>{% endif %}
+{% if notice %}<div class="success-banner">{{ notice }}</div>{% endif %}
+
+<h2>Date et heure</h2>
+<div class="card">
+  <div class="stat-label">HEURE ACTUELLE DU SERVEUR</div>
+  <div class="stat-value stat-value-small">{{ clock.time_label }}</div>
+  <div class="stat-sub">{{ clock.date_label }} &middot; {{ clock.timezone }}</div>
+
+  <div class="facts-grid">
+    <div>
+      <div class="stat-label">FUSEAU CONFIGURE</div>
+      <div class="mono">{{ current_zone or 'inconnu' }}</div>
+    </div>
+    <div>
+      <div class="stat-label">SYNCHRONISATION RESEAU</div>
+      {% if ntp is none %}
+      <span class="badge badge-neutral">inconnue</span>
+      {% elif ntp %}
+      <span class="badge badge-ok">active</span>
+      {% else %}
+      <span class="badge badge-warn">inactive</span>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if ntp is false %}
+  {# Regler la bonne zone ne sert a rien si l'heure elle-meme derive : le
+     fuseau ne fait que decaler une heure de reference. #}
+  <div class="warning-banner">
+    ⚠ L'horloge n'est pas synchronisee par le reseau. Le fuseau ci-dessous ne
+    fait que decaler une heure de reference : si celle-ci derive, changer de
+    fuseau ne corrigera rien. Verifie que le serveur peut joindre un serveur
+    de temps.
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Changer le fuseau horaire</h2>
+  {% if not zones %}
+  <div class="info-panel">
+    La liste des fuseaux du systeme est illisible : le changement n'est pas
+    possible depuis cette interface tant que <span class="mono">timedatectl</span>
+    ne repond pas.
+  </div>
+  {% else %}
+  <form method="post" action="/system/timezone">
+    <label for="zone">Fuseau horaire</label>
+    <select id="zone" name="zone" required>
+      {% for region, entries in grouped_zones %}
+      <optgroup label="{{ region }}">
+        {% for zone in entries %}
+        <option value="{{ zone }}" {% if zone == current_zone %}selected{% endif %}>{{ zone }}</option>
+        {% endfor %}
+      </optgroup>
+      {% endfor %}
+    </select>
+    <p class="stat-sub">
+      Le changement est immediat et ne redemarre rien. Les fichiers deja
+      deposes gardent leur horodatage d'origine : c'est leur affichage qui
+      change, pas leur date.
+    </p>
+    <div class="actions">
+      <button type="submit" class="btn-primary">Appliquer</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+
+<h2>Seuils de temperature</h2>
+<div class="card">
+  <p class="stat-sub">
+    Ces deux seuils decident du verdict de la carte « Sante &amp; securite »
+    du tableau de bord, a partir de la temperature materielle la plus haute
+    relevee sur la machine (processeur, carte mere, disques...). Ils
+    n'affectent PAS le detail par capteur de cette meme carte : chaque
+    capteur y est deja compare a sa propre limite constructeur, quand le
+    materiel la declare - ces deux seuils-ci ne servent qu'au verdict
+    d'ensemble.
+  </p>
+  <form method="post" action="/system/temperature-thresholds">
+    <div class="facts-grid">
+      <div>
+        <label for="warning_c">Seuil d'avertissement (degC)</label>
+        <input type="number" id="warning_c" name="warning_c" min="30" max="100" step="1"
+               value="{{ temp_warning_c | int }}" required>
+      </div>
+      <div>
+        <label for="critical_c">Seuil critique (degC)</label>
+        <input type="number" id="critical_c" name="critical_c" min="30" max="100" step="1"
+               value="{{ temp_critical_c | int }}" required>
+      </div>
+    </div>
+    <p class="stat-sub">
+      Le seuil d'avertissement doit rester strictement en dessous du seuil
+      critique. Valeurs d'origine : 65 degC / 80 degC.
+    </p>
+    <div class="actions">
+      <button type="submit" class="btn-primary">Enregistrer les seuils</button>
+    </div>
+  </form>
+</div>
+
+<h2>Ventilation</h2>
+<div class="card">
+  {% if not fan_available %}
+  <div class="info-panel">
+    Aucune sortie de ventilateur pilotable (PWM) n'a ete detectee sur cette
+    machine. C'est frequent sur une VM, et certaines cartes serveur pilotent
+    leurs ventilateurs par le BMC (IPMI), invisible du systeme d'exploitation
+    - dans les deux cas ce n'est pas une panne, seulement une fonctionnalite
+    non applicable ici.
+  </div>
+  {% else %}
+  <p class="stat-sub">
+    Le profil choisi s'applique a toutes les sorties PWM detectees
+    ci-dessous. Aucun profil ne descend en dessous de
+    {{ fan_floor_percent }} % du regime maximal : un ventilateur au ralenti
+    prolonge reste actif, jamais a l'arret.
+  </p>
+  <table class="temp-table">
+    {% for ch in fan_channels %}
+    <tr>
+      <td class="temp-name">{{ ch.chip_label }} (pwm{{ ch.index }})</td>
+      <td class="temp-value">
+        {% if ch.rpm is not none %}{{ ch.rpm }} tr/min{% else %}vitesse non mesuree{% endif %}
+      </td>
+      <td class="temp-limit">
+        {% if ch.percent is not none %}{{ ch.percent }} % du regime max{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <form method="post" action="/system/fan-profile">
+    <label for="profile">Profil de ventilation</label>
+    <select id="profile" name="profile">
+      {% for key in fan_profile_order %}
+      <option value="{{ key }}" {% if key == fan_profile %}selected{% endif %}>{{ fan_profile_labels[key] }}</option>
+      {% endfor %}
+    </select>
+    <p class="stat-sub">
+      <strong>Automatique</strong> laisse la carte mere gerer elle-meme la
+      vitesse (reglage d'origine, aucune ecriture faite par NAS Manager).
+      <strong>Silence</strong>, <strong>Normal</strong> et
+      <strong>Performance</strong> imposent une vitesse fixe, du plus
+      silencieux au plus refroidissant.
+    </p>
+    <div class="actions">
+      <button type="submit" class="btn-primary">Appliquer le profil</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

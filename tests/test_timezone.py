@@ -16,6 +16,8 @@ from app import (
 
 @pytest.fixture
 def datetime_client(monkeypatch, tmp_path):
+    from app import fancontrol, systemsettings
+
     monkeypatch.setattr(auth, "authenticate", lambda u, p: True)
     monkeypatch.setattr(replace_workflow, "STATE_FILE", tmp_path / "r.json")
     monkeypatch.setattr(zfs, "list_pools", lambda: [])
@@ -24,6 +26,9 @@ def datetime_client(monkeypatch, tmp_path):
     monkeypatch.setattr(tz, "list_zones", lambda: ["Europe/Paris", "Asia/Tokyo"])
     monkeypatch.setattr(tz, "current_zone", lambda: "Europe/Paris")
     monkeypatch.setattr(tz, "ntp_synchronised", lambda: True)
+    monkeypatch.setattr(systemsettings, "STATE_DIR", tmp_path / "state")
+    monkeypatch.setattr(systemsettings, "STATE_FILE", tmp_path / "state" / "system_settings.json")
+    monkeypatch.setattr(fancontrol, "list_channels", lambda: [])
     with TestClient(main.app) as c:
         c.post("/login", data={"username": "louis", "password": "x"}, follow_redirects=False)
         yield c
@@ -170,23 +175,31 @@ def test_network_synchronisation_is_reported(monkeypatch):
     assert tz.ntp_synchronised() is None
 
 
-# --- Page Date et heure ---------------------------------------------------
+# --- Page Systeme (Date et heure y vit depuis la v1.10.0) -----------------
 
 def test_the_page_is_reachable_and_lists_zones(datetime_client):
-    text = datetime_client.get("/datetime").text
+    text = datetime_client.get("/system").text
     assert "Europe/Paris" in text
     assert "Date et heure" in text
 
 
+def test_the_old_address_redirects_permanently(datetime_client):
+    """Avant la v1.10.0, Date et heure vivait sur sa propre page. Les
+    signets et liens existants doivent continuer a fonctionner."""
+    resp = datetime_client.get("/datetime", follow_redirects=False)
+    assert resp.status_code == 301
+    assert resp.headers["location"] == "/system"
+
+
 def test_the_page_warns_when_the_clock_is_not_synchronised(monkeypatch, datetime_client):
     monkeypatch.setattr(tz, "ntp_synchronised", lambda: False)
-    text = datetime_client.get("/datetime").text
+    text = datetime_client.get("/system").text
     assert "pas synchronisee" in text
 
 
 def test_applying_a_zone_reports_success(monkeypatch, datetime_client):
     monkeypatch.setattr(tz, "set_zone", lambda z, u: f"regle sur {z}")
-    resp = datetime_client.post("/datetime/timezone", data={"zone": "Asia/Tokyo"})
+    resp = datetime_client.post("/system/timezone", data={"zone": "Asia/Tokyo"})
     assert resp.status_code == 200
     assert "regle sur Asia/Tokyo" in resp.text
 
@@ -196,7 +209,7 @@ def test_a_refused_zone_is_reported_without_applying(monkeypatch, datetime_clien
         raise tz.TimezoneError("Fuseau horaire inconnu : bidon.")
 
     monkeypatch.setattr(tz, "set_zone", boom)
-    resp = datetime_client.post("/datetime/timezone", data={"zone": "bidon"})
+    resp = datetime_client.post("/system/timezone", data={"zone": "bidon"})
     assert resp.status_code == 400
     assert "inconnu" in resp.text
 
@@ -205,6 +218,6 @@ def test_the_page_stays_usable_without_systemd(monkeypatch, datetime_client):
     """Sans liste de fuseaux, la page doit le dire plutot que d'offrir un
     formulaire qui echouerait."""
     monkeypatch.setattr(tz, "list_zones", lambda: [])
-    text = datetime_client.get("/datetime").text
+    text = datetime_client.get("/system").text
     assert "illisible" in text
-    assert 'action="/datetime/timezone"' not in text
+    assert 'action="/system/timezone"' not in text

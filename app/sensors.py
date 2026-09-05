@@ -165,6 +165,15 @@ def _chip_family(chip: str) -> tuple[str, str]:
     return "Autres capteurs", chip.split("-")[0] or "Capteur"
 
 
+def chip_label(chip: str) -> str:
+    """Nom de puce lisible seul (sans le groupe). Reutilise par
+    app.fancontrol pour nommer les sorties PWM avec le meme vocabulaire que
+    les temperatures - ce sont exactement les memes puces Super I/O qui
+    exposent les deux (it87, nct6775, w83627ehf...)."""
+    _, label = _chip_family(chip)
+    return label
+
+
 def _plausible(value: object) -> float | None:
     if not isinstance(value, (int, float)):
         return None

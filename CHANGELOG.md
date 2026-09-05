@@ -13,6 +13,47 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.10.0 — 2026-09-05
+
+Une nouvelle page **Système** (Paramètres → Système) : l'heure du serveur y
+a déménagé, et deux réglages matériels rejoignent l'interface pour la
+première fois — les seuils de température de la météo du tableau de bord, et
+des profils de ventilation.
+
+### Page Système, et Date et heure qui y déménage
+- Nouvelle rubrique de menu **Système** dans Paramètres. L'ancienne adresse
+  `/datetime` redirige en permanence (301) vers `/system`, comme `/disks/smart`
+  vers `/disks` en Phase 12a — les signets existants continuent de fonctionner.
+
+### Seuils de température réglables
+- La carte « Santé & sécurité » du tableau de bord jugeait la température la
+  plus haute relevée sur la machine par rapport à deux seuils fixes (65 °C /
+  80 °C), en dur dans le code. Réglables désormais depuis la page Système,
+  avec les mêmes valeurs par défaut : rien ne change pour qui n'y touche pas.
+- Ne remplace pas le jugement par capteur déjà affiché dans le détail de
+  cette carte (chaque capteur y est comparé à SA propre limite constructeur
+  quand le matériel la déclare) — ces deux seuils ne pèsent que sur le
+  verdict d'ensemble.
+
+### Profils de ventilation PWM
+- Trois profils (**Silence**, **Normal**, **Performance**) plus un mode
+  **Automatique** qui rend la main à la carte mère (réglage d'origine,
+  aucune écriture faite par NAS Manager tant que ce n'est pas demandé).
+- Détection via l'ABI hwmon standard du noyau (`/sys/class/hwmon`), les mêmes
+  puces Super I/O déjà reconnues pour les températures (it87, nct6775,
+  w83627ehf...). Dégrade proprement en « non disponible » sur une VM ou une
+  carte pilotée par IPMI/BMC, plutôt que d'échouer.
+- **Aucun profil ne descend sous 25 % du régime maximal**, même si mal
+  réglé : un ventilateur de chassis tourne en continu, personne ne
+  remarquerait qu'il cale avant que la température grimpe.
+- Le profil choisi est repris automatiquement au démarrage du service : le
+  mode manuel d'une puce hwmon ne survit pas toujours à un redémarrage.
+- Une panne d'écriture sur une sortie PWM n'empêche pas les autres de
+  recevoir le profil ; le détail des échecs reste dans le journal du
+  service.
+
+---
+
 ## v1.9.0 — 2026-09-05
 
 Tableau de bord harmonisé : une seule grille, des cartes de même taille, et

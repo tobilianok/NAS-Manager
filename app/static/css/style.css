@@ -1150,11 +1150,15 @@ body.login-body { display: flex; align-items: center; justify-content: center; m
 .notif-errors > summary { font-size: .75rem; color: var(--warning); cursor: pointer; }
 .notif-age { font-size: .7rem; color: var(--text-dim); margin-top: .6rem; }
 
-/* Page Date et heure (v1.7.0) */
-.datetime-facts {
+/* Page Systeme (v1.7.0, elargie en v1.10.0) : grille de deux faits cote a
+   cote, generique - reprise pour la temperature en plus du fuseau/NTP
+   d'origine, d'ou le nom neutre en second selecteur. */
+.datetime-facts, .facts-grid {
   display: flex; flex-wrap: wrap; gap: 1.6rem;
   margin-top: 1rem; padding-top: .9rem;
   border-top: 1px solid var(--border-soft);
 }
-.datetime-facts .stat-label { margin-bottom: .25rem; }
-.datetime-facts .mono { font-size: .9rem; }
+.datetime-facts .stat-label, .facts-grid .stat-label { margin-bottom: .25rem; }
+.datetime-facts .mono, .facts-grid .mono { font-size: .9rem; }
+.facts-grid label { display: block; margin-bottom: .3rem; }
+.facts-grid input[type="number"] { width: 8rem; }

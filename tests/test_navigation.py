@@ -31,6 +31,8 @@ def _all_links():
     ("/docker", "Docker"),
     ("/docker/nginx", "Docker"),
     ("/network", "Reseau"),
+    ("/system", "Systeme"),
+    ("/system/timezone", "Systeme"),
     ("/backup", "Sauvegarde"),
     ("/updates", "Mises a jour"),
     ("/updates/system/preview/dist_upgrade", "Mises a jour"),
@@ -72,7 +74,7 @@ def test_unknown_path_has_no_active_entry():
 def test_exactly_one_entry_matches_each_known_page():
     """Deux entrees allumees en meme temps rendraient le menu incomprehensible."""
     for path in ("/", "/pools", "/shares", "/share-users", "/admin-accounts",
-                 "/docker", "/network", "/backup", "/disks", "/updates"):
+                 "/docker", "/network", "/system", "/backup", "/disks", "/updates"):
         matches = [link.label for link in _all_links() if link.matches(path)]
         assert len(matches) == 1, f"{path} allume {matches}"
 
@@ -92,7 +94,7 @@ def test_top_level_structure():
 @pytest.mark.parametrize("group,children", [
     ("Stockage", ["Pools ZFS", "Partages", "Disques"]),
     ("Comptes", ["Comptes de partage", "Comptes systeme"]),
-    ("Parametres", ["Reseau", "Date et heure", "Sauvegarde", "Mises a jour"]),
+    ("Parametres", ["Reseau", "Systeme", "Sauvegarde", "Mises a jour"]),
 ])
 def test_group_contents(group, children):
     entry = next(e for e in navigation.NAV if e.label == group)

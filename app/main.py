@@ -26,6 +26,7 @@ from app import (
     sysaccounts, configbackup, poolexpand, navigation, version as version_module,
     sysupdate, appupdate, liverun, gitauth, diskwipe, smarttests, diskjobs,
     power, servicerestart, sensors, diskage, timezone, notifications,
+    systemsettings, fancontrol,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -63,6 +64,15 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 # le menu lateral et le numero de version apparaissent sur chaque page, les
 # oublier dans une seule reponse casserait la navigation de cette page.
 templates.env.globals["nav_entries"] = navigation.NAV
+
+
+@app.on_event("startup")
+def _reapply_fan_profile() -> None:
+    """Un profil de ventilation choisi hier ne doit pas etre oublie
+    silencieusement au redemarrage du service (mise a jour, reboot) - cf.
+    app.fancontrol.reapply_saved_profile. N'importe jamais si le materiel ne
+    l'expose pas (VM, IPMI...)."""
+    fancontrol.reapply_saved_profile()
 
 
 class _LiveVersion:
@@ -2731,40 +2741,94 @@ def notifications_refresh(request: Request, username: str = Depends(require_logi
     return templates.TemplateResponse("_health_partial.html", _health_context(request))
 
 
-def _datetime_context(request: Request, username: str, error: str | None = None,
-                      notice: str | None = None) -> dict:
+def _system_context(request: Request, username: str, error: str | None = None,
+                    notice: str | None = None) -> dict:
+    """Contenu de la page Systeme (v1.10.0) : date/heure (deplacee ici
+    depuis son ancienne page a part), seuils de temperature et profil de
+    ventilation. Regroupes parce que ce sont tous des reglages de la
+    MACHINE, pas d'une fonctionnalite NAS precise."""
     zones = timezone.list_zones()
+    thresholds = systemsettings.get_temp_thresholds()
     return {
         "request": request, "username": username,
         "clock": sysstats.get_server_clock(),
         "current_zone": timezone.current_zone(),
         "ntp": timezone.ntp_synchronised(),
         "zones": zones, "grouped_zones": timezone.group_zones(zones),
+        "temp_warning_c": thresholds.warning_c,
+        "temp_critical_c": thresholds.critical_c,
+        "fan_available": fancontrol.available(),
+        "fan_channels": fancontrol.list_channels(),
+        "fan_profile": fancontrol.get_selected_profile(),
+        "fan_profile_order": fancontrol.PROFILE_ORDER,
+        "fan_profile_labels": fancontrol.PROFILE_LABELS,
+        "fan_floor_percent": fancontrol.PWM_FLOOR_PERCENT,
         "error": error, "notice": notice,
     }
 
 
 @app.get("/datetime", response_class=HTMLResponse)
-def datetime_page(request: Request, username: str = Depends(require_login)):
+def datetime_page_redirect() -> RedirectResponse:
+    """Ancienne adresse : avant la v1.10.0, Date et heure vivait sur sa
+    propre page. Redirigee vers Systeme, qui la regroupe desormais - meme
+    principe que la redirection /disks/smart -> /disks (Phase 12a)."""
+    return RedirectResponse("/system", status_code=301)
+
+
+@app.get("/system", response_class=HTMLResponse)
+def system_page(request: Request, username: str = Depends(require_login)):
     return templates.TemplateResponse(
-        "datetime.html", _datetime_context(request, username))
+        "system.html", _system_context(request, username))
 
 
-@app.post("/datetime/timezone")
-def datetime_set_timezone(request: Request, zone: str = Form(...),
-                          username: str = Depends(require_login)):
+@app.post("/system/timezone")
+def system_set_timezone(request: Request, zone: str = Form(...),
+                        username: str = Depends(require_login)):
     """Le nom vient du navigateur : `set_zone` le confronte a la liste que le
     systeme publie avant de lancer quoi que ce soit."""
     try:
         message = timezone.set_zone(zone, username)
     except timezone.TimezoneError as exc:
         return templates.TemplateResponse(
-            "datetime.html",
-            _datetime_context(request, username, error=str(exc)),
+            "system.html",
+            _system_context(request, username, error=str(exc)),
             status_code=400,
         )
     return templates.TemplateResponse(
-        "datetime.html", _datetime_context(request, username, notice=message))
+        "system.html", _system_context(request, username, notice=message))
+
+
+@app.post("/system/temperature-thresholds")
+def system_set_temperature_thresholds(
+        request: Request, warning_c: str = Form(...), critical_c: str = Form(...),
+        username: str = Depends(require_login)):
+    try:
+        message = systemsettings.set_temp_thresholds(warning_c, critical_c, username)
+    except systemsettings.SystemSettingsError as exc:
+        return templates.TemplateResponse(
+            "system.html",
+            _system_context(request, username, error=str(exc)),
+            status_code=400,
+        )
+    return templates.TemplateResponse(
+        "system.html", _system_context(request, username, notice=message))
+
+
+@app.post("/system/fan-profile")
+def system_set_fan_profile(request: Request, profile: str = Form(...),
+                           username: str = Depends(require_login)):
+    """Le nom du profil est confronte a la liste blanche de
+    app.fancontrol.PROFILE_LABELS avant toute ecriture dans /sys."""
+    try:
+        message = fancontrol.set_profile(profile, username)
+    except fancontrol.FanControlError as exc:
+        return templates.TemplateResponse(
+            "system.html",
+            _system_context(request, username, error=str(exc)),
+            status_code=400,
+        )
+    return templates.TemplateResponse(
+        "system.html", _system_context(request, username, notice=message))
 
 
 @app.post("/updates/restart-service")

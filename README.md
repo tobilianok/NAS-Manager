@@ -6,7 +6,7 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
-**Version actuelle : v1.9.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+**Version actuelle : v1.10.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
 est affiché en bas du menu latéral ; le survol donne le commit déployé et
 signale si des fichiers ont été modifiés à la main sur le serveur.
 
@@ -21,10 +21,13 @@ la demande, effacement de disque à quatre niveaux, partages SMB/NFS avec leurs
 comptes et permissions, gestion complète des stacks Docker Compose façon
 Portainer, configuration réseau avec retour arrière automatique, comptes
 système et de partage avec garde-fous anti-verrouillage, sauvegarde et
-restauration de la configuration, et mise à jour du système Ubuntu comme de
+restauration de la configuration, mise à jour du système Ubuntu comme de
 NAS Manager lui-même depuis l'interface — avec retour arrière automatique si
-l'interface ne répond plus. Le tout s'installe par un script unique après une
-installation fraîche d'Ubuntu Server 26.04 LTS.
+l'interface ne répond plus — et une page Système (Paramètres → Système)
+regroupant l'heure du serveur, les seuils de température de la carte Santé
+& sécurité et, quand la carte mère l'expose (PWM), des profils de
+ventilation Silence/Normal/Performance. Le tout s'installe par un script
+unique après une installation fraîche d'Ubuntu Server 26.04 LTS.
 
 Ce qui reste à éprouver en conditions réelles : NFS et les permissions
 lecture seule, l'agrandissement d'un pool contenant des données, la
@@ -129,7 +132,7 @@ pytest tests/ -v
 ```
 
 Optionnel (pas nécessaire pour faire tourner NAS Manager), mais recommandé
-avant de valider une modification faite à la main. **1030 tests** couvrent :
+avant de valider une modification faite à la main. **1060 tests** couvrent :
 
 - **Stockage** : détection et identité des disques (étiquette ZFS plutôt que
   nom de périphérique), validation des pools, agrandissement, suppression en
@@ -141,8 +144,10 @@ avant de valider une modification faite à la main. **1030 tests** couvrent :
   diffusées en direct, console interactive, orphelins.
 - **Système** : état CPU/mémoire/réseau, météo de santé, températures
   matérielles (traduction des noms de capteurs, jugement par rapport à la
-  limite de chaque composant), configuration réseau avec retour arrière,
-  sauvegarde et restauration, alimentation.
+  limite de chaque composant), seuils de température réglables, profils de
+  ventilation PWM (détection hwmon, plancher de vitesse infranchissable,
+  reprise du profil au redémarrage du service), configuration réseau avec
+  retour arrière, sauvegarde et restauration, alimentation.
 - **Mises à jour** : simulations apt, liste blanche d'actions non
   interactives, mise à jour de NAS Manager (garde-fous, détachement, retour
   arrière), accès GitHub et état du dépôt.
