@@ -38,7 +38,7 @@ def test_the_dashboard_shows_the_server_clock(client, monkeypatch):
     text = client.get("/").text
     assert "14:07:52" in text
     assert "jeudi 4 septembre 2026" in text
-    assert "heure du serveur (CEST)" in text
+    assert "HEURE DU SERVEUR" in text and "CEST" in text
 
 
 def test_the_clock_ticks_from_the_server_time_not_the_browser(client, monkeypatch):

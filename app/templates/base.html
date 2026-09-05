@@ -5,8 +5,14 @@
   <meta charset="utf-8">
   <title>{% block title %}NAS Manager{% endblock %}</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/css/style.css">
+  {# Le numero de version en suffixe force le navigateur a recharger la
+     feuille de style apres une mise a jour. Sans lui, il garde la sienne en
+     cache : les gabarits arrivent en v1.9.0 et le style reste en v1.8.0, ce
+     qui donne une page a moitie mise en forme - chevrons geants, textes
+     centres, cartes sans leur nouvelle ossature. Le symptome ressemble a un
+     bug de mise en page alors que le serveur, lui, est juste. #}
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v={{ app_version.version }}">
+  <link rel="stylesheet" href="/static/css/style.css?v={{ app_version.version }}">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.3/htmx.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.14.1/cdn.min.js" defer></script>
   <script>

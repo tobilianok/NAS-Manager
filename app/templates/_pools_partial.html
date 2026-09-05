@@ -1,0 +1,30 @@
+{# Pools ZFS du tableau de bord (v1.9.0).
+
+   Ce bloc vivait dans le fragment « etat du systeme », donc dans la colonne
+   de droite : son titre commencait au milieu de la page au lieu du bord,
+   seul element a ne pas suivre la grille. Il a maintenant sa propre bande,
+   pleine largeur.
+
+   Cadence propre aussi : l'occupation d'un pool ne bouge pas a la seconde,
+   la relire toutes les 5 secondes comme la charge CPU ne servait a rien -
+   mais une reconstruction en cours doit rester visible. #}
+{% if pools_with_alerts %}
+<h2 class="section-title">Pools ZFS</h2>
+<div class="pool-alert-grid">
+  {% for item in pools_with_alerts %}
+  <a class="pool-alert-card alert-{{ item.alert }}" href="/pools/{{ item.pool.name }}">
+    <div class="pool-alert-top">
+      <strong>{{ item.pool.name }}</strong>
+      <span class="health health-{{ item.pool.health }}">{{ item.pool.health }}</span>
+    </div>
+    <div class="bar-bg"><div class="bar-fill bar-{{ 'crit' if item.alert == 'critical' else ('warn' if item.alert == 'warning' else 'ok') }}" style="width: {{ item.pool.used_percent }}%;"></div></div>
+    <div class="stat-sub">
+      {{ item.pool.used_percent }}% utilise
+      {% if item.alert == 'critical' %} - <strong>Espace critique, libere de la place ou etends le pool</strong>
+      {% elif item.alert == 'warning' %} - Espace a surveiller
+      {% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}

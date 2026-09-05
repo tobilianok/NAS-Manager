@@ -13,6 +13,52 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.9.0 — 2026-09-05
+
+Tableau de bord harmonisé : une seule grille, des cartes de même taille, et
+la feuille de style ne reste plus en cache après une mise à jour.
+
+### Le style restait en cache — c'est ce qui se voyait le plus
+- Le navigateur gardait son `style.css`. Les gabarits arrivaient en v1.8.0 et
+  le style restait en v1.7.1 : chevron géant, textes centrés, cartes sans leur
+  nouvelle ossature. **Le symptôme ressemble à un bug de mise en page alors
+  que le serveur est juste**, et il se reproduisait à chaque livraison qui
+  touchait au CSS.
+- Le numéro de version suffixe désormais l'URL de la feuille de style et de
+  l'icône. Plus besoin de vider le cache après une mise à jour.
+
+### Une seule grille pour toute la page
+- Les séparations verticales tombaient à **665 px** en haut et **950 px** en
+  bas : deux alignements concurrents sur le même écran. Toutes les bandes
+  partagent maintenant le même découpage.
+- **Les pools ZFS quittent la colonne de droite** pour une bande à eux : leur
+  titre commençait au milieu de la page, seul élément à ne pas suivre la
+  grille. Ils ont au passage leur propre fragment et leur propre cadence —
+  `zpool list` toutes les 5 secondes, au rythme de la charge CPU, était du
+  gaspillage pour une donnée qui ne bouge pas à la seconde.
+- Le tableau des disques détectés est enfin dans une carte, comme tout le
+  reste.
+
+### Deux cartes de même taille
+- L'horloge faisait **270 px**, la météo **77** : l'écart se voyait plus que
+  le contenu. La carte de santé reprend l'ossature exacte de l'horloge —
+  étiquette, bloc principal, filet, ligne d'information, filet, rangée de
+  boutons — et les deux font désormais rigoureusement la même hauteur.
+- La ligne d'information de la carte de santé occupe la place où l'horloge met
+  sa disponibilité : elle annonce l'état des mises à jour, ce qu'on veut savoir
+  sans rien ouvrir.
+- **Toutes les cartes portent maintenant une étiquette** en tête (CPU, RAM,
+  RÉSEAU, HEURE DU SERVEUR, SANTÉ & SÉCURITÉ). L'horloge était la seule à ne
+  pas suivre la règle.
+- Détail technique qui a coûté deux essais : des lignes de grille en `1fr`
+  n'égalisent rien tant que le conteneur n'a pas de hauteur **définie** — dans
+  un conteneur en hauteur automatique, `1fr` se comporte comme `auto`. La
+  hauteur vient donc de l'étirement de la bande, et elle doit traverser
+  **tous** les niveaux : élément de grille, conteneur HTMX, puis carte. Un
+  seul maillon laissé en `auto` et le `100%` du suivant ne vaut plus rien.
+
+---
+
 ## v1.8.0 — 2026-09-05
 
 « Santé & sécurité » n'est plus qu'une carte, cliquable, qui ouvre tout le

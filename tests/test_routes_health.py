@@ -51,10 +51,21 @@ def client(monkeypatch, tmp_path):
 # La carte
 # ---------------------------------------------------------------------------
 
-def test_the_card_is_a_button_that_opens_the_window(client):
+def test_the_card_carries_a_button_that_opens_the_window(client):
+    """La carte a repris l'ossature de la carte horloge (v1.9.0) : le clic
+    passe par une rangee de boutons, comme elle, plutot que par la carte
+    entiere transformee en bouton."""
     text = client.get("/partials/health").text
-    assert "weather-button" in text
+    assert "weather-open" in text
     assert 'x-show="open"' in text
+
+
+def test_the_card_mirrors_the_clock_card(client):
+    """Meme etiquette en tete que toutes les autres cartes, et la meme
+    ligne d'information a la place ou l'horloge met sa disponibilite."""
+    text = client.get("/partials/health").text
+    assert "SANTE &amp; SECURITE" in text or "SANTE & SECURITE" in text
+    assert "weather-headline" in text
 
 
 def test_the_card_says_how_many_points_need_attention(client):
@@ -71,6 +82,8 @@ def test_the_dashboard_shows_nothing_but_the_card(client):
     text = client.get("/").text
     assert "/partials/health" in text
     assert "weather-checks" not in text
+    # La bande des pools a quitte la colonne de droite.
+    assert "/partials/pools" in text
 
 
 # ---------------------------------------------------------------------------

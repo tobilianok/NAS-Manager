@@ -549,6 +549,7 @@ tr.worrying td { color: var(--warning-text); }
   .stat-grid-system { grid-template-columns: 1fr; }
 }
 
+#live-pools:not(:empty) { margin-bottom: 1.2rem; }
 .pool-alert-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-top: .5rem; }
 .pool-alert-card { display: block; background: var(--surface); border-radius: var(--radius); padding: 1rem 1.2rem; text-decoration: none; color: var(--text); border: 1px solid transparent; }
 .pool-alert-card.alert-warning { border-color: var(--warning-bg); }
@@ -589,8 +590,36 @@ tr.worrying td { color: var(--warning-text); }
    Tableau de bord : grille a deux colonnes pour les widgets
    --------------------------------------------------------------------- */
 
-.dash-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; align-items: start; margin-bottom: .5rem; }
-.dash-row-top { grid-template-columns: minmax(280px, 380px) 1fr; }
+/* Une seule colonne de reference pour TOUTES les bandes du tableau de bord
+   (v1.9.0) : les separations verticales tombent au meme endroit du haut en
+   bas de la page. Elles etaient auparavant a 665 px en haut et 950 px en
+   bas - deux alignements concurrents sur le meme ecran. */
+.dash-row {
+  display: grid; grid-template-columns: minmax(300px, 380px) 1fr;
+  gap: 1.5rem; align-items: start; margin-bottom: .5rem;
+}
+/* La bande du haut etire ses deux colonnes a la meme hauteur : c'est ce qui
+   donne au rail de gauche une hauteur DEFINIE, sans laquelle des lignes en
+   `1fr` ne peuvent rien egaliser (dans un conteneur de hauteur automatique,
+   `1fr` se comporte comme `auto` et chaque ligne reprend la taille de son
+   contenu). Le haut du tableau de bord forme ainsi un rectangle net. */
+.dash-row-top { align-items: stretch; }
+.dash-col-weather { display: flex; flex-direction: column; }
+
+/* Deux cartes de meme hauteur : leur contenu n'a aucune raison de faire la
+   meme taille, mais l'ecart (270 px contre 77) se voyait plus que le
+   contenu lui-meme. `min-content` en plancher pour qu'une colonne voisine
+   trop courte ne les ecrase jamais. */
+.dash-rail {
+  flex: 1; display: grid; gap: 1rem;
+  grid-template-rows: minmax(min-content, 1fr) minmax(min-content, 1fr);
+}
+/* La hauteur doit traverser TOUS les niveaux : element de grille, conteneur
+   HTMX, puis carte. Un seul maillon laisse en `auto` et le `100%` du suivant
+   ne vaut plus rien - c'est ce qui laissait la carte a 223 px dans une case
+   de 300. */
+.dash-rail > *, .dash-rail #live-health, .dash-rail .card { height: 100%; }
+.dash-rail > * { min-height: 0; }
 .dash-col, .dash-col-weather, .dash-col-stats { min-width: 0; }
 
 .dash-list-item {
@@ -652,10 +681,11 @@ tr.worrying td { color: var(--warning-text); }
    --------------------------------------------------------------------- */
 
 .weather-card {
-  display: flex; align-items: center; gap: 1rem;
+  display: flex; flex-direction: column; justify-content: space-between;
   background: var(--surface); border-radius: var(--radius); padding: 1.1rem 1.3rem;
-  border: 1px solid transparent; margin-bottom: 1rem;
+  border: 1px solid transparent;
 }
+.weather-face { display: flex; align-items: center; gap: 1rem; padding: .9rem 0 1rem; }
 .weather-card .weather-icon { width: 40px; height: 40px; flex-shrink: 0; }
 .weather-card .weather-icon svg { width: 100%; height: 100%; }
 .weather-card.weather-beau { border-color: var(--success-bg); }
@@ -672,18 +702,23 @@ tr.worrying td { color: var(--warning-text); }
    <button>, il faut donc annuler l'apparence native et rendre visible qu'on
    peut cliquer - sans quoi le detail resterait invisible pour qui n'essaie
    pas au hasard. */
-.weather-button {
-  width: 100%; text-align: left; font: inherit; color: inherit;
-  cursor: pointer; transition: border-color .12s ease, background .12s ease;
-}
-.weather-button:hover { background: var(--surface-2, var(--bg-soft, var(--surface))); }
-.weather-button:hover .weather-chevron { transform: translateX(2px); opacity: .9; }
-.weather-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.weather-chevron {
-  width: 18px; height: 18px; flex-shrink: 0; margin-left: auto;
-  color: var(--text-dim); opacity: .6; transition: transform .12s ease, opacity .12s ease;
-}
 .weather-main { min-width: 0; }
+
+/* Meme ossature que .clock-uptime : filet en haut, icone, valeur, sous-titre. */
+.weather-headline {
+  display: flex; align-items: center; gap: .6rem;
+  border-top: 1px solid var(--border-soft); padding: .7rem .2rem;
+}
+.weather-headline svg { width: 20px; height: 20px; color: var(--text-dim); flex: 0 0 auto; }
+.weather-headline-value { font-size: 1rem; font-weight: 600; line-height: 1.2; }
+.weather-headline-sub { font-size: .72rem; color: var(--text-dim); margin-top: .1rem; }
+
+.weather-actions {
+  display: flex; border-top: 1px solid var(--border-soft); padding-top: .8rem;
+}
+.weather-open { flex: 1; justify-content: center; }
+.weather-open svg { width: 14px; height: 14px; }
+.weather-open:hover svg { transform: translateX(2px); }
 
 /* ---- Fenetre de detail ---- */
 /* Selecteur double a dessein : `.modal-box` est declare plus bas dans ce
