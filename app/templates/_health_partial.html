@@ -1,68 +1,175 @@
-{# Fragment HTMX : rafraichi automatiquement (voir dashboard.html), pas de doctype/head/body ici. #}
-<div class="weather-card weather-{{ report.weather }}">
-  <div class="weather-icon">
-    {% if report.weather == 'beau' %}
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2.5M12 19v2.5M4.2 4.2l1.8 1.8M18 18l1.8 1.8M2.5 12h2.5M19 12h2.5M4.2 19.8l1.8-1.8M18 6l1.8-1.8"/></svg>
-    {% elif report.weather == 'nuageux' %}
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .5-7.97A5.5 5.5 0 0 0 7.1 9.5 4 4 0 0 0 7 18z"/></svg>
-    {% elif report.weather == 'orageux' %}
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16h9a4 4 0 0 0 .4-7.98A5.5 5.5 0 0 0 6.2 7.5 4 4 0 0 0 6 16z"/><path d="M11 16l-2 4M15 16l-2 4"/></svg>
-    {% else %}
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v.01M12 8a2.2 2.2 0 0 1 2.2 2.2c0 1.5-2.2 1.8-2.2 3.6"/></svg>
-    {% endif %}
-  </div>
+{# Fragment HTMX rafraichi toutes les 30 s (voir dashboard.html).
+
+   Depuis la v1.8.0, le tableau de bord ne montre plus que la carte meteo :
+   le detail vit dans une fenetre qu'on ouvre en cliquant dessus. Huit lignes
+   de controles posees en permanence sous la carte prenaient la moitie de la
+   colonne pour dire, la plupart du temps, que tout allait bien.
+
+   L'etat ouvert/ferme vit sur un conteneur du gabarit parent, HORS de la
+   zone remplacee : sinon la fenetre se refermerait toute seule a chaque
+   rafraichissement. Le CONTENU, lui, est ici - il se met donc a jour en
+   direct pendant qu'on le regarde. #}
+
+{% macro weather_icon(weather) -%}
+{% if weather == 'beau' %}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2.5M12 19v2.5M4.2 4.2l1.8 1.8M18 18l1.8 1.8M2.5 12h2.5M19 12h2.5M4.2 19.8l1.8-1.8M18 6l1.8-1.8"/></svg>
+{% elif weather == 'nuageux' %}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .5-7.97A5.5 5.5 0 0 0 7.1 9.5 4 4 0 0 0 7 18z"/></svg>
+{% elif weather == 'orageux' %}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16h9a4 4 0 0 0 .4-7.98A5.5 5.5 0 0 0 6.2 7.5 4 4 0 0 0 6 16z"/><path d="M11 16l-2 4M15 16l-2 4"/></svg>
+{% else %}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v.01M12 8a2.2 2.2 0 0 1 2.2 2.2c0 1.5-2.2 1.8-2.2 3.6"/></svg>
+{% endif %}
+{%- endmacro %}
+
+{# ------------------------------ La carte ------------------------------ #}
+<button type="button" class="weather-card weather-{{ report.weather }} weather-button"
+        @click="open = true"
+        aria-haspopup="dialog">
+  <div class="weather-icon">{{ weather_icon(report.weather) }}</div>
   <div class="weather-main">
     <div class="weather-label">{{ report.weather_label }}</div>
-    <div class="weather-sub">Sante et securite globales du systeme</div>
-  </div>
-</div>
-
-<div class="weather-checks">
-  {% for c in report.checks %}
-  <div class="weather-check">
-    <span class="badge status-{{ c.level }}">{{ c.level }}</span>
-    <div>
-      <strong>{{ c.label }}</strong>
-      <div class="weather-check-detail">{{ c.detail }}</div>
-
-      {# Le detail des capteurs est attache a la ligne Temperatures plutot
-         que pose ailleurs : on deplie la ou on s'est pose la question.
-         Replie par defaut - la ligne resume suffit tant que tout va bien. #}
-      {% if c.key == 'temps' and temperatures %}
-      <details class="temp-details">
-        <summary>Voir les {{ temperature_count }} capteurs</summary>
-        {% for group, readings in temperatures %}
-        <div class="temp-group">
-          <div class="temp-group-name">{{ group }}</div>
-          <table class="temp-table">
-            {% for r in readings %}
-            <tr class="temp-{{ r.level }}">
-              <td class="temp-name" title="{{ r.technical }}">{{ r.name }}</td>
-              <td class="temp-bar-cell">
-                <div class="temp-bar-bg">
-                  <div class="temp-bar temp-bar-{{ r.level }}"
-                       style="width: {{ r.percent }}%;"></div>
-                </div>
-              </td>
-              <td class="temp-value">{{ '%.0f' | format(r.celsius) }} °C</td>
-              <td class="temp-limit">
-                {%- if r.limit %}limite {{ '%.0f' | format(r.limit) }} °C
-                {%- else %}limite non declaree{% endif -%}
-              </td>
-            </tr>
-            {% endfor %}
-          </table>
-        </div>
-        {% endfor %}
-        <p class="temp-note">
-          Chaque capteur est compare a <strong>sa propre limite</strong>, pas a
-          un chiffre unique : 70 °C sont banals pour un SSD NVMe limite a 85,
-          et deja notables pour un coeur limite a 80. Survole un nom pour voir
-          la mesure brute.
-        </p>
-      </details>
+    <div class="weather-sub">
+      {% if report.attention_count %}
+      {{ report.attention_count }} point{{ 's' if report.attention_count > 1 }} demande{{ 'nt' if report.attention_count > 1 }} ton attention
+      {% else %}
+      {{ report.checks | length }} controles passes — voir le detail
       {% endif %}
     </div>
   </div>
-  {% endfor %}
+  <svg class="weather-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+</button>
+
+{# ----------------------------- La fenetre ----------------------------- #}
+<div class="modal-overlay" x-show="open" x-cloak
+     @keydown.escape.window="open = false" role="dialog" aria-modal="true">
+  <div class="modal-box modal-wide health-modal" @click.outside="open = false">
+
+    <div class="health-modal-head weather-{{ report.weather }}">
+      <div class="weather-icon">{{ weather_icon(report.weather) }}</div>
+      <div>
+        <h2>{{ report.weather_label }}</h2>
+        <p class="stat-sub">
+          Sante et securite du systeme —
+          {% if report.attention_count %}
+          {{ report.attention_count }} point{{ 's' if report.attention_count > 1 }} a regarder sur {{ report.checks | length }}
+          {% else %}
+          {{ report.checks | length }} controles, aucun probleme
+          {% endif %}
+        </p>
+      </div>
+      <button type="button" class="btn-muted btn-sm" @click="open = false">Fermer</button>
+    </div>
+
+    <div class="health-modal-body">
+      {# Trie par gravite : un pool degrade ne doit pas se retrouver en
+         septieme position entre deux lignes vertes. #}
+      {% for c in report.sorted_checks %}
+      <div class="health-row health-row-{{ c.level }}">
+        <span class="badge status-{{ c.level }}">{{ c.level }}</span>
+        <div class="health-row-body">
+          <strong>{{ c.label }}</strong>
+          <div class="weather-check-detail">{{ c.detail }}</div>
+
+          {# --- Detail des capteurs, sous la ligne Temperatures --- #}
+          {% if c.key == 'temps' and temperatures %}
+          <details class="temp-details">
+            <summary>Voir les {{ temperature_count }} capteurs</summary>
+            {% for group, readings in temperatures %}
+            <div class="temp-group">
+              <div class="temp-group-name">{{ group }}</div>
+              <table class="temp-table">
+                {% for r in readings %}
+                <tr class="temp-{{ r.level }}">
+                  <td class="temp-name" title="{{ r.technical }}">{{ r.name }}</td>
+                  <td class="temp-bar-cell">
+                    <div class="temp-bar-bg">
+                      <div class="temp-bar temp-bar-{{ r.level }}" style="width: {{ r.percent }}%;"></div>
+                    </div>
+                  </td>
+                  <td class="temp-value">{{ '%.0f' | format(r.celsius) }} °C</td>
+                  <td class="temp-limit">
+                    {%- if r.limit %}limite {{ '%.0f' | format(r.limit) }} °C
+                    {%- else %}limite non declaree{% endif -%}
+                  </td>
+                </tr>
+                {% endfor %}
+              </table>
+            </div>
+            {% endfor %}
+            <p class="temp-note">
+              Chaque capteur est compare a <strong>sa propre limite</strong>, pas a
+              un chiffre unique : 70 °C sont banals pour un SSD NVMe limite a 85,
+              et deja notables pour un coeur limite a 80. Survole un nom pour voir
+              la mesure brute.
+            </p>
+          </details>
+          {% endif %}
+
+          {# --- Mises a jour : la carte du tableau de bord a fusionne ici
+                 (v1.8.0). Les liens et le bouton de verification vivent sous
+                 la ligne du controle, comme les capteurs. --- #}
+          {% if c.key == 'updates' %}
+          <div class="health-updates">
+            {% if snapshot.notices %}
+            <div class="notif-list">
+              {% for notice in snapshot.notices %}
+              <a class="notif-item notif-{{ notice.severity }}" href="{{ notice.href }}">
+                <span class="notif-count">{{ notice.count or '!' }}</span>
+                <span>
+                  <strong>{{ notice.label }}</strong>
+                  <span class="stat-sub">{{ notice.detail }}</span>
+                </span>
+              </a>
+              {% endfor %}
+            </div>
+            {% endif %}
+
+            {% if snapshot.errors %}
+            {# Une source en panne ne doit pas laisser croire que tout va
+               bien : sans ce bloc, une panne de GitHub ressemblerait a
+               « rien de neuf ». #}
+            <details class="notif-errors">
+              <summary>{{ snapshot.errors | length }} source(s) non verifiee(s)</summary>
+              {% for error in snapshot.errors %}
+              <p class="stat-sub">{{ error }}</p>
+              {% endfor %}
+            </details>
+            {% endif %}
+
+            <div class="health-updates-foot">
+              {# HTMX plutot qu'un envoi de formulaire : la verification
+                 interroge apt, GitHub et le registre Docker, elle prend
+                 quelques secondes. Un POST classique rechargerait la page et
+                 refermerait la fenetre au moment precis ou le resultat
+                 arrive. La reponse remplace ce fragment, donc le contenu se
+                 met a jour sous les yeux, fenetre ouverte. #}
+              <button type="button" class="btn-muted btn-sm"
+                      hx-post="/notifications/refresh"
+                      hx-target="#live-health"
+                      hx-swap="innerHTML"
+                      hx-disabled-elt="this">Verifier maintenant</button>
+              {% if not snapshot.never_checked %}
+              <span class="notif-age {{ 'dim' if not snapshot.outdated }}">
+                Verifie {{ checked_label }}{% if snapshot.outdated %} — resultat ancien{% endif %}
+              </span>
+              {% endif %}
+              <a class="btn-link" href="/updates">Ecran des mises a jour →</a>
+            </div>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+
+      <p class="health-modal-note">
+        Ces controles se relisent tout seuls toutes les 30 secondes, y compris
+        pendant que cette fenetre est ouverte. Seuls les correctifs de
+        <strong>securite</strong> non appliques et un <strong>redemarrage en
+        attente</strong> font varier la meteo : un NAS a presque toujours une
+        image ou un paquet a mettre a jour, et une meteo grise en permanence
+        est une alerte qu'on apprend a ignorer.
+      </p>
+    </div>
+  </div>
 </div>

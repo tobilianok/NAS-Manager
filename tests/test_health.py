@@ -1,3 +1,4 @@
+import time
 import subprocess
 
 from app import health
@@ -182,7 +183,7 @@ def test_get_report_smoke(monkeypatch):
     monkeypatch.setattr(health.shutil, "which", lambda name: None)
 
     report = health.get_report()
-    assert len(report.checks) == 7
+    assert len(report.checks) == 8
     # Plus aucune verification "toujours OK" (la politique de mot de passe a
     # ete retiree, cf. commentaire dans health.py) - quand toutes les sources
     # sont indisponibles, le rapport global doit donc etre "inconnu" et non
@@ -194,7 +195,7 @@ def test_get_report_real_system_smoke():
     """Test de fumee sur le vrai systeme (sandbox) : ne doit jamais lever
     d'exception, meme sans zfs/docker/ufw/sensors installes."""
     report = health.get_report()
-    assert len(report.checks) == 7
+    assert len(report.checks) == 8
     assert report.overall_level in (
         health.LEVEL_OK, health.LEVEL_ATTENTION, health.LEVEL_CRITIQUE, health.LEVEL_INCONNU,
     )
@@ -243,3 +244,105 @@ def test_check_share_admins_degrades_to_unknown_on_error(monkeypatch):
     monkeypatch.setattr(nasusers, "list_share_users", boom)
     check = health.check_share_admins()
     assert check.level == health.LEVEL_INCONNU
+
+
+# --- v1.8.0 : les mises a jour pesent sur la meteo, avec mesure ------------
+
+
+def _snapshot(**kwargs):
+    from app import notifications
+    base = dict(checked_epoch=time.time())
+    base.update(kwargs)
+    return notifications.Snapshot(**base)
+
+
+def _updates_check(monkeypatch, snapshot):
+    from app import notifications
+    monkeypatch.setattr(notifications, "read", lambda: snapshot)
+    return health.check_updates()
+
+
+def test_security_patches_move_the_weather(monkeypatch):
+    """La rubrique s'appelle Sante & securite : un correctif de securite qui
+    traine en est un vrai sujet."""
+    check = _updates_check(monkeypatch, _snapshot(system_count=9, system_security=3))
+    assert check.level == health.LEVEL_ATTENTION
+    assert "securite" in check.detail
+
+
+def test_a_pending_reboot_moves_the_weather(monkeypatch):
+    check = _updates_check(monkeypatch, _snapshot(system_reboot_required=True))
+    assert check.level == health.LEVEL_ATTENTION
+
+
+def test_ordinary_updates_never_move_the_weather(monkeypatch):
+    """Un NAS avec des stacks Docker a presque toujours une image ou un
+    paquet a mettre a jour. Les faire compter maintiendrait la meteo au gris
+    en permanence - et une alerte permanente est une alerte qu'on ignore."""
+    check = _updates_check(monkeypatch, _snapshot(
+        system_count=40, nasmanager_label="v9.9.9",
+        docker_stacks=["a", "b", "c", "d"]))
+    assert check.level == health.LEVEL_OK
+    # Elles restent visibles, elles ne sont juste pas alarmantes.
+    assert "40" in check.detail or "paquet" in check.detail
+    assert "v9.9.9" in check.detail
+
+
+def test_security_never_reaches_the_storm(monkeypatch):
+    """Un correctif en attente merite un nuage, pas le meme niveau qu'un pool
+    en train de mourir."""
+    check = _updates_check(monkeypatch, _snapshot(
+        system_count=99, system_security=99, system_reboot_required=True))
+    assert check.level == health.LEVEL_ATTENTION
+
+
+def test_never_checked_is_unknown_not_reassuring(monkeypatch):
+    check = _updates_check(monkeypatch, _snapshot(checked_epoch=0))
+    assert check.level == health.LEVEL_INCONNU
+
+
+def test_an_old_result_does_not_claim_all_is_well(monkeypatch):
+    """« Tout va bien » d'apres une verification de trois semaines ne prouve
+    rien."""
+    from app import notifications
+    old = time.time() - notifications.MAX_AGE_SECONDS - 3600
+    check = _updates_check(monkeypatch, _snapshot(checked_epoch=old))
+    assert check.level == health.LEVEL_INCONNU
+
+
+def test_all_clear_says_so(monkeypatch):
+    check = _updates_check(monkeypatch, _snapshot())
+    assert check.level == health.LEVEL_OK
+    assert "a jour" in check.detail
+
+
+# --- v1.8.0 : ordre d'affichage -------------------------------------------
+
+
+def test_what_needs_action_is_listed_first():
+    report = health.HealthReport(checks=[
+        health.HealthCheck("a", "A", health.LEVEL_OK, ""),
+        health.HealthCheck("b", "B", health.LEVEL_INCONNU, ""),
+        health.HealthCheck("c", "C", health.LEVEL_CRITIQUE, ""),
+        health.HealthCheck("d", "D", health.LEVEL_ATTENTION, ""),
+    ])
+    assert [c.key for c in report.sorted_checks] == ["c", "d", "b", "a"]
+
+
+def test_the_order_is_stable_between_two_refreshes():
+    """Une liste qui se reorganise a chaque rafraichissement serait
+    illisible : a gravite egale, l'ordre d'origine est conserve."""
+    checks = [health.HealthCheck(k, k.upper(), health.LEVEL_OK, "") for k in "abcdef"]
+    report = health.HealthReport(checks=checks)
+    assert [c.key for c in report.sorted_checks] == list("abcdef")
+
+
+def test_only_real_problems_are_counted_as_needing_attention():
+    """« Inconnu » n'est pas un probleme : sur une VM sans capteur, la carte
+    annoncerait un point a traiter qui n'existe pas."""
+    report = health.HealthReport(checks=[
+        health.HealthCheck("a", "A", health.LEVEL_INCONNU, ""),
+        health.HealthCheck("b", "B", health.LEVEL_OK, ""),
+        health.HealthCheck("c", "C", health.LEVEL_ATTENTION, ""),
+    ])
+    assert report.attention_count == 1

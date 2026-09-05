@@ -17,18 +17,19 @@
       <div class="dash-col-weather">
         {% include "_clock_card.html" %}
 
-        {# Rafraichi bien plus lentement que le reste : ce fragment ne fait
-           que relire un fichier, mais rien ne justifie de le redessiner
-           toutes les cinq secondes. #}
-        <div id="live-notifications"
-             hx-get="/partials/notifications"
-             hx-trigger="load, every 60s"
-             hx-swap="innerHTML">
-        </div>
-
+        {# La carte « Mises a jour » vivait ici jusqu'a la v1.8.0. Elle a
+           fusionne avec la meteo : les mises a jour sont un controle de
+           sante parmi les autres, et deux cartes empilees disaient deux fois
+           « voici ce qui va, voici ce qui ne va pas ». #}
         <h2 class="section-title">Sante &amp; securite</h2>
-        <div id="live-health" hx-get="/partials/health" hx-trigger="load, every 30s" hx-swap="innerHTML">
-          Chargement...
+
+        {# x-data est ICI, hors de la zone remplacee par HTMX : l'etat
+           ouvert/ferme doit survivre au rafraichissement du fragment, sinon
+           la fenetre se refermerait toute seule toutes les 30 secondes. #}
+        <div x-data="{ open: false }">
+          <div id="live-health" hx-get="/partials/health" hx-trigger="load, every 30s" hx-swap="innerHTML">
+            Chargement...
+          </div>
         </div>
       </div>
       <div class="dash-col-stats">

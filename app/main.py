@@ -232,17 +232,27 @@ def partial_network(request: Request, username: str = Depends(require_login)):
     )
 
 
+def _health_context(request: Request) -> dict:
+    """Contenu de la fenetre de sante. Les mises a jour ont fusionne dans la
+    meteo (v1.8.0), ce fragment porte donc aussi leur detail.
+
+    Lecture seule de bout en bout : ce fragment est rafraichi tout seul
+    toutes les 30 secondes, un acces reseau ici interrogerait GitHub et le
+    registre Docker en boucle."""
+    readings = sensors.list_readings()
+    snapshot = notifications.read()
+    return {
+        "request": request, "report": health.get_report(),
+        "temperatures": sensors.group_readings(readings),
+        "temperature_count": len(readings),
+        "snapshot": snapshot,
+        "checked_label": _relative_label(snapshot.checked_epoch),
+    }
+
+
 @app.get("/partials/health", response_class=HTMLResponse)
 def partial_health(request: Request, username: str = Depends(require_login)):
-    readings = sensors.list_readings()
-    return templates.TemplateResponse(
-        "_health_partial.html",
-        {
-            "request": request, "report": health.get_report(),
-            "temperatures": sensors.group_readings(readings),
-            "temperature_count": len(readings),
-        },
-    )
+    return templates.TemplateResponse("_health_partial.html", _health_context(request))
 
 
 # ---------------------------------------------------------------------------
@@ -2691,30 +2701,16 @@ def _relative_label(epoch: float) -> str:
     return f"il y a {seconds // 86400} j"
 
 
-def _notifications_context(request: Request) -> dict:
-    snapshot = notifications.read()
-    return {
-        "request": request, "snapshot": snapshot,
-        "checked_label": _relative_label(snapshot.checked_epoch),
-    }
-
-
-@app.get("/partials/notifications", response_class=HTMLResponse)
-def partial_notifications(request: Request, username: str = Depends(require_login)):
-    """Lecture seule : aucun acces reseau ici, sinon le rafraichissement
-    automatique du tableau de bord interrogerait GitHub en boucle."""
-    return templates.TemplateResponse(
-        "_notifications_partial.html", _notifications_context(request))
-
-
 @app.post("/notifications/refresh", response_class=HTMLResponse)
 def notifications_refresh(request: Request, username: str = Depends(require_login)):
     """Verification explicite. Peut prendre quelques secondes : elle
     interroge apt, GitHub et le registre Docker. Rien n'est telecharge ni
     installe."""
     notifications.refresh()
-    return templates.TemplateResponse(
-        "_notifications_partial.html", _notifications_context(request))
+    # Rend le fragment de SANTE, pas une carte a part : le bouton vit
+    # maintenant dans la fenetre (v1.8.0), qui reste ouverte pendant que son
+    # contenu se met a jour sous les yeux.
+    return templates.TemplateResponse("_health_partial.html", _health_context(request))
 
 
 def _datetime_context(request: Request, username: str, error: str | None = None,

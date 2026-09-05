@@ -13,6 +13,57 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.8.0 — 2026-09-05
+
+« Santé & sécurité » n'est plus qu'une carte, cliquable, qui ouvre tout le
+détail dans une fenêtre. La carte « Mises à jour » y a fusionné.
+
+### Une carte au lieu d'une liste
+- Huit lignes de contrôles posées en permanence sous la météo prenaient la
+  moitié de la colonne pour dire, la plupart du temps, que tout allait bien.
+  La carte annonce maintenant le verdict et **combien de points demandent une
+  action** ; le reste s'ouvre au clic.
+- Dans la fenêtre, **les contrôles sont triés par gravité**. Ils étaient rendus
+  dans l'ordre d'exécution : un pool dégradé pouvait se retrouver en septième
+  position entre deux lignes vertes. À gravité égale l'ordre d'origine est
+  conservé — une liste qui se réorganise à chaque rafraîchissement serait
+  illisible. Un filet coloré à gauche marque où s'arrête la zone à lire.
+- « Inconnu » ne compte pas comme un point à traiter : sur une VM sans capteur,
+  la carte annoncerait sinon un problème qui n'existe pas.
+
+### Les mises à jour rejoignent la météo
+- La carte autonome du tableau de bord a disparu. Deux cartes empilées
+  disaient deux fois « voici ce qui va, voici ce qui ne va pas ».
+- **Seuls les correctifs de sécurité non appliqués et un redémarrage en
+  attente font varier la météo**, et jamais au-delà de « à surveiller ». Un
+  NAS avec des stacks Docker a presque toujours une image ou un paquet à
+  mettre à jour : les faire tous compter maintiendrait la météo au gris en
+  permanence, et une alerte permanente est une alerte qu'on apprend à ignorer.
+  Le reste est listé sans peser sur le verdict. La fenêtre explique cette règle
+  — sinon on croirait à un bug.
+- Un résultat de vérification trop ancien ne prétend plus que tout va bien : il
+  passe en « inconnu ». Un « rien à signaler » qui date de trois semaines ne
+  prouve rien.
+- Les liens vers chaque source et le bouton « Vérifier maintenant » vivent sous
+  la ligne du contrôle, comme le tableau des capteurs sous la ligne
+  Températures.
+
+### Deux pièges d'implémentation, réglés
+- **L'état ouvert/fermé vit hors du fragment rafraîchi.** Le contenu est
+  remplacé toutes les 30 secondes ; si l'état vivait dedans, la fenêtre se
+  refermerait toute seule sous les yeux. Le contenu, lui, se met bien à jour
+  pendant qu'on le regarde.
+- **Pont HTMX → Alpine ajouté** (`htmx:afterSwap` → `Alpine.initTree`) : Alpine
+  n'initialise que ce qui est présent au chargement, les fragments remplacés
+  arrivent après. Sans ce pont, la fenêtre aurait cessé de répondre au premier
+  rafraîchissement automatique. Le projet n'en avait aucun jusqu'ici.
+- Le bouton « Vérifier maintenant » passe par HTMX : la vérification interroge
+  apt, GitHub et le registre Docker et prend quelques secondes. Un envoi de
+  formulaire classique aurait rechargé la page et refermé la fenêtre au moment
+  précis où le résultat arrive.
+
+---
+
 ## v1.7.1 — 2026-09-04
 
 L'écran des mises à jour dit quand le tag d'une version n'a pas été poussé.
