@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app import (
     main, auth, disks as disks_module, netstats, replace_workflow, zfs,
-    fancontrol, systemsettings,
+    fancontrol, systemsettings, cluster,
 )
 
 
@@ -22,15 +22,17 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(systemsettings, "STATE_DIR", tmp_path / "state")
     monkeypatch.setattr(systemsettings, "STATE_FILE", tmp_path / "state" / "system_settings.json")
     monkeypatch.setattr(fancontrol, "list_channels", lambda: [])
+    monkeypatch.setattr(cluster, "get_status", lambda: cluster.ClusterStatus(active=False))
+    monkeypatch.setattr(cluster, "list_candidate_interfaces", lambda: [])
     with TestClient(main.app) as c:
         resp = c.post("/login", data={"username": "louis", "password": "x"}, follow_redirects=False)
         assert resp.status_code == 302
         yield c
 
 
-def test_sidebar_shows_the_five_top_level_entries(client):
+def test_sidebar_shows_the_six_top_level_entries(client):
     text = client.get("/").text
-    for label in ("Tableau de bord", "Stockage", "Docker", "Comptes", "Parametres"):
+    for label in ("Tableau de bord", "Stockage", "Docker", "Cluster", "Comptes", "Parametres"):
         assert label in text
 
 
@@ -72,15 +74,15 @@ def test_only_one_link_is_highlighted_at_a_time(client):
 
 def test_sidebar_shows_the_version(client):
     text = client.get("/").text
-    assert "v1.10.0" in text
+    assert "v1.11.0" in text
 
 
 def test_sidebar_is_identical_on_every_page(client):
     """Le menu vient d'une donnee partagee : aucune page ne peut l'oublier
     ni en afficher une version differente."""
-    for path in ("/", "/pools", "/shares", "/docker", "/network", "/system", "/backup",
+    for path in ("/", "/pools", "/shares", "/docker", "/cluster", "/network", "/system", "/backup",
                  "/share-users", "/admin-accounts", "/disks", "/updates"):
         resp = client.get(path)
         assert resp.status_code == 200, path
         assert "Parametres" in resp.text, path
-        assert "v1.10.0" in resp.text, path
+        assert "v1.11.0" in resp.text, path

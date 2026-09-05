@@ -30,6 +30,8 @@ def _all_links():
     ("/admin-accounts", "Comptes systeme"),
     ("/docker", "Docker"),
     ("/docker/nginx", "Docker"),
+    ("/cluster", "Cluster"),
+    ("/cluster/nodes/n2/promote", "Cluster"),
     ("/network", "Reseau"),
     ("/system", "Systeme"),
     ("/system/timezone", "Systeme"),
@@ -74,7 +76,7 @@ def test_unknown_path_has_no_active_entry():
 def test_exactly_one_entry_matches_each_known_page():
     """Deux entrees allumees en meme temps rendraient le menu incomprehensible."""
     for path in ("/", "/pools", "/shares", "/share-users", "/admin-accounts",
-                 "/docker", "/network", "/system", "/backup", "/disks", "/updates"):
+                 "/docker", "/cluster", "/network", "/system", "/backup", "/disks", "/updates"):
         matches = [link.label for link in _all_links() if link.matches(path)]
         assert len(matches) == 1, f"{path} allume {matches}"
 
@@ -85,10 +87,11 @@ def test_exactly_one_entry_matches_each_known_page():
 
 def test_top_level_structure():
     labels = [entry.label for entry in navigation.NAV]
-    assert labels == ["Tableau de bord", "Stockage", "Docker", "Comptes", "Parametres"]
-    # Tableau de bord et Docker restent des entrees simples, pas des rubriques.
+    assert labels == ["Tableau de bord", "Stockage", "Docker", "Cluster", "Comptes", "Parametres"]
+    # Tableau de bord, Docker et Cluster restent des entrees simples, pas des rubriques.
     assert isinstance(navigation.NAV[0], navigation.NavLink)
     assert isinstance(navigation.NAV[2], navigation.NavLink)
+    assert isinstance(navigation.NAV[3], navigation.NavLink)
 
 
 @pytest.mark.parametrize("group,children", [

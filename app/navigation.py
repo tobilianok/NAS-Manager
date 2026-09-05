@@ -62,6 +62,7 @@ NAV: tuple[NavLink | NavGroup, ...] = (
         NavLink("Disques", "/disks", "disk", prefixes=("/disks",)),
     )),
     NavLink("Docker", "/docker", "docker"),
+    NavLink("Cluster", "/cluster", "cluster"),
     NavGroup("Comptes", "users", (
         NavLink("Comptes de partage", "/share-users", "users"),
         NavLink("Comptes systeme", "/admin-accounts", "shield"),

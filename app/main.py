@@ -26,7 +26,7 @@ from app import (
     sysaccounts, configbackup, poolexpand, navigation, version as version_module,
     sysupdate, appupdate, liverun, gitauth, diskwipe, smarttests, diskjobs,
     power, servicerestart, sensors, diskage, timezone, notifications,
-    systemsettings, fancontrol,
+    systemsettings, fancontrol, cluster,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -2894,3 +2894,110 @@ async def updates_system_ws(websocket: WebSocket, action: str):
         await websocket.close()
     except Exception:  # noqa: BLE001
         pass
+
+
+# ---------------------------------------------------------------------------
+# Cluster de calcul (v1.11.0) - premiere etape du chantier v2.0, voir
+# app.cluster pour le detail des garde-fous. Formation/adhesion/depart et
+# administration des noeuds ; le deploiement de stacks en mode Swarm est
+# hors perimetre de cette premiere etape.
+# ---------------------------------------------------------------------------
+
+def _cluster_context(request: Request, username: str, error: str | None = None,
+                     notice: str | None = None) -> dict:
+    status = cluster.get_status()
+    context = {
+        "request": request, "username": username,
+        "status": status, "error": error, "notice": notice,
+        "candidate_interfaces": [], "join_tokens": None,
+    }
+    if not status.active:
+        context["candidate_interfaces"] = cluster.list_candidate_interfaces()
+    elif status.is_manager:
+        try:
+            context["join_tokens"] = cluster.get_join_tokens()
+        except cluster.ClusterError:
+            pass  # affichage degrade : le reste de la page reste utilisable
+    return context
+
+
+@app.get("/cluster", response_class=HTMLResponse)
+def cluster_page(request: Request, username: str = Depends(require_login)):
+    return templates.TemplateResponse("cluster.html", _cluster_context(request, username))
+
+
+def _cluster_response(request: Request, username: str, *, error: str | None = None,
+                      notice: str | None = None, status_code: int = 200):
+    return templates.TemplateResponse(
+        "cluster.html", _cluster_context(request, username, error=error, notice=notice),
+        status_code=status_code,
+    )
+
+
+@app.post("/cluster/init")
+def cluster_init(request: Request, advertise_ip: str = Form(...),
+                 username: str = Depends(require_login)):
+    try:
+        message = cluster.init_cluster(advertise_ip, username)
+    except cluster.ClusterError as exc:
+        return _cluster_response(request, username, error=str(exc), status_code=400)
+    return _cluster_response(request, username, notice=message)
+
+
+@app.post("/cluster/join")
+def cluster_join_route(request: Request, remote_addr: str = Form(...), token: str = Form(...),
+                       advertise_ip: str = Form(...), username: str = Depends(require_login)):
+    try:
+        message = cluster.join_cluster(remote_addr, token, advertise_ip, username)
+    except cluster.ClusterError as exc:
+        return _cluster_response(request, username, error=str(exc), status_code=400)
+    return _cluster_response(request, username, notice=message)
+
+
+@app.post("/cluster/leave")
+def cluster_leave_route(request: Request, confirm_password: str = Form(...),
+                        force: str = Form(""), username: str = Depends(require_login)):
+    try:
+        message = cluster.leave_cluster(username, confirm_password, force=bool(force))
+    except cluster.ClusterError as exc:
+        return _cluster_response(request, username, error=str(exc), status_code=400)
+    return _cluster_response(request, username, notice=message)
+
+
+@app.post("/cluster/nodes/{node_id}/promote")
+def cluster_promote_node(request: Request, node_id: str, username: str = Depends(require_login)):
+    try:
+        message = cluster.promote_node(node_id, username)
+    except cluster.ClusterError as exc:
+        return _cluster_response(request, username, error=str(exc), status_code=400)
+    return _cluster_response(request, username, notice=message)
+
+
+@app.post("/cluster/nodes/{node_id}/demote")
+def cluster_demote_node(request: Request, node_id: str, confirm_password: str = Form(...),
+                        username: str = Depends(require_login)):
+    try:
+        message = cluster.demote_node(node_id, username, confirm_password)
+    except cluster.ClusterError as exc:
+        return _cluster_response(request, username, error=str(exc), status_code=400)
+    return _cluster_response(request, username, notice=message)
+
+
+@app.post("/cluster/nodes/{node_id}/availability")
+def cluster_set_node_availability(request: Request, node_id: str, availability: str = Form(...),
+                                  username: str = Depends(require_login)):
+    try:
+        message = cluster.set_node_availability(node_id, availability, username)
+    except cluster.ClusterError as exc:
+        return _cluster_response(request, username, error=str(exc), status_code=400)
+    return _cluster_response(request, username, notice=message)
+
+
+@app.post("/cluster/nodes/{node_id}/remove")
+def cluster_remove_node(request: Request, node_id: str, confirm_password: str = Form(...),
+                        force: str = Form(""), username: str = Depends(require_login)):
+    try:
+        message = cluster.remove_node(node_id, username, confirm_password, force=bool(force))
+    except cluster.ClusterError as exc:
+        return _cluster_response(request, username, error=str(exc), status_code=400)
+    return _cluster_response(request, username, notice=message)

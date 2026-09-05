@@ -1,0 +1,320 @@
+{% extends "base.html" %}
+{% block title %}Cluster - NAS Manager{% endblock %}
+{% block breadcrumb %}<strong>Cluster</strong>{% endblock %}
+
+{% block content %}
+<div x-data="{ leaveOpen: false, demoteFor: null, removeFor: null, tokensOpen: false }">
+<h1>Cluster</h1>
+<p class="page-intro">
+  Cluster de calcul (Docker Swarm) entre plusieurs machines NAS Manager. Cette
+  premiere etape ne gere que la formation du cluster et ses noeuds - aucune
+  donnee ZFS n'y est engagee : un pool ZFS ne peut etre importe que sur une
+  seule machine a la fois, la redondance de stockage entre noeuds est un
+  chantier a part.
+</p>
+
+{% if error %}<div class="danger-banner">{{ error }}</div>{% endif %}
+{% if notice %}<div class="success-banner">{{ notice }}</div>{% endif %}
+
+{% if not status.docker_available %}
+<div class="info-panel">
+  Docker n'est pas installe sur cette machine : impossible de former ou de
+  rejoindre un cluster. Relance <span class="mono">sudo ./install.sh</span>
+  si Docker devrait pourtant etre present.
+</div>
+
+{% elif not status.active %}
+<div class="card">
+  <div class="stat-label">ETAT DU CLUSTER</div>
+  <div class="stat-value stat-value-small">Ce noeud n'appartient a aucun cluster</div>
+  <div class="stat-sub">
+    Forme un nouveau cluster depuis ce noeud, ou rejoins-en un existant avec
+    son jeton de jonction (visible sur la page Cluster d'un manager deja en
+    place).
+  </div>
+</div>
+
+<div class="card">
+  <h2>Former un nouveau cluster</h2>
+  {% if not candidate_interfaces %}
+  <div class="info-panel">
+    Aucune carte reseau avec une adresse IP n'a ete detectee - impossible de
+    choisir une adresse d'annonce. Configure d'abord le reseau depuis
+    <a href="/network">Parametres → Reseau</a>.
+  </div>
+  {% else %}
+  <p class="stat-sub">
+    Ce noeud devient le premier <strong>manager</strong> du cluster. Choisis
+    de preference la carte reseau <strong>dediee au cluster</strong>, distincte
+    de celle utilisee pour cette interface d'administration - c'est ce que
+    recommande l'analyse du projet pour ne jamais melanger le trafic
+    d'administration et celui du cluster.
+  </p>
+  <form method="post" action="/cluster/init">
+    <label for="init_advertise_ip">Carte reseau / adresse d'annonce</label>
+    <select id="init_advertise_ip" name="advertise_ip" required>
+      {% for iface in candidate_interfaces %}
+      {% for addr in iface.addresses %}
+      <option value="{{ addr }}">{{ iface.name }} — {{ addr }}</option>
+      {% endfor %}
+      {% endfor %}
+    </select>
+    <div class="actions">
+      <button type="submit" class="btn-primary">Former le cluster</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Rejoindre un cluster existant</h2>
+  <p class="stat-sub">
+    Demande l'adresse du manager et un jeton de jonction depuis la page
+    Cluster de ce manager (« Jetons de jonction » ci-dessous une fois le
+    cluster forme). Un jeton <strong>worker</strong> ajoute ce noeud comme
+    simple noeud de calcul ; un jeton <strong>manager</strong> lui donne aussi
+    la main sur l'administration du cluster.
+  </p>
+  {% if not candidate_interfaces %}
+  <div class="info-panel">
+    Aucune carte reseau avec une adresse IP n'a ete detectee - impossible de
+    choisir une adresse d'annonce.
+  </div>
+  {% else %}
+  <form method="post" action="/cluster/join">
+    <label for="join_remote_addr">Adresse du manager (ip[:port], port {{ 2377 }} par defaut)</label>
+    <input type="text" id="join_remote_addr" name="remote_addr" placeholder="192.168.1.50" required>
+
+    <label for="join_token" style="margin-top:.6rem;">Jeton de jonction</label>
+    <input type="text" id="join_token" name="token" placeholder="SWMTKN-1-..." autocomplete="off" required>
+
+    <label for="join_advertise_ip" style="margin-top:.6rem;">Carte reseau / adresse d'annonce de CE noeud</label>
+    <select id="join_advertise_ip" name="advertise_ip" required>
+      {% for iface in candidate_interfaces %}
+      {% for addr in iface.addresses %}
+      <option value="{{ addr }}">{{ iface.name }} — {{ addr }}</option>
+      {% endfor %}
+      {% endfor %}
+    </select>
+    <div class="actions">
+      <button type="submit" class="btn-primary">Rejoindre le cluster</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+
+{% else %}
+{# --- Ce noeud fait partie d'un cluster --- #}
+<div class="card">
+  <div class="stat-label">ETAT DU CLUSTER</div>
+  <div class="stat-value stat-value-small">
+    {{ status.node_count if status.is_manager else '?' }} noeud(s)
+    {% if status.is_manager %}({{ status.manager_count }} manager(s)){% endif %}
+  </div>
+  <div class="stat-sub">
+    Ce noeud est <strong>{{ 'manager' if status.is_manager else 'worker' }}</strong>
+    {% if status.advertise_addr %}, annonce sur {{ status.advertise_addr }}{% endif %}.
+  </div>
+  <div class="facts-grid">
+    <div>
+      <div class="stat-label">IDENTIFIANT DU NOEUD</div>
+      <div class="mono">{{ status.node_id }}</div>
+    </div>
+    {% if status.cluster_id %}
+    <div>
+      <div class="stat-label">IDENTIFIANT DU CLUSTER</div>
+      <div class="mono">{{ status.cluster_id }}</div>
+    </div>
+    {% endif %}
+  </div>
+  {% if not status.is_manager and status.remote_managers %}
+  <div class="info-panel">
+    Ce noeud est un simple worker : la liste des noeuds et leur administration
+    ne sont visibles que depuis un manager. Manager(s) connu(s) :
+    {{ status.remote_managers | join(', ') }}.
+  </div>
+  {% endif %}
+</div>
+
+{% if status.is_manager %}
+<h2>Noeuds</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>Hote</th><th>Role</th><th>Statut</th><th>Disponibilite</th><th></th></tr></thead>
+    <tbody>
+      {% for node in status.nodes %}
+      <tr>
+        <td>
+          <strong>{{ node.hostname }}</strong>
+          {% if node.is_self %}<span class="group-chip">ce noeud</span>{% endif %}
+        </td>
+        <td>
+          {% if node.role == 'manager' %}
+          <span class="badge {{ 'badge-ok' if node.is_leader else 'badge-neutral' }}">
+            Manager{{ ' (leader)' if node.is_leader else '' }}
+          </span>
+          {% else %}
+          <span class="badge badge-neutral">Worker</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if node.status == 'ready' %}
+          <span class="badge badge-ok">Pret</span>
+          {% elif node.status == 'down' %}
+          <span class="badge badge-warn">Hors service</span>
+          {% else %}
+          <span class="badge badge-neutral">Inconnu</span>
+          {% endif %}
+        </td>
+        <td>
+          <form class="inline-form" method="post" action="/cluster/nodes/{{ node.id }}/availability">
+            <select name="availability" onchange="this.form.submit()">
+              {% for key, label in [('active', 'Active'), ('pause', 'Pause'), ('drain', 'Vidage')] %}
+              <option value="{{ key }}" {% if key == node.availability %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </form>
+        </td>
+        <td class="actions" style="margin:0; flex-wrap:wrap;">
+          {% if node.role == 'worker' %}
+          <form class="inline-form" method="post" action="/cluster/nodes/{{ node.id }}/promote">
+            <button type="submit" class="btn-muted btn-sm">Promouvoir manager</button>
+          </form>
+          {% else %}
+          <button type="button" class="btn-muted btn-sm" @click="demoteFor = '{{ node.id }}'">Retrograder</button>
+          {% endif %}
+          {% if not node.is_self %}
+          <button type="button" class="btn-sm btn-danger" @click="removeFor = '{{ node.id }}'">Retirer</button>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not status.nodes %}
+      <tr><td colspan="5" class="dim">Aucun noeud.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Jetons de jonction</h2>
+<div class="card">
+  {% if not join_tokens %}
+  <div class="info-panel">Jetons illisibles pour le moment - reessaie depuis cette page.</div>
+  {% else %}
+  <p class="stat-sub">
+    A garder confidentiels : quiconque possede le jeton <strong>manager</strong>
+    peut administrer entierement ce cluster. Adresse a utiliser pour rejoindre :
+    <span class="mono">{{ join_tokens.manager_addr }}</span>.
+  </p>
+  <div class="facts-grid">
+    <div>
+      <div class="stat-label">JETON WORKER (ajoute un simple noeud de calcul)</div>
+      <div class="mono" style="word-break:break-all;">{{ join_tokens.worker_token }}</div>
+    </div>
+    <div>
+      <div class="stat-label">JETON MANAGER (donne aussi l'administration du cluster)</div>
+      <div class="mono" style="word-break:break-all;">{{ join_tokens.manager_token }}</div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Quitter le cluster</h2>
+  <p class="stat-sub">
+    Retire CE noeud du cluster. Les stacks Docker en mode Swarm qui y
+    tournaient s'arretent ; celles hebergees hors Swarm (app.dockerstacks,
+    inchangees par cette premiere etape) ne sont pas affectees.
+  </p>
+  <div class="actions">
+    <button type="button" class="btn-sm btn-danger" @click="leaveOpen = true">Quitter le cluster</button>
+  </div>
+</div>
+
+<!-- Modale : quitter le cluster -->
+<div class="modal-overlay" x-show="leaveOpen" x-cloak @keydown.escape.window="leaveOpen = false">
+  <div class="modal-box" @click.outside="leaveOpen = false">
+    <button type="button" class="modal-close" @click="leaveOpen = false">&times;</button>
+    <h2>Quitter le cluster</h2>
+    <p class="dim">Confirme avec <strong>ton propre mot de passe</strong> ({{ username }}) pour continuer.</p>
+    {% if status.is_manager and status.manager_count <= 1 and status.node_count > 1 %}
+    <div class="warning-banner">
+      Ce noeud est le DERNIER manager d'un cluster qui compte encore d'autres
+      noeuds : les quitter sans confirmation forcee les laisserait orphelins,
+      sans aucun manager pour les administrer.
+    </div>
+    {% endif %}
+    <form method="post" action="/cluster/leave">
+      <label>Ton mot de passe</label>
+      <input type="password" name="confirm_password" required>
+      {% if status.is_manager and status.manager_count <= 1 and status.node_count > 1 %}
+      <label style="display:flex; align-items:center; gap:.4rem; font-weight:normal; margin-top:.6rem;">
+        <input type="checkbox" name="force" value="1"> Je comprends, quitter quand meme (orpheline les autres noeuds)
+      </label>
+      {% endif %}
+      <div class="actions">
+        <button type="submit" class="btn-solid-danger">Quitter le cluster</button>
+        <button type="button" class="btn-cancel" @click="leaveOpen = false">Annuler</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% if status.is_manager %}
+{% for node in status.nodes %}
+{% if node.role == 'manager' and not node.is_self %}
+<!-- Modale : retrograder un manager -->
+<div class="modal-overlay" x-show="demoteFor === '{{ node.id }}'" x-cloak @keydown.escape.window="demoteFor = null">
+  <div class="modal-box" @click.outside="demoteFor = null">
+    <button type="button" class="modal-close" @click="demoteFor = null">&times;</button>
+    <h2>Retrograder {{ node.hostname }}</h2>
+    <p class="dim">Confirme avec <strong>ton propre mot de passe</strong> ({{ username }}) pour continuer.</p>
+    <form method="post" action="/cluster/nodes/{{ node.id }}/demote">
+      <label>Ton mot de passe</label>
+      <input type="password" name="confirm_password" required>
+      <div class="actions">
+        <button type="submit" class="btn-solid-danger">Retrograder en worker</button>
+        <button type="button" class="btn-cancel" @click="demoteFor = null">Annuler</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% if not node.is_self %}
+<!-- Modale : retirer un noeud -->
+<div class="modal-overlay" x-show="removeFor === '{{ node.id }}'" x-cloak @keydown.escape.window="removeFor = null">
+  <div class="modal-box" @click.outside="removeFor = null">
+    <button type="button" class="modal-close" @click="removeFor = null">&times;</button>
+    <h2>Retirer {{ node.hostname }}</h2>
+    <p class="dim">Confirme avec <strong>ton propre mot de passe</strong> ({{ username }}) pour continuer.</p>
+    {% if node.status == 'ready' %}
+    <div class="warning-banner">
+      Ce noeud repond toujours (etat « pret ») : mieux vaut le faire quitter
+      proprement depuis lui-meme. Ne force le retrait que s'il est reellement
+      perdu (panne materielle, machine detruite).
+    </div>
+    {% endif %}
+    <form method="post" action="/cluster/nodes/{{ node.id }}/remove">
+      <label>Ton mot de passe</label>
+      <input type="password" name="confirm_password" required>
+      {% if node.status == 'ready' %}
+      <label style="display:flex; align-items:center; gap:.4rem; font-weight:normal; margin-top:.6rem;">
+        <input type="checkbox" name="force" value="1"> Forcer le retrait (noeud toujours actif)
+      </label>
+      {% endif %}
+      <div class="actions">
+        <button type="submit" class="btn-solid-danger">Retirer du cluster</button>
+        <button type="button" class="btn-cancel" @click="removeFor = null">Annuler</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% endif %}
+</div>
+{% endblock %}
