@@ -13,6 +13,79 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.13.0 — 2026-09-05
+
+**Appairage des nœuds** (Cluster → Appairage). Deuxième des quatre étapes de
+la redondance de stockage : la v1.12.0 a apporté les snapshots, il fallait
+maintenant un chemin pour les transporter d'une machine à l'autre. Cette
+version pose le lien de confiance ; elle ne réplique rien encore.
+
+### Le parcours, en trois temps
+1. **Générer la clé** sur cette machine — une clé dédiée à la réplication,
+   jamais votre clé d'administration.
+2. **Coller la clé publique** de l'autre machine dans la liste des nœuds
+   autorisés, avec son adresse IP. À faire dans les deux sens si vous voulez
+   répliquer dans les deux sens.
+3. **Tester le lien** : le nœud répond-il, ZFS est-il utilisable là-bas, les
+   deux machines tournent-elles la même version, les horloges concordent-elles.
+
+### Ce que l'appairage donne vraiment comme pouvoir, dit franchement
+`zfs send | ssh autre-machine zfs receive` demande une session SSH **en
+root** sur la machine d'en face — recevoir un flux ZFS crée des systèmes de
+fichiers, écrit des propriétés, monte des volumes. C'est ainsi que
+fonctionnent tous les outils du domaine (syncoid, zrepl), mais **autoriser un
+nœud, c'est lui donner un pouvoir total sur celui-ci** : si l'un est
+compromis, l'autre l'est aussi. La page le dit en toutes lettres plutôt que
+de le laisser découvrir.
+
+Ce qui est fait pour réduire ce pouvoir au strict nécessaire :
+- **une clé dédiée**, qui ne sert qu'à ça et peut être révoquée sans rien
+  casser d'autre ; la clé privée est en 0600, jamais affichée, jamais dans
+  les sauvegardes — même traitement que le jeton GitHub ;
+- **la clé autorisée est bridée** : `from="<IP du pair>"` (elle ne vaut que
+  depuis cette adresse), pas de redirection de port, pas d'agent, pas de
+  terminal ;
+- **un bloc délimité** dans `authorized_keys`, régénéré à chaque changement,
+  comme `smb.conf` et `exports` : vos propres clés, en dehors de ce bloc, ne
+  sont jamais touchées.
+
+### Garde-fous, après une relecture adverse qui a trouvé sept défauts
+- **Le commentaire d'une clé publique n'est plus jamais recopié.** Une clé
+  dont le commentaire contenait le marqueur de fin de bloc coupait le bloc en
+  deux : les lignes suivantes passaient pour du contenu externe à préserver,
+  et la clé concernée **restait dans le fichier après sa révocation** — un
+  accès root permanent, invisible dans l'interface et qu'aucun bouton ne
+  pouvait plus retirer.
+- **Le bloc est retiré ligne par ligne**, plus par découpage sur la première
+  occurrence des marqueurs. Un marqueur de début sans marqueur de fin
+  (écriture interrompue, édition à la main) faisait conserver l'ancien bloc
+  et en ajouter un second : des clés révoquées restaient actives.
+- **`authorized_keys` est écrit puis remplacé d'un seul geste.** L'écriture
+  directe tronque le fichier avant de le remplir : une coupure ou deux
+  requêtes simultanées le laissaient vide, ce qui **enferme l'administrateur
+  dehors**.
+- **Un verrou** couvre la séquence lire → décider → écrire : deux
+  autorisations lancées depuis deux onglets s'écrasaient l'une l'autre.
+- **`authorized_keys` est écrit avant le registre.** L'ordre inverse, en cas
+  d'échec d'écriture, laissait un nœud invisible dans l'interface mais
+  toujours autorisé sur le disque, donc impossible à révoquer.
+- **La clé n'est plus détruite avant d'être remplacée.** `ssh-keygen` refusant
+  d'écraser sans poser de question, l'ancienne était effacée d'abord — et
+  perdue définitivement dès que la commande échouait.
+- **Le base64 d'une clé doit être décodable** : une clé tronquée était
+  ignorée en silence par sshd alors que l'appairage semblait avoir réussi.
+- Le test de lien épingle les clés d'hôte dans un fichier à nous plutôt que
+  dans celui de root, **affiche l'empreinte du nœud contacté** pour
+  comparaison de visu (le mode « confiance au premier usage » ne protège pas
+  du premier contact, et la page le dit), borne ce que la machine d'en face
+  peut faire lire au service, et demande le mot de passe — il fait ouvrir au
+  serveur, en root, une connexion sortante vers une adresse choisie côté
+  client.
+
+**1332 tests** passent (89 de plus), sans régression.
+
+---
+
 ## v1.12.0 — 2026-09-05
 
 Une nouvelle page **Snapshots** (Stockage → Snapshots). Première des quatre

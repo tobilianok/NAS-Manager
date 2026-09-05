@@ -16,6 +16,16 @@
 {% if error %}<div class="danger-banner">{{ error }}</div>{% endif %}
 {% if notice %}<div class="success-banner">{{ notice }}</div>{% endif %}
 
+<div class="link-card">
+  <h2>Redondance de stockage — <a href="/cluster/replication">appairage des noeuds</a></h2>
+  <p class="stat-sub">
+    Le chantier avance a part de Docker Swarm : la replication ZFS passe par
+    SSH, pas par le cluster de calcul, et n'exige donc pas qu'un cluster Swarm
+    soit forme. L'appairage pose le lien de confiance entre deux machines ;
+    l'envoi des donnees viendra ensuite.
+  </p>
+</div>
+
 {% if not status.docker_available %}
 <div class="info-panel">
   Docker n'est pas installe sur cette machine : impossible de former ou de

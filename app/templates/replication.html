@@ -1,0 +1,271 @@
+{% extends "base.html" %}
+{% block title %}Appairage des noeuds - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/cluster">Cluster</a> / <strong>Appairage</strong>{% endblock %}
+
+{% block content %}
+<div x-data="{ revokeFor: null, regenOpen: false, authorizeOpen: false }">
+<h1>Appairage des noeuds</h1>
+<p class="page-intro">
+  Pour qu'un pool ZFS puisse etre repliqué d'une machine a l'autre, les deux
+  doivent d'abord se reconnaitre. Cette page pose ce lien de confiance — elle
+  ne replique rien encore, c'est l'etape suivante.
+</p>
+
+{% if error %}<div class="danger-banner">{{ error }}</div>{% endif %}
+{% if notice %}<div class="success-banner">{{ notice }}</div>{% endif %}
+
+<div class="warning-banner">
+  <strong>Autoriser un noeud lui donne un acces administrateur complet a cette
+  machine.</strong> Recevoir un flux ZFS cree des systemes de fichiers, ecrit
+  des proprietes, monte des volumes : ca ne se delegue pas a un compte
+  ordinaire. C'est ainsi que fonctionnent tous les outils du domaine, mais
+  autant le savoir — si le noeud autorise est compromis, celui-ci l'est aussi.
+  N'autorisez que des machines dont vous avez la maitrise, sur un reseau que
+  vous maitrisez.
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- 1. La cle de cette machine                                          -->
+<!-- ------------------------------------------------------------------ -->
+<div class="card">
+  <div class="stat-label">ETAPE 1 — SUR CETTE MACHINE</div>
+  <h2>La cle de replication de ce noeud</h2>
+
+  {% if not public_key %}
+  <p class="stat-sub">
+    Cette machine n'a pas encore de cle de replication. Elle en a besoin pour
+    <strong>envoyer</strong> des donnees vers un autre noeud. La cle est
+    dediee a cet usage : ce n'est jamais votre cle d'administration, et elle
+    peut etre revoquee sans rien casser d'autre.
+  </p>
+  <form method="post" action="/cluster/replication/key">
+    <label for="gen_pw">Votre mot de passe</label>
+    <input type="password" id="gen_pw" name="confirm_password" required>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Generer la cle</button>
+    </div>
+  </form>
+
+  {% else %}
+  <p class="stat-sub">
+    Voici la cle <strong>publique</strong> de cette machine. C'est elle qu'il
+    faut recopier sur chaque noeud qui doit accepter des envois depuis ici
+    (etape 2, sur l'autre machine). La cle privee correspondante ne quitte
+    jamais ce serveur et n'est affichee nulle part.
+  </p>
+  <div class="console-output mono">{{ public_key }}</div>
+  {% if fingerprint %}
+  <div class="stat-sub">
+    Empreinte : <span class="mono">{{ fingerprint }}</span> — comparez-la sur
+    l'autre machine pour verifier que c'est bien cette cle qui a ete collee.
+  </div>
+  {% endif %}
+
+  <div class="btn-row">
+    <button type="button" class="btn btn-link" @click="regenOpen = !regenOpen">
+      <span x-text="regenOpen ? 'Annuler' : 'Regenerer la cle'"></span>
+    </button>
+  </div>
+  <div x-show="regenOpen" x-cloak class="confirm-box">
+    <p>
+      <strong>Regenerer casse tous les appairages en place.</strong> Les autres
+      noeuds ont inscrit l'ancienne cle publique chez eux : ils refuseront la
+      nouvelle jusqu'a ce que vous la leur redonniez, un par un. Ne le faites
+      que si la cle privee a pu etre compromise.
+    </p>
+    <form method="post" action="/cluster/replication/key">
+      <input type="hidden" name="force" value="1">
+      <label for="regen_pw">Votre mot de passe</label>
+      <input type="password" id="regen_pw" name="confirm_password" required>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-solid-danger">
+          Regenerer, et refaire les appairages
+        </button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- 2. Les noeuds autorises a envoyer ICI                               -->
+<!-- ------------------------------------------------------------------ -->
+<div class="card">
+  <div class="stat-label">ETAPE 2 — A FAIRE SUR CHAQUE MACHINE QUI RECOIT</div>
+  <h2>Noeuds autorises a envoyer vers cette machine</h2>
+  <p class="stat-sub">
+    Ouvrez cette meme page sur l'autre noeud, copiez la cle publique affichee
+    a son etape 1, et collez-la ici. L'operation est a faire dans les deux
+    sens si vous voulez pouvoir repliquer dans les deux sens.
+  </p>
+
+  {% if peers %}
+  <table class="temp-table">
+    <thead>
+      <tr><th>Noeud</th><th>Autorise depuis</th><th>Type</th><th>Empreinte</th><th>Ajoute le</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for peer in peers %}
+      <tr>
+        <td>{{ peer.name }}</td>
+        <td class="mono">{{ peer.address }}</td>
+        <td>{{ peer.key_type }}</td>
+        <td class="mono">{{ peer.fingerprint or '—' }}</td>
+        <td>{{ peer.added_at[:16].replace('T', ' ') if peer.added_at else '—' }}</td>
+        <td>
+          <button type="button" class="btn btn-sm btn-danger"
+                  @click="revokeFor = '{{ peer.name }}'">Revoquer</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="stat-sub">
+    Chaque cle n'est acceptee <strong>que depuis l'adresse indiquee</strong>,
+    sans redirection de port, sans agent et sans terminal. Ces restrictions
+    sont ecrites dans un bloc delimite de
+    <span class="mono">/root/.ssh/authorized_keys</span> : vos propres cles,
+    en dehors de ce bloc, ne sont jamais touchees.
+  </p>
+  {% else %}
+  <div class="empty-state">
+    Aucun noeud n'est autorise a envoyer vers cette machine.
+  </div>
+  {% endif %}
+
+  <div class="btn-row">
+    <button type="button" class="btn btn-link" @click="authorizeOpen = !authorizeOpen">
+      <span x-text="authorizeOpen ? 'Annuler' : 'Autoriser un noeud'"></span>
+    </button>
+  </div>
+
+  <div x-show="authorizeOpen" x-cloak>
+    <form method="post" action="/cluster/replication/peers">
+      <label for="peer_name">Nom du noeud</label>
+      <input type="text" id="peer_name" name="name" required
+             placeholder="nas-2" pattern="[a-zA-Z0-9][a-zA-Z0-9_.\-]{0,63}">
+      <div class="stat-sub">Une simple etiquette, pour vous y retrouver.</div>
+
+      <label for="peer_address">Adresse IP du noeud</label>
+      <input type="text" id="peer_address" name="address" required
+             placeholder="192.168.1.42">
+      <div class="stat-sub">
+        <strong>Ce n'est pas decoratif :</strong> la cle ne sera acceptee que
+        depuis cette adresse. Indiquez celle de la carte reseau que l'autre
+        noeud utilise pour joindre celle-ci — de preference le lien dedie au
+        cluster, pas le reseau d'administration. Un nom d'hote n'est pas
+        accepte : sa resolution pourrait changer.
+      </div>
+
+      <label for="peer_key">Cle publique du noeud</label>
+      <textarea id="peer_key" name="public_key" required rows="3"
+                placeholder="ssh-ed25519 AAAAC3Nza..." class="mono"></textarea>
+      <div class="stat-sub">
+        Une seule ligne, commencant par <span class="mono">ssh-ed25519</span>.
+        C'est la cle <strong>publique</strong> affichee a l'etape 1 de l'autre
+        machine — jamais une cle privee.
+      </div>
+
+      <label for="peer_pw">Votre mot de passe</label>
+      <input type="password" id="peer_pw" name="confirm_password" required>
+
+      <div class="btn-row">
+        <button type="submit" class="btn btn-primary">Autoriser ce noeud</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- 3. Test de lien                                                     -->
+<!-- ------------------------------------------------------------------ -->
+<div class="card">
+  <div class="stat-label">ETAPE 3 — VERIFICATION</div>
+  <h2>Tester le lien vers un noeud</h2>
+  <p class="stat-sub">
+    Rien n'est envoye : on ouvre une session, on pose quelques questions, on
+    referme. Chaque controle correspond a une facon connue d'echouer plus
+    tard, au milieu d'une replication.
+  </p>
+
+  <form method="post" action="/cluster/replication/test">
+    <label for="test_address">Adresse IP du noeud a joindre</label>
+    <input type="text" id="test_address" name="address" required
+           placeholder="192.168.1.42"
+           value="{{ report.address if report else '' }}">
+
+    <label for="test_pw">Votre mot de passe</label>
+    <input type="password" id="test_pw" name="confirm_password" required>
+    <div class="stat-sub">
+      Demande ici aussi : le test fait ouvrir a ce serveur, en tant
+      qu'administrateur, une connexion vers l'adresse indiquee, et retient
+      durablement l'identite du noeud contacte.
+    </div>
+
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Tester</button>
+    </div>
+  </form>
+
+  {% if report %}
+  <div class="result-card">
+    <h3>
+      Resultat pour <span class="mono">{{ report.address }}</span>
+      {% if report.usable %}
+      <span class="badge badge-ok">lien utilisable</span>
+      {% else %}
+      <span class="badge badge-danger">lien inutilisable</span>
+      {% endif %}
+    </h3>
+    <ul class="removal-list">
+      {% for check in report.checks %}
+      <li class="health-row health-row-{{ check.level }}">
+        {% if check.level == 'ok' %}<span class="badge badge-ok">OK</span>
+        {% elif check.level == 'bloquant' %}<span class="badge badge-danger">BLOQUANT</span>
+        {% elif check.level == 'attention' %}<span class="badge badge-warn">ATTENTION</span>
+        {% else %}<span class="badge badge-neutral">INCONNU</span>{% endif %}
+        <strong>{{ check.label }}</strong> — {{ check.detail }}
+      </li>
+      {% endfor %}
+    </ul>
+    {% if not report.usable %}
+    <p class="stat-sub">
+      Un controle bloquant en echec empeche toute replication : corrigez-le
+      avant d'aller plus loin. Le cas le plus frequent est que la machine
+      d'en face n'a pas encore autorise la cle publique de celle-ci — c'est
+      l'etape 2, a faire la-bas.
+    </p>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Modales de revocation                                               -->
+<!-- ------------------------------------------------------------------ -->
+{% for peer in peers %}
+<div class="modal-overlay" x-show="revokeFor === '{{ peer.name }}'" x-cloak
+     @click.self="revokeFor = null">
+  <div class="modal-box">
+    <div class="modal-close" @click="revokeFor = null">&times;</div>
+    <h2>Revoquer « {{ peer.name }} » ?</h2>
+    <p>
+      Sa cle est retiree immediatement : ce noeud ne pourra plus ouvrir de
+      session sur cette machine, et toute replication en provenance de lui
+      s'arretera. Aucune donnee deja recue n'est supprimee.
+    </p>
+    <form method="post" action="/cluster/replication/peers/revoke">
+      <input type="hidden" name="name" value="{{ peer.name }}">
+      <label for="revoke_pw_{{ loop.index }}">Votre mot de passe</label>
+      <input type="password" id="revoke_pw_{{ loop.index }}" name="confirm_password" required>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-solid-danger">Revoquer</button>
+        <button type="button" class="btn btn-muted" @click="revokeFor = null">Annuler</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+
+</div>
+{% endblock %}

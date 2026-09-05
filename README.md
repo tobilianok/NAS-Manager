@@ -6,7 +6,7 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
-**Version actuelle : v1.12.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+**Version actuelle : v1.13.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
 est affiché en bas du menu latéral ; le survol donne le commit déployé et
 signale si des fichiers ont été modifiés à la main sur le serveur.
 
@@ -31,6 +31,8 @@ permet de réunir plusieurs machines NAS Manager en une grappe Docker Swarm
 (mise en cluster des machines uniquement — le stockage n'est pas encore
 répliqué d'un nœud à l'autre), et depuis la v1.12.0 une page Snapshots gère
 les instantanés ZFS, manuels comme automatiques, avec retour arrière encadré.
+La v1.13.0 ajoute l'appairage SSH entre nœuds, premier maillon de la
+réplication d'un pool d'une machine à l'autre.
 Le tout s'installe par un script unique après une installation fraîche
 d'Ubuntu Server 26.04 LTS.
 
@@ -137,7 +139,7 @@ pytest tests/ -v
 ```
 
 Optionnel (pas nécessaire pour faire tourner NAS Manager), mais recommandé
-avant de valider une modification faite à la main. **1243 tests** couvrent :
+avant de valider une modification faite à la main. **1332 tests** couvrent :
 
 - **Stockage** : détection et identité des disques (étiquette ZFS plutôt que
   nom de périphérique), validation des pools, agrandissement, suppression en
@@ -153,6 +155,9 @@ avant de valider une modification faite à la main. **1243 tests** couvrent :
   ventilation PWM (détection hwmon, plancher de vitesse infranchissable,
   reprise du profil au redémarrage du service), configuration réseau avec
   retour arrière, sauvegarde et restauration, alimentation.
+- **Appairage des nœuds** : validation de l'adresse et de la clé publique,
+  restrictions posées dans `authorized_keys`, préservation des clés
+  personnelles présentes dans le même fichier, test de lien.
 - **Snapshots** : lecture et création, politiques automatiques et rétention
   (qui ne touche jamais un snapshot manuel), ordre de suppression fondé sur
   le label plutôt que sur une date qui peut mentir, retour arrière et le

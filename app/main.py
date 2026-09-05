@@ -27,6 +27,7 @@ from app import (
     sysupdate, appupdate, liverun, gitauth, diskwipe, smarttests, diskjobs,
     power, servicerestart, sensors, diskage, timezone, notifications,
     systemsettings, fancontrol, cluster, snapshots as snapshots_module,
+    replication,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -3166,3 +3167,88 @@ def snapshots_remove_policy(request: Request, dataset: str = Form(...), frequenc
     except snapshots_module.SnapshotError as exc:
         return _snapshots_response(request, username, error=str(exc), status_code=400)
     return _snapshots_response(request, username, notice=message)
+
+
+# ---------------------------------------------------------------------------
+# Appairage des noeuds pour la replication (v1.13.0)
+# ---------------------------------------------------------------------------
+
+def _replication_context(request: Request, username: str, error: str | None = None,
+                         notice: str | None = None, report=None) -> dict:
+    public_key = replication.get_public_key()
+    return {
+        "request": request,
+        "username": username,
+        "public_key": public_key,
+        "fingerprint": replication._fingerprint(public_key) if public_key else "",
+        "peers": replication.list_peers(),
+        "report": report,
+        "error": error,
+        "notice": notice,
+    }
+
+
+def _replication_response(request: Request, username: str, error: str | None = None,
+                          notice: str | None = None, report=None, status_code: int = 200):
+    return templates.TemplateResponse(
+        "replication.html",
+        _replication_context(request, username, error=error, notice=notice, report=report),
+        status_code=status_code,
+    )
+
+
+@app.get("/cluster/replication", response_class=HTMLResponse)
+def replication_page(request: Request, username: str = Depends(require_login)):
+    return _replication_response(request, username)
+
+
+@app.post("/cluster/replication/key")
+def replication_generate_key(request: Request, confirm_password: str = Form(...),
+                             force: str = Form(""), username: str = Depends(require_login)):
+    try:
+        message = replication.generate_key(username, confirm_password, force=_checked(force))
+    except replication.ReplicationError as exc:
+        return _replication_response(request, username, error=str(exc), status_code=400)
+    return _replication_response(request, username, notice=message)
+
+
+@app.post("/cluster/replication/peers")
+def replication_authorize_peer(request: Request, name: str = Form(...), address: str = Form(...),
+                               public_key: str = Form(...), confirm_password: str = Form(...),
+                               username: str = Depends(require_login)):
+    try:
+        message = replication.authorize_peer(name, address, public_key, username, confirm_password)
+    except replication.ReplicationError as exc:
+        return _replication_response(request, username, error=str(exc), status_code=400)
+    return _replication_response(request, username, notice=message)
+
+
+@app.post("/cluster/replication/peers/revoke")
+def replication_revoke_peer(request: Request, name: str = Form(...),
+                            confirm_password: str = Form(...),
+                            username: str = Depends(require_login)):
+    try:
+        message = replication.revoke_peer(name, username, confirm_password)
+    except replication.ReplicationError as exc:
+        return _replication_response(request, username, error=str(exc), status_code=400)
+    return _replication_response(request, username, notice=message)
+
+
+@app.post("/cluster/replication/test")
+def replication_test_link(request: Request, address: str = Form(...),
+                          confirm_password: str = Form(...),
+                          username: str = Depends(require_login)):
+    """Le mot de passe est demande ici aussi, alors que le test ne detruit
+    rien et n'ouvre aucun acces.
+
+    Deux raisons : il fait ouvrir au serveur, EN ROOT, une connexion
+    sortante vers une adresse choisie par le client - de quoi balayer un
+    reseau depuis la machine si une session etait detournee ; et il epingle
+    durablement la cle d'hote du noeud contacte. Ce n'est donc pas une
+    lecture sans consequence, et c'est une action qu'on lance rarement."""
+    try:
+        replication._require_password(username, confirm_password)
+        report = replication.test_link(address)
+    except replication.ReplicationError as exc:
+        return _replication_response(request, username, error=str(exc), status_code=400)
+    return _replication_response(request, username, report=report)
