@@ -9,10 +9,15 @@
      x-data="serverClock({{ clock.seconds_of_day }}, {{ clock.uptime_seconds }})"
      x-init="start()">
 
+  {# Toutes les cartes du tableau de bord portent cette etiquette (CPU, RAM,
+     RESEAU, SANTE & SECURITE) : sans elle, celle-ci etait la seule a ne pas
+     suivre la regle (v1.9.0). #}
+  <div class="stat-label">HEURE DU SERVEUR</div>
+
   <div class="clock-face">
     <div class="clock-time" x-text="timeLabel">{{ clock.time_label }}</div>
     <div class="clock-date">{{ clock.date_label }}</div>
-    <div class="clock-tz">heure du serveur ({{ clock.timezone }})</div>
+    <div class="clock-tz">fuseau {{ clock.timezone }}</div>
   </div>
 
   {# Disponibilite (v1.6.0), rapatriee depuis sa tuile du tableau de bord.

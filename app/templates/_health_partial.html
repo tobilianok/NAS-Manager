@@ -23,22 +23,52 @@
 {%- endmacro %}
 
 {# ------------------------------ La carte ------------------------------ #}
-<button type="button" class="weather-card weather-{{ report.weather }} weather-button"
-        @click="open = true"
-        aria-haspopup="dialog">
-  <div class="weather-icon">{{ weather_icon(report.weather) }}</div>
-  <div class="weather-main">
-    <div class="weather-label">{{ report.weather_label }}</div>
-    <div class="weather-sub">
-      {% if report.attention_count %}
-      {{ report.attention_count }} point{{ 's' if report.attention_count > 1 }} demande{{ 'nt' if report.attention_count > 1 }} ton attention
-      {% else %}
-      {{ report.checks | length }} controles passes — voir le detail
-      {% endif %}
+{# Meme ossature que la carte horloge (v1.9.0) : etiquette, bloc principal,
+   filet, ligne d'information, filet, rangee de boutons. Les deux cartes de
+   la colonne de gauche avaient des hauteurs sans rapport - 270 px contre
+   77 - et la difference se voyait plus que le contenu. #}
+<div class="card weather-card weather-{{ report.weather }}">
+  <div class="stat-label">SANTE &amp; SECURITE</div>
+
+  <div class="weather-face">
+    <div class="weather-icon">{{ weather_icon(report.weather) }}</div>
+    <div class="weather-main">
+      <div class="weather-label">{{ report.weather_label }}</div>
+      <div class="weather-sub">
+        {% if report.attention_count %}
+        {{ report.attention_count }} point{{ 's' if report.attention_count > 1 }} sur {{ report.checks | length }} demande{{ 'nt' if report.attention_count > 1 }} une action
+        {% else %}
+        {{ report.checks | length }} controles, aucun probleme
+        {% endif %}
+      </div>
     </div>
   </div>
-  <svg class="weather-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
-</button>
+
+  {# La ligne la plus actionnable, a la place ou l'horloge met sa
+     disponibilite : ce qu'on veut savoir sans ouvrir quoi que ce soit. #}
+  <div class="weather-headline">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v5h-5"/></svg>
+    <div>
+      <div class="weather-headline-value">
+        {%- if snapshot.never_checked %}Mises a jour jamais verifiees
+        {%- elif snapshot.total %}{{ snapshot.total }} mise{{ 's' if snapshot.total > 1 }} a jour disponible{{ 's' if snapshot.total > 1 }}
+        {%- else %}Tout est a jour{% endif -%}
+      </div>
+      <div class="weather-headline-sub">
+        {%- if snapshot.never_checked %}lance une verification depuis le detail
+        {%- else %}verifie {{ checked_label }}{% if snapshot.outdated %} — resultat ancien{% endif %}{% endif -%}
+      </div>
+    </div>
+  </div>
+
+  <div class="weather-actions">
+    <button type="button" class="btn-muted btn-sm weather-open" @click="open = true"
+            aria-haspopup="dialog">
+      Voir le detail
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+    </button>
+  </div>
+</div>
 
 {# ----------------------------- La fenetre ----------------------------- #}
 <div class="modal-overlay" x-show="open" x-cloak

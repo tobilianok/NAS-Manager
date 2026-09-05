@@ -13,22 +13,27 @@
     </div>
     {% endif %}
 
+    {# Toutes les bandes partagent le meme decoupage en colonnes (v1.9.0) :
+       les separations verticales tombent au meme endroit d'un bout a l'autre
+       de la page. Elles etaient auparavant a deux endroits differents selon
+       la rangee. #}
     <div class="dash-row dash-row-top">
       <div class="dash-col-weather">
-        {% include "_clock_card.html" %}
+        <h2 class="section-title">Serveur</h2>
 
-        {# La carte « Mises a jour » vivait ici jusqu'a la v1.8.0. Elle a
-           fusionne avec la meteo : les mises a jour sont un controle de
-           sante parmi les autres, et deux cartes empilees disaient deux fois
-           « voici ce qui va, voici ce qui ne va pas ». #}
-        <h2 class="section-title">Sante &amp; securite</h2>
+        {# Hauteurs egales imposees par la grille : le contenu des deux
+           cartes n'a aucune raison de faire la meme taille, mais la
+           difference se voyait plus que le contenu lui-meme. #}
+        <div class="dash-rail">
+          {% include "_clock_card.html" %}
 
-        {# x-data est ICI, hors de la zone remplacee par HTMX : l'etat
-           ouvert/ferme doit survivre au rafraichissement du fragment, sinon
-           la fenetre se refermerait toute seule toutes les 30 secondes. #}
-        <div x-data="{ open: false }">
-          <div id="live-health" hx-get="/partials/health" hx-trigger="load, every 30s" hx-swap="innerHTML">
-            Chargement...
+          {# x-data est ICI, hors de la zone remplacee par HTMX : l'etat
+             ouvert/ferme doit survivre au rafraichissement du fragment,
+             sinon la fenetre se refermerait toute seule toutes les 30 s. #}
+          <div x-data="{ open: false }">
+            <div id="live-health" hx-get="/partials/health" hx-trigger="load, every 30s" hx-swap="innerHTML">
+              Chargement...
+            </div>
           </div>
         </div>
       </div>
@@ -39,6 +44,10 @@
         </div>
       </div>
     </div>
+
+    {# Les pools quittent la colonne de droite pour une bande a eux : leur
+       titre commencait au milieu de la page. #}
+    <div id="live-pools" hx-get="/partials/pools" hx-trigger="load, every 20s" hx-swap="innerHTML"></div>
 
     <div class="dash-row">
       <div class="dash-col">
@@ -101,6 +110,7 @@
     </div>
 
     <h2 class="section-title">Disques detectes</h2>
+    <div class="card">
     <table>
       <thead>
         <tr><th>Peripherique</th><th>Modele</th><th>Taille</th><th>Type</th><th>Statut</th><th>Detail</th><th>SMART</th></tr>
@@ -129,4 +139,5 @@
         {% endfor %}
       </tbody>
     </table>
+    </div>
 {% endblock %}

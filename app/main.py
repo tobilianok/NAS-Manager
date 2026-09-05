@@ -192,11 +192,10 @@ def api_disks(username: str = Depends(require_login)):
 
 @app.get("/partials/sysstats", response_class=HTMLResponse)
 def partial_sysstats(request: Request, username: str = Depends(require_login)):
+    # Les pools ont leur propre fragment depuis la v1.9.0 : `zpool list` a
+    # chaque passage ici, soit toutes les 5 secondes, pour une donnee qui ne
+    # bouge pas a la seconde, etait du gaspillage.
     stats = sysstats.get_system_stats()
-    pool_list = zfs.list_pools()
-    pools_with_alerts = [
-        {"pool": p, "alert": _fill_alert_level(p.used_percent)} for p in pool_list
-    ]
     return templates.TemplateResponse(
         "_sysstats_partial.html",
         {
@@ -205,7 +204,6 @@ def partial_sysstats(request: Request, username: str = Depends(require_login)):
             "boot_label": sysstats.format_boot_date(stats.boot_epoch),
             "format_frequency": sysstats.format_frequency,
             "format_bytes": sysstats.format_bytes,
-            "pools_with_alerts": pools_with_alerts,
             # Le widget reseau est desormais une tuile de cette grille : il
             # est rendu par le meme fragment, avec les memes aides.
             "interfaces": netstats.list_interfaces(),
@@ -248,6 +246,26 @@ def _health_context(request: Request) -> dict:
         "snapshot": snapshot,
         "checked_label": _relative_label(snapshot.checked_epoch),
     }
+
+
+@app.get("/partials/pools", response_class=HTMLResponse)
+def partial_pools(request: Request, username: str = Depends(require_login)):
+    """Bande des pools ZFS (v1.9.0), sortie du fragment « etat du systeme ».
+
+    Elle y etait rendue dans la colonne de droite : son titre commencait au
+    milieu de la page au lieu du bord, seul element a ne pas suivre la
+    grille. Cadence propre au passage : l'occupation d'un pool ne bouge pas a
+    la seconde, mais une reconstruction doit rester visible."""
+    pool_list = zfs.list_pools()
+    return templates.TemplateResponse(
+        "_pools_partial.html",
+        {
+            "request": request,
+            "pools_with_alerts": [
+                {"pool": p, "alert": _fill_alert_level(p.used_percent)} for p in pool_list
+            ],
+        },
+    )
 
 
 @app.get("/partials/health", response_class=HTMLResponse)
