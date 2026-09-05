@@ -6,7 +6,7 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
-**Version actuelle : v1.11.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+**Version actuelle : v1.12.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
 est affiché en bas du menu latéral ; le survol donne le commit déployé et
 signale si des fichiers ont été modifiés à la main sur le serveur.
 
@@ -29,8 +29,10 @@ regroupant l'heure du serveur, les seuils de température de la carte Santé
 ventilation Silence/Normal/Performance. Depuis la v1.11.0, une page Cluster
 permet de réunir plusieurs machines NAS Manager en une grappe Docker Swarm
 (mise en cluster des machines uniquement — le stockage n'est pas encore
-répliqué d'un nœud à l'autre). Le tout s'installe par un script
-unique après une installation fraîche d'Ubuntu Server 26.04 LTS.
+répliqué d'un nœud à l'autre), et depuis la v1.12.0 une page Snapshots gère
+les instantanés ZFS, manuels comme automatiques, avec retour arrière encadré.
+Le tout s'installe par un script unique après une installation fraîche
+d'Ubuntu Server 26.04 LTS.
 
 Ce qui reste à éprouver en conditions réelles : NFS et les permissions
 lecture seule, l'agrandissement d'un pool contenant des données, la
@@ -135,7 +137,7 @@ pytest tests/ -v
 ```
 
 Optionnel (pas nécessaire pour faire tourner NAS Manager), mais recommandé
-avant de valider une modification faite à la main. **1120 tests** couvrent :
+avant de valider une modification faite à la main. **1243 tests** couvrent :
 
 - **Stockage** : détection et identité des disques (étiquette ZFS plutôt que
   nom de périphérique), validation des pools, agrandissement, suppression en
@@ -151,6 +153,10 @@ avant de valider une modification faite à la main. **1120 tests** couvrent :
   ventilation PWM (détection hwmon, plancher de vitesse infranchissable,
   reprise du profil au redémarrage du service), configuration réseau avec
   retour arrière, sauvegarde et restauration, alimentation.
+- **Snapshots** : lecture et création, politiques automatiques et rétention
+  (qui ne touche jamais un snapshot manuel), ordre de suppression fondé sur
+  le label plutôt que sur une date qui peut mentir, retour arrière et le
+  calcul de son impact, protection des pools système.
 - **Cluster** : lecture de l'état Swarm, formation et jonction d'un cluster,
   gestion des nœuds, et les trois garde-fous (adresse d'annonce revérifiée
   contre les cartes réseau réelles, mot de passe reconfirmé, dernier manager

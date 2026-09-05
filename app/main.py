@@ -26,11 +26,19 @@ from app import (
     sysaccounts, configbackup, poolexpand, navigation, version as version_module,
     sysupdate, appupdate, liverun, gitauth, diskwipe, smarttests, diskjobs,
     power, servicerestart, sensors, diskage, timezone, notifications,
-    systemsettings, fancontrol, cluster,
+    systemsettings, fancontrol, cluster, snapshots as snapshots_module,
 )
 
 BASE_DIR = os.path.dirname(__file__)
 logger = logging.getLogger("nas_manager.main")
+
+
+def _checked(value: str) -> bool:
+    """Une case a cocher HTML n'est envoyee que si elle est cochee, mais
+    rien n'empeche un client d'envoyer `force=0` ou `force=false` : avec un
+    simple `bool(value)`, ces deux-la valaient confirmation. Sur une action
+    destructrice, l'ecart n'est pas theorique."""
+    return value.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -64,6 +72,16 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 # le menu lateral et le numero de version apparaissent sur chaque page, les
 # oublier dans une seule reponse casserait la navigation de cette page.
 templates.env.globals["nav_entries"] = navigation.NAV
+
+
+@app.on_event("startup")
+def _start_snapshot_scheduler() -> None:
+    """Les politiques de snapshots ne valent que si quelque chose les
+    execute. Un thread de fond plutot qu'un timer systemd : ca evite
+    d'exiger un `sudo ./install.sh` pour activer la fonctionnalite, et
+    `is_due()` etant sans etat, un service redemarre rattrape tout seul ce
+    qui n'a pas ete pris."""
+    snapshots_module.start_scheduler()
 
 
 @app.on_event("startup")
@@ -2958,7 +2976,7 @@ def cluster_join_route(request: Request, remote_addr: str = Form(...), token: st
 def cluster_leave_route(request: Request, confirm_password: str = Form(...),
                         force: str = Form(""), username: str = Depends(require_login)):
     try:
-        message = cluster.leave_cluster(username, confirm_password, force=bool(force))
+        message = cluster.leave_cluster(username, confirm_password, force=_checked(force))
     except cluster.ClusterError as exc:
         return _cluster_response(request, username, error=str(exc), status_code=400)
     return _cluster_response(request, username, notice=message)
@@ -2997,7 +3015,154 @@ def cluster_set_node_availability(request: Request, node_id: str, availability: 
 def cluster_remove_node(request: Request, node_id: str, confirm_password: str = Form(...),
                         force: str = Form(""), username: str = Depends(require_login)):
     try:
-        message = cluster.remove_node(node_id, username, confirm_password, force=bool(force))
+        message = cluster.remove_node(node_id, username, confirm_password, force=_checked(force))
     except cluster.ClusterError as exc:
         return _cluster_response(request, username, error=str(exc), status_code=400)
     return _cluster_response(request, username, notice=message)
+
+
+# ---------------------------------------------------------------------------
+# Snapshots ZFS (v1.12.0)
+# ---------------------------------------------------------------------------
+
+def _snapshots_context(request: Request, username: str,
+                       error: str | None = None, notice: str | None = None) -> dict:
+    """Tout l'etat de la page, recalcule a chaque rendu. Aucune donnee ne
+    transite par le formulaire pour etre reprise telle quelle : les datasets
+    proposes et les pools systeme sont relus a chaque fois."""
+    all_snapshots = snapshots_module.list_snapshots()
+    grouped: dict[str, list] = {}
+    for snapshot in all_snapshots:
+        grouped.setdefault(snapshot.pool, []).append(snapshot)
+    pool_used = {
+        pool: snapshots_module.total_used_bytes(snaps)
+        for pool, snaps in grouped.items()
+    }
+    # Les datasets des pools systeme sont retires des listes deroulantes :
+    # le serveur les refuse de toute facon, autant ne pas proposer un choix
+    # qui ne peut mener qu'a un message d'erreur.
+    protected = snapshots_module.system_pool_names()
+    datasets = [
+        ds for ds in snapshots_module.list_datasets()
+        if ds.split("/")[0] not in protected
+    ]
+    return {
+        "request": request,
+        "username": username,
+        "datasets": datasets,
+        "grouped": grouped,
+        "pool_used": pool_used,
+        "all_snapshots": all_snapshots,
+        "policy_statuses": snapshots_module.policy_statuses(),
+        "frequencies": snapshots_module.FREQUENCIES,
+        "system_pools": sorted(protected),
+        "auto_prefix": snapshots_module.AUTO_PREFIX,
+        "min_keep": snapshots_module.MIN_KEEP,
+        "max_keep": snapshots_module.MAX_KEEP,
+        "format_bytes": sysstats.format_bytes,
+        "error": error,
+        "notice": notice,
+    }
+
+
+def _snapshots_response(request: Request, username: str, error: str | None = None,
+                        notice: str | None = None, status_code: int = 200):
+    return templates.TemplateResponse(
+        "snapshots.html",
+        _snapshots_context(request, username, error=error, notice=notice),
+        status_code=status_code,
+    )
+
+
+@app.get("/snapshots", response_class=HTMLResponse)
+def snapshots_page(request: Request, username: str = Depends(require_login)):
+    return _snapshots_response(request, username)
+
+
+@app.post("/snapshots/create")
+def snapshots_create(request: Request, dataset: str = Form(...), label: str = Form(...),
+                     recursive: str = Form(""), username: str = Depends(require_login)):
+    try:
+        message = snapshots_module.create_snapshot(dataset, label, recursive=_checked(recursive))
+    except snapshots_module.SnapshotError as exc:
+        return _snapshots_response(request, username, error=str(exc), status_code=400)
+    return _snapshots_response(request, username, notice=message)
+
+
+@app.post("/snapshots/destroy")
+def snapshots_destroy(request: Request, full_name: str = Form(...),
+                      confirm_password: str = Form(...),
+                      username: str = Depends(require_login)):
+    try:
+        message = snapshots_module.destroy_snapshot(full_name, username, confirm_password)
+    except snapshots_module.SnapshotError as exc:
+        return _snapshots_response(request, username, error=str(exc), status_code=400)
+    return _snapshots_response(request, username, notice=message)
+
+
+@app.get("/snapshots/rollback", response_class=HTMLResponse)
+def snapshots_rollback_confirm(request: Request, name: str,
+                               username: str = Depends(require_login)):
+    """Page de confirmation dediee plutot qu'une modale : l'impact exact
+    (snapshots detruits, partages et stacks concernes) est CALCULE PAR LE
+    SERVEUR et doit etre lu avant de decider. Meme principe que la page
+    d'effacement de disque."""
+    try:
+        impact = snapshots_module.plan_rollback(name)
+    except snapshots_module.SnapshotError as exc:
+        return _snapshots_response(request, username, error=str(exc), status_code=400)
+    return templates.TemplateResponse(
+        "snapshot_rollback.html",
+        {
+            "request": request, "username": username, "impact": impact,
+            "format_bytes": sysstats.format_bytes, "error": None,
+        },
+    )
+
+
+@app.post("/snapshots/rollback")
+def snapshots_rollback(request: Request, full_name: str = Form(...),
+                       confirm_name: str = Form(...), confirm_password: str = Form(...),
+                       force: str = Form(""), username: str = Depends(require_login)):
+    try:
+        message = snapshots_module.rollback_snapshot(
+            full_name, username, confirm_password, confirm_name, force=_checked(force),
+        )
+    except snapshots_module.SnapshotError as exc:
+        # Re-rendu de la page de confirmation avec l'erreur : l'impact est
+        # recalcule, donc toujours a jour meme si la situation a change
+        # entre l'affichage du formulaire et l'envoi.
+        try:
+            impact = snapshots_module.plan_rollback(full_name)
+        except snapshots_module.SnapshotError:
+            return _snapshots_response(request, username, error=str(exc), status_code=400)
+        return templates.TemplateResponse(
+            "snapshot_rollback.html",
+            {
+                "request": request, "username": username, "impact": impact,
+                "format_bytes": sysstats.format_bytes, "error": str(exc),
+            },
+            status_code=400,
+        )
+    return _snapshots_response(request, username, notice=message)
+
+
+@app.post("/snapshots/policies")
+def snapshots_set_policy(request: Request, dataset: str = Form(...), frequency: str = Form(...),
+                         keep: str = Form(...), recursive: str = Form(""),
+                         username: str = Depends(require_login)):
+    try:
+        message = snapshots_module.set_policy(dataset, frequency, keep, recursive=_checked(recursive))
+    except snapshots_module.SnapshotError as exc:
+        return _snapshots_response(request, username, error=str(exc), status_code=400)
+    return _snapshots_response(request, username, notice=message)
+
+
+@app.post("/snapshots/policies/remove")
+def snapshots_remove_policy(request: Request, dataset: str = Form(...), frequency: str = Form(...),
+                            username: str = Depends(require_login)):
+    try:
+        message = snapshots_module.remove_policy(dataset, frequency)
+    except snapshots_module.SnapshotError as exc:
+        return _snapshots_response(request, username, error=str(exc), status_code=400)
+    return _snapshots_response(request, username, notice=message)

@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}Retour arriere - NAS Manager{% endblock %}
+{% block breadcrumb %}Stockage / <a href="/snapshots">Snapshots</a> / <strong>Retour arriere</strong>{% endblock %}
+
+{% block content %}
+<h1>Revenir a l'etat du {{ impact.snapshot.created.strftime('%d/%m/%Y a %H:%M') if impact.snapshot.created else 'snapshot' }}</h1>
+
+{% if error %}<div class="danger-banner">{{ error }}</div>{% endif %}
+
+<div class="danger-banner">
+  <strong>Cette operation detruit des donnees.</strong> Tout ce qui a ete ecrit
+  dans <span class="mono">{{ impact.snapshot.dataset }}</span> depuis ce
+  snapshot sera perdu definitivement. Il n'y a pas d'annulation.
+</div>
+
+<div class="card">
+  <h2>Avant d'aller plus loin</h2>
+  <p>
+    Si vous cherchez a <strong>recuperer un fichier precis</strong>, ne faites
+    pas ce retour arriere : le contenu du snapshot est deja lisible, sans aucun
+    risque, dans le dossier cache
+    <span class="mono">.zfs/snapshot/{{ impact.snapshot.label }}/</span> a la
+    racine du point de montage du dataset. Copiez-y ce dont vous avez besoin et
+    laissez le reste intact.
+  </p>
+  <p class="stat-sub">
+    Le retour arriere n'a de sens que pour annuler <em>l'ensemble</em> des
+    changements : une mise a jour d'application qui a mal tourne, un import
+    massif a refaire, un chiffrement malveillant recent.
+  </p>
+</div>
+
+<div class="card">
+  <h2>Ce qui va se passer</h2>
+
+  <div class="facts-grid">
+    <div>
+      <div class="stat-label">DATASET</div>
+      <div class="stat-value stat-value-small mono">{{ impact.snapshot.dataset }}</div>
+    </div>
+    <div>
+      <div class="stat-label">SNAPSHOT CIBLE</div>
+      <div class="stat-value stat-value-small mono">{{ impact.snapshot.label }}</div>
+    </div>
+    <div>
+      <div class="stat-label">ECRIT DEPUIS (SERA PERDU)</div>
+      {% if impact.written_since_bytes is none %}
+      <div class="stat-value stat-value-small">inconnu</div>
+      <div class="stat-sub">ZFS n'a pas su repondre — considerez que tout ce qui a change depuis sera perdu.</div>
+      {% else %}
+      <div class="stat-value stat-value-small">{{ format_bytes(impact.written_since_bytes) }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if impact.newer_snapshots %}
+  <div class="warning-banner">
+    <strong>{{ impact.newer_snapshots|length }} snapshot(s) plus recent(s) seront
+    detruits</strong> en meme temps — ZFS ne sait pas revenir a un etat ancien
+    en gardant les points de restauration posterieurs.
+  </div>
+  <ul class="removal-list">
+    {% for snap in impact.newer_snapshots %}
+    <li>
+      <span class="mono">{{ snap.label }}</span>
+      {% if snap.created %} — pris le {{ snap.created.strftime('%d/%m/%Y a %H:%M') }}{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="stat-sub">
+    Aucun snapshot plus recent : seul le contenu actuel du dataset est concerne.
+  </p>
+  {% endif %}
+
+  {% if impact.shares %}
+  <div class="warning-banner">
+    <strong>Partage(s) servi(s) depuis ce dataset :</strong>
+    {{ impact.shares|join(', ') }}. Les fichiers vus par les utilisateurs
+    changeront d'un coup. Prevenez-les, ou coupez l'acces le temps de
+    l'operation.
+  </div>
+  {% endif %}
+
+  {% if impact.stacks %}
+  <div class="warning-banner">
+    <strong>Stack(s) Docker installe(s) sur ce dataset :</strong>
+    {{ impact.stacks|join(', ') }}. Leurs containers ecrivent peut-etre en ce
+    moment meme. <strong>Arretez-les depuis <a href="/docker">la page
+    Docker</a> avant de continuer</strong> : un container qui ecrit pendant que
+    le systeme de fichiers change sous lui peut corrompre ses propres donnees,
+    et il faudra de toute facon le redemarrer apres.
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Confirmation</h2>
+  <form method="post" action="/snapshots/rollback" class="rollback-form">
+    <input type="hidden" name="full_name" value="{{ impact.snapshot.full_name }}">
+
+    <label for="confirm_name">
+      Recopiez exactement <span class="mono">{{ impact.snapshot.full_name }}</span>
+    </label>
+    <input type="text" id="confirm_name" name="confirm_name" required
+           autocomplete="off" spellcheck="false" placeholder="{{ impact.snapshot.dataset }}@...">
+
+    <label for="confirm_password">Votre mot de passe</label>
+    <input type="password" id="confirm_password" name="confirm_password" required>
+
+    {% if impact.is_disruptive %}
+    <div class="checkbox-row">
+      <input type="checkbox" id="force" name="force" value="1" required>
+      <label for="force">
+        Je comprends que ce retour arriere depasse la simple annulation
+        d'ecritures
+        {%- if impact.newer_snapshots %} (snapshots plus recents detruits){% endif -%}
+        {%- if impact.shares or impact.stacks %} et qu'il affecte des services en
+        cours d'utilisation{% endif %}.
+      </label>
+    </div>
+    {% endif %}
+
+    <div class="btn-row">
+      <button type="submit" class="btn btn-solid-danger">
+        Revenir a cet etat, definitivement
+      </button>
+      <a class="btn btn-muted" href="/snapshots">Annuler</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

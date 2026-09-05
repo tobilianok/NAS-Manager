@@ -35,6 +35,10 @@
 <svg {{ common|safe }}><path d="M4 6h9M17 6h3"/><circle cx="14" cy="6" r="2"/><path d="M4 12h3M11 12h9"/><circle cx="8" cy="12" r="2"/><path d="M4 18h9M17 18h3"/><circle cx="14" cy="18" r="2"/></svg>
 {% elif name == 'cluster' %}
 <svg {{ common|safe }}><path d="M6 6 18 6M18 6 12 18M12 18 6 6"/><circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="12" cy="18" r="2.4"/></svg>
+{% elif name == 'snapshot' %}
+{# Horloge avec fleche de retour : le symbole universel de l'historique et
+   des versions precedentes, ce qu'un snapshot est exactement. #}
+<svg {{ common|safe }}><path d="M3 12a9 9 0 1 0 2.6-6.4"/><path d="M3 3v5h5"/><path d="M12 8v4.5l3 1.8"/></svg>
 {% else %}
 <svg {{ common|safe }}><circle cx="12" cy="12" r="9"/></svg>
 {% endif %}

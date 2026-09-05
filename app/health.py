@@ -342,6 +342,35 @@ def check_updates() -> HealthCheck:
                         "Tout est a jour.")
 
 
+def check_snapshots() -> HealthCheck:
+    """Les politiques de snapshots tournent-elles encore ?
+
+    Une politique qui a cesse de prendre des snapshots ne se voit pas : la
+    page Snapshots affiche toujours les anciens, et rien ne crie. C'est
+    pourtant exactement le moment ou l'on croit etre protege sans l'etre -
+    d'ou une verification au meme titre que les huit autres.
+
+    Aucune politique = INCONNU, pas ATTENTION : ne pas en avoir est un choix
+    legitime, pas une anomalie."""
+    from app import snapshots as snapshots_module
+
+    statuses = snapshots_module.policy_statuses()
+    if not statuses:
+        return HealthCheck("snapshots", "Snapshots", LEVEL_INCONNU,
+                            "Aucune politique de snapshots automatiques.")
+
+    late = [s for s in statuses if s.is_late]
+    if late:
+        details = ", ".join(f"{s.policy.dataset} ({s.policy.frequency})" for s in late[:3])
+        suffix = "..." if len(late) > 3 else ""
+        return HealthCheck("snapshots", "Snapshots", LEVEL_ATTENTION,
+                            f"Politique(s) sans snapshot recent : {details}{suffix}.")
+
+    total = sum(s.count for s in statuses)
+    return HealthCheck("snapshots", "Snapshots", LEVEL_OK,
+                        f"{len(statuses)} politique(s) a jour, {total} snapshot(s) automatique(s).")
+
+
 def get_report() -> HealthReport:
     """Execute toutes les verifications. Peut prendre quelques secondes
     (smartctl par disque, sensors, docker compose ps par stack) - a
@@ -355,6 +384,7 @@ def get_report() -> HealthReport:
         check_firewall(),
         check_docker(),
         check_share_admins(),
+        check_snapshots(),
         check_updates(),
     ]
     return HealthReport(checks=checks)

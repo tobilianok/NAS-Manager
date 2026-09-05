@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app import (
     main, auth, disks as disks_module, netstats, replace_workflow, zfs,
-    fancontrol, systemsettings, cluster,
+    fancontrol, systemsettings, cluster, snapshots,
 )
 
 
@@ -24,6 +24,10 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(fancontrol, "list_channels", lambda: [])
     monkeypatch.setattr(cluster, "get_status", lambda: cluster.ClusterStatus(active=False))
     monkeypatch.setattr(cluster, "list_candidate_interfaces", lambda: [])
+    monkeypatch.setattr(snapshots, "list_snapshots", lambda ds=None: [])
+    monkeypatch.setattr(snapshots, "list_datasets", lambda pool=None: [])
+    monkeypatch.setattr(snapshots, "policy_statuses", lambda: [])
+    monkeypatch.setattr(snapshots, "system_pool_names", lambda: set())
     with TestClient(main.app) as c:
         resp = c.post("/login", data={"username": "louis", "password": "x"}, follow_redirects=False)
         assert resp.status_code == 302
@@ -74,15 +78,15 @@ def test_only_one_link_is_highlighted_at_a_time(client):
 
 def test_sidebar_shows_the_version(client):
     text = client.get("/").text
-    assert "v1.11.0" in text
+    assert "v1.12.0" in text
 
 
 def test_sidebar_is_identical_on_every_page(client):
     """Le menu vient d'une donnee partagee : aucune page ne peut l'oublier
     ni en afficher une version differente."""
-    for path in ("/", "/pools", "/shares", "/docker", "/cluster", "/network", "/system", "/backup",
+    for path in ("/", "/pools", "/shares", "/snapshots", "/docker", "/cluster", "/network", "/system", "/backup",
                  "/share-users", "/admin-accounts", "/disks", "/updates"):
         resp = client.get(path)
         assert resp.status_code == 200, path
         assert "Parametres" in resp.text, path
-        assert "v1.11.0" in resp.text, path
+        assert "v1.12.0" in resp.text, path

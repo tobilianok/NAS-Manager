@@ -13,6 +13,79 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.12.0 — 2026-09-05
+
+Une nouvelle page **Snapshots** (Stockage → Snapshots). Première des quatre
+étapes de la redondance de stockage entre nœuds : `zfs send` ne transmet pas
+un dataset, il transmet **la différence entre deux snapshots** — sans eux, il
+n'y a rien à répliquer. Mais ça sert déjà seul, cluster ou pas : un snapshot
+protège de l'effacement accidentel et du chiffrement malveillant, là où un
+RAIDZ ne protège que de la panne d'un disque.
+
+### Ce que la page permet
+- Prendre un snapshot à la main, sur un dataset ou récursivement sur ses
+  enfants — le réflexe avant une opération risquée.
+- **Politiques automatiques** par dataset : horaire, quotidienne,
+  hebdomadaire ou mensuelle, avec le nombre de snapshots à conserver. Chaque
+  fréquence est expliquée à l'écran avec un réglage recommandé, dans le même
+  esprit que les explications sur L2ARC/SLOG/Special VDEV.
+- Voir l'espace que les snapshots retiennent, pool par pool.
+- **Retour arrière** vers l'état d'un snapshot, sur une page de confirmation
+  dédiée.
+- Une vérification `check_snapshots()` rejoint les huit contrôles de la carte
+  « Santé & sécurité » : une politique qui a cessé de tourner ne se voyait
+  pas, et c'est précisément le moment où l'on se croit protégé sans l'être.
+
+### Ce que la page dit, et qu'il faut lire
+- **Un snapshot n'est pas une sauvegarde.** Il vit dans le même pool, sur les
+  mêmes disques. Un pool perdu emporte ses snapshots avec lui. C'est écrit en
+  haut de la page, pas en note de bas de page.
+- **Pour récupérer un fichier, ne faites pas de retour arrière.** Le contenu
+  de chaque snapshot est lisible sans le moindre risque dans le dossier caché
+  `.zfs/snapshot/<nom>/` à la racine du point de montage. La page de retour
+  arrière le rappelle avant toute autre chose.
+
+### Garde-fous
+- **Le retour arrière est la seule opération du projet, avec la suppression
+  de pool, qui détruit des données vivantes.** Il exige le nom complet
+  retapé, le mot de passe de l'administrateur connecté, et une confirmation
+  supplémentaire dès qu'il dépasse la simple annulation d'écritures. La page
+  affiche d'abord la liste exacte de ce qui disparaîtra : snapshots plus
+  récents, partages servis depuis ce dataset, stacks Docker qui y écrivent.
+- **La suppression automatique ne touche que ce qu'elle a elle-même créé** :
+  même dataset, même fréquence, et un label conforme au format complet
+  `nasmgr-<fréquence>-<horodatage>`. Un snapshot pris à la main ne disparaît
+  jamais tout seul, même s'il porte un nom ressemblant.
+- **L'ordre de suppression vient du label, jamais de la date rapportée par
+  ZFS.** Une horloge partie en avant ou une date illisible aurait fait passer
+  le snapshot le plus récent pour le plus ancien — et la rétention aurait
+  supprimé exactement celui qu'il fallait garder.
+- **Ce qui sera perdu est demandé à ZFS** (propriété `written@<snapshot>`).
+  La valeur qui semblait évidente (`used` du snapshot) compte ce que le
+  snapshot *retient*, pas ce qui a été écrit depuis : sur un dataset où l'on
+  n'a fait qu'ajouter, elle vaut zéro. L'écran aurait annoncé « 0 o seront
+  perdus » juste avant d'en détruire cent gigaoctets.
+- **Les pools système restent hors d'atteinte**, comme partout ailleurs. La
+  détection suit les liens symboliques : un pool importé par
+  `/dev/disk/by-id/...` ne commence pas par `/dev/sda` et échappait à une
+  comparaison par préfixe. Et si l'inventaire des disques est vide — c'est-à-
+  dire si `lsblk` a échoué, pas s'il n'y a pas de disque — toute écriture est
+  refusée plutôt que tentée à l'aveugle.
+
+### Fonctionnement
+- Le planificateur est un **fil d'exécution interne** au service, pas un
+  timer systemd : prendre un snapshot est instantané, et cela évite d'exiger
+  un `sudo ./install.sh` — **la mise à jour depuis l'interface suffit**.
+- Il ne tient aucun journal de ce qu'il a fait : pour savoir si un snapshot
+  est dû, il regarde les snapshots existants. Même principe que les auto-
+  tests SMART, qui interrogent le disque plutôt qu'un fichier d'état. Un
+  service redémarré rattrape donc tout seul, et supprimer un fichier ne peut
+  pas déclencher une rafale.
+
+**1243 tests** passent (123 de plus), sans régression sur le reste.
+
+---
+
 ## v1.11.0 — 2026-09-05
 
 Une nouvelle page **Cluster** : plusieurs machines NAS Manager peuvent

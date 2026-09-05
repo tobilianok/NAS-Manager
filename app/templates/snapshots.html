@@ -1,0 +1,332 @@
+{% extends "base.html" %}
+{% block title %}Snapshots - NAS Manager{% endblock %}
+{% block breadcrumb %}Stockage / <strong>Snapshots</strong>{% endblock %}
+
+{% block content %}
+<div x-data="{ destroyFor: null, policyOpen: false, helpOpen: false }">
+<h1>Snapshots</h1>
+<p class="page-intro">
+  Un snapshot fige l'etat d'un dataset a un instant donne. Il se prend en une
+  fraction de seconde et n'occupe presque rien au depart : ZFS ne conserve que
+  les blocs que le dataset a cesse de referencer depuis. C'est ce qui permet de
+  retrouver un fichier efface par erreur, ou de revenir en arriere apres une
+  mauvaise manipulation.
+</p>
+
+{% if error %}<div class="danger-banner">{{ error }}</div>{% endif %}
+{% if notice %}<div class="success-banner">{{ notice }}</div>{% endif %}
+
+<div class="warning-banner">
+  <strong>Un snapshot n'est pas une sauvegarde.</strong> Il vit dans le meme
+  pool, sur les memes disques : si le pool est perdu, ses snapshots le sont
+  aussi. Il protege de l'effacement accidentel et du chiffrement malveillant,
+  pas de la panne. La vraie sauvegarde reste une copie ailleurs.
+</div>
+
+<div class="card">
+  <div class="btn-row">
+    <button type="button" class="btn btn-link" @click="helpOpen = !helpOpen">
+      <span x-text="helpOpen ? 'Masquer les explications' : 'A quoi servent les snapshots ?'"></span>
+    </button>
+  </div>
+  <div x-show="helpOpen" x-cloak class="info-box">
+    <p>
+      <strong>Recuperer un fichier sans rien casser.</strong> Chaque dataset
+      expose ses snapshots en lecture seule dans un dossier cache
+      <span class="mono">.zfs/snapshot/&lt;nom&gt;/</span> a la racine de son
+      point de montage. On y recopie le fichier voulu sans toucher aux donnees
+      actuelles : c'est de loin la facon la plus sure de revenir en arriere, et
+      celle qu'il faut essayer en premier.
+    </p>
+    <p>
+      <strong>Pourquoi un snapshot grossit avec le temps.</strong> Tant que rien
+      ne change, il ne coute rien. Des qu'un fichier est modifie ou supprime,
+      l'ancienne version doit etre conservee pour le snapshot : c'est elle qui
+      occupe l'espace. Un snapshot ancien sur un dataset tres actif peut donc
+      retenir beaucoup de donnees, alors qu'un snapshot recent sur un dataset
+      au repos ne pese rien.
+    </p>
+    <p>
+      <strong>Le retour arriere est une operation destructrice.</strong> Ramener
+      un dataset a l'etat d'un snapshot supprime definitivement tout ce qui a
+      ete ecrit depuis, et les snapshots plus recents avec. C'est le dernier
+      recours, pas le premier reflexe - d'ou la page de confirmation dediee.
+    </p>
+    <p>
+      <strong>Et pour la suite :</strong> les snapshots sont aussi le socle de
+      la replication entre machines. <span class="mono">zfs send</span> ne
+      transmet pas un dataset, il transmet la difference entre deux snapshots -
+      c'est ce qui rendra la redondance entre noeuds du cluster possible sans
+      tout retransferer a chaque fois.
+    </p>
+  </div>
+</div>
+
+{% if system_pools %}
+<div class="info-panel">
+  Pool(s) systeme detecte(s) : <span class="mono">{{ system_pools|join(', ') }}</span>.
+  Leurs snapshots restent visibles, mais NAS Manager n'y prend, n'y supprime et
+  n'y annule jamais rien - meme regle que partout ailleurs dans l'interface.
+</div>
+{% endif %}
+
+{% if not datasets %}
+<div class="empty-state">
+  Aucun dataset ZFS n'a ete trouve sur cette machine. Cree d'abord un pool
+  depuis <a href="/pools">Stockage → Pools ZFS</a> : les partages et les stacks
+  Docker y creent ensuite leurs datasets, qui sont ce qu'on snapshote ici.
+</div>
+{% else %}
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Prendre un snapshot maintenant                                      -->
+<!-- ------------------------------------------------------------------ -->
+<div class="card">
+  <h2>Prendre un snapshot maintenant</h2>
+  <p class="stat-sub">
+    Utile juste avant une operation risquee : une mise a jour d'application, un
+    grand menage dans un partage, un changement de configuration.
+  </p>
+  <form method="post" action="/snapshots/create">
+    <label for="create_dataset">Dataset</label>
+    <select id="create_dataset" name="dataset" required>
+      {% for ds in datasets %}
+      <option value="{{ ds }}">{{ ds }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="create_label">Nom du snapshot</label>
+    <input type="text" id="create_label" name="label" required
+           placeholder="avant-mise-a-jour"
+           pattern="[a-zA-Z0-9][a-zA-Z0-9_.\-]{0,63}">
+    <div class="stat-sub">
+      Lettres, chiffres, tiret, point et souligne. Choisis un nom qui dira
+      quelque chose dans six mois - le prefixe
+      <span class="mono">{{ auto_prefix }}-</span> est reserve aux snapshots
+      automatiques.
+    </div>
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="create_recursive" name="recursive" value="1">
+      <label for="create_recursive">
+        Inclure les datasets enfants (snapshot recursif)
+      </label>
+    </div>
+
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Prendre le snapshot</button>
+    </div>
+  </form>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Politiques automatiques                                             -->
+<!-- ------------------------------------------------------------------ -->
+<div class="card">
+  <h2>Snapshots automatiques</h2>
+  <p class="stat-sub">
+    NAS Manager prend les snapshots tout seul et supprime les plus anciens
+    au-dela du nombre a conserver. <strong>La suppression automatique ne touche
+    que les snapshots qu'elle a elle-meme crees</strong> : un snapshot pris a la
+    main ne disparait jamais sans votre geste.
+  </p>
+
+  {% if policy_statuses %}
+  <table class="temp-table">
+    <thead>
+      <tr>
+        <th>Dataset</th><th>Frequence</th><th>Conserves</th>
+        <th>Existants</th><th>Dernier</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for st in policy_statuses %}
+      <tr>
+        <td class="mono">{{ st.policy.dataset }}{% if st.policy.recursive %} <span class="badge badge-neutral">recursif</span>{% endif %}</td>
+        <td>{{ st.policy.label }}</td>
+        <td>{{ st.policy.keep }}</td>
+        <td>{{ st.count }}</td>
+        <td>
+          {% if st.last and st.last.created %}
+            {{ st.last.created.strftime('%d/%m/%Y %H:%M') }}
+            {% if st.is_late %}<span class="badge badge-warn">en retard</span>{% endif %}
+          {% else %}
+            <span class="badge badge-warn">aucun encore</span>
+          {% endif %}
+        </td>
+        <td>
+          <form method="post" action="/snapshots/policies/remove">
+            <input type="hidden" name="dataset" value="{{ st.policy.dataset }}">
+            <input type="hidden" name="frequency" value="{{ st.policy.frequency }}">
+            <button type="submit" class="btn btn-sm btn-muted">Retirer</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="stat-sub">
+    « En retard » signifie que plus de deux intervalles se sont ecoules sans
+    nouveau snapshot. Le planificateur passe toutes les quinze minutes ; si
+    l'etiquette persiste, le service a probablement ete arrete entre-temps.
+  </p>
+  {% else %}
+  <div class="empty-state">Aucune politique automatique pour l'instant.</div>
+  {% endif %}
+
+  <div class="btn-row">
+    <button type="button" class="btn btn-link" @click="policyOpen = !policyOpen">
+      <span x-text="policyOpen ? 'Annuler' : 'Ajouter une politique'"></span>
+    </button>
+  </div>
+
+  <div x-show="policyOpen" x-cloak>
+    <form method="post" action="/snapshots/policies">
+      <label for="policy_dataset">Dataset</label>
+      <select id="policy_dataset" name="dataset" required>
+        {% for ds in datasets %}
+        <option value="{{ ds }}">{{ ds }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="policy_frequency">Frequence</label>
+      <select id="policy_frequency" name="frequency" required>
+        {% for key, meta in frequencies.items() %}
+        <option value="{{ key }}" data-keep="{{ meta.default_keep }}">{{ meta.label }}</option>
+        {% endfor %}
+      </select>
+
+      <div class="vdev-options">
+        {% for key, meta in frequencies.items() %}
+        <div class="option-box">
+          <strong>{{ meta.label }}</strong>
+          <div class="stat-sub">{{ meta.hint }}</div>
+          <div class="stat-sub">Recommande : en conserver {{ meta.default_keep }}.</div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <label for="policy_keep">Nombre de snapshots a conserver</label>
+      <input type="number" id="policy_keep" name="keep" value="14"
+             min="{{ min_keep }}" max="{{ max_keep }}" required>
+      <div class="stat-sub">
+        Au-dela, le plus ancien est supprime a chaque nouveau snapshot. Minimum
+        {{ min_keep }} : une politique qui ne garde rien supprimerait le
+        snapshot qu'elle vient de prendre.
+      </div>
+
+      <div class="checkbox-row">
+        <input type="checkbox" id="policy_recursive" name="recursive" value="1">
+        <label for="policy_recursive">Inclure les datasets enfants</label>
+      </div>
+
+      <div class="btn-row">
+        <button type="submit" class="btn btn-primary">Activer</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Inventaire                                                          -->
+<!-- ------------------------------------------------------------------ -->
+{% if not grouped %}
+<div class="card">
+  <h2>Snapshots existants</h2>
+  <div class="empty-state">
+    Aucun snapshot pour l'instant. Prends-en un a la main ci-dessus, ou active
+    une politique automatique.
+  </div>
+</div>
+{% else %}
+{% for pool, snaps in grouped.items() %}
+<div class="card">
+  <div class="storage-head">
+    <h2 class="storage-name">Pool {{ pool }}</h2>
+    <div class="stat-sub">
+      {{ snaps|length }} snapshot(s) — environ
+      {{ format_bytes(pool_used.get(pool, 0)) }} retenus
+      {% if pool in system_pools %}
+      <span class="badge badge-neutral">pool systeme, lecture seule</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <table class="temp-table">
+    <thead>
+      <tr>
+        <th>Dataset</th><th>Snapshot</th><th>Pris le</th>
+        <th>Origine</th><th>Retient</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for snap in snaps %}
+      <tr>
+        <td class="mono">{{ snap.dataset }}</td>
+        <td class="mono">{{ snap.label }}</td>
+        <td>{{ snap.created.strftime('%d/%m/%Y %H:%M') if snap.created else '—' }}</td>
+        <td>
+          {% if snap.is_automatic %}
+          <span class="badge badge-neutral">{{ snap.origin_label }}</span>
+          {% else %}
+          <span class="badge badge-ok">{{ snap.origin_label }}</span>
+          {% endif %}
+        </td>
+        <td>{{ format_bytes(snap.used_bytes) }}</td>
+        <td>
+          {% if pool not in system_pools %}
+          <div class="btn-row">
+            <a class="btn btn-sm btn-warn"
+               href="/snapshots/rollback?name={{ snap.full_name|urlencode }}">
+              Revenir a cet etat
+            </a>
+            <button type="button" class="btn btn-sm btn-danger"
+                    @click="destroyFor = '{{ snap.full_name }}'">
+              Supprimer
+            </button>
+          </div>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endfor %}
+{% endif %}
+{% endif %}
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Modale de suppression                                               -->
+<!-- ------------------------------------------------------------------ -->
+{% for snap in all_snapshots %}
+<div class="modal-overlay" x-show="destroyFor === '{{ snap.full_name }}'" x-cloak
+     @click.self="destroyFor = null">
+  <div class="modal-box">
+    <div class="modal-close" @click="destroyFor = null">&times;</div>
+    <h2>Supprimer ce snapshot ?</h2>
+    <p>
+      <span class="mono">{{ snap.full_name }}</span>
+    </p>
+    <p>
+      Ce point de restauration disparait definitivement. Les donnees actuelles
+      du dataset ne sont pas touchees : seul l'historique est perdu.
+      {% if snap.used_bytes > 0 %}
+      Environ {{ format_bytes(snap.used_bytes) }} seront rendus au pool.
+      {% endif %}
+    </p>
+    <form method="post" action="/snapshots/destroy">
+      <input type="hidden" name="full_name" value="{{ snap.full_name }}">
+      <label for="destroy_pw_{{ loop.index }}">Votre mot de passe</label>
+      <input type="password" id="destroy_pw_{{ loop.index }}" name="confirm_password" required>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-solid-danger">Supprimer</button>
+        <button type="button" class="btn btn-muted" @click="destroyFor = null">Annuler</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+
+</div>
+{% endblock %}

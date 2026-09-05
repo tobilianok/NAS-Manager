@@ -24,6 +24,8 @@ def _all_links():
     ("/pools/tank", "Pools ZFS"),
     ("/pools/tank/expand", "Pools ZFS"),
     ("/shares", "Partages"),
+    ("/snapshots", "Snapshots"),
+    ("/snapshots/rollback", "Snapshots"),
     ("/shares/photos", "Partages"),
     ("/share-users", "Comptes de partage"),
     ("/share-users/marie", "Comptes de partage"),
@@ -75,7 +77,7 @@ def test_unknown_path_has_no_active_entry():
 
 def test_exactly_one_entry_matches_each_known_page():
     """Deux entrees allumees en meme temps rendraient le menu incomprehensible."""
-    for path in ("/", "/pools", "/shares", "/share-users", "/admin-accounts",
+    for path in ("/", "/pools", "/shares", "/snapshots", "/share-users", "/admin-accounts",
                  "/docker", "/cluster", "/network", "/system", "/backup", "/disks", "/updates"):
         matches = [link.label for link in _all_links() if link.matches(path)]
         assert len(matches) == 1, f"{path} allume {matches}"
@@ -95,7 +97,7 @@ def test_top_level_structure():
 
 
 @pytest.mark.parametrize("group,children", [
-    ("Stockage", ["Pools ZFS", "Partages", "Disques"]),
+    ("Stockage", ["Pools ZFS", "Partages", "Snapshots", "Disques"]),
     ("Comptes", ["Comptes de partage", "Comptes systeme"]),
     ("Parametres", ["Reseau", "Systeme", "Sauvegarde", "Mises a jour"]),
 ])
