@@ -668,14 +668,68 @@ tr.worrying td { color: var(--warning-text); }
 .weather-label { font-size: 1.05rem; font-weight: 700; }
 .weather-sub { font-size: .78rem; color: var(--text-muted); }
 
-.weather-checks { display: flex; flex-direction: column; gap: .1rem; }
-.weather-check {
-  display: flex; align-items: flex-start; gap: .7rem;
-  padding: .6rem 0; border-bottom: 1px solid var(--border); font-size: .85rem;
+/* La carte est devenue le seul element de la rubrique (v1.8.0) : c'est un
+   <button>, il faut donc annuler l'apparence native et rendre visible qu'on
+   peut cliquer - sans quoi le detail resterait invisible pour qui n'essaie
+   pas au hasard. */
+.weather-button {
+  width: 100%; text-align: left; font: inherit; color: inherit;
+  cursor: pointer; transition: border-color .12s ease, background .12s ease;
 }
-.weather-check:last-child { border-bottom: none; }
-.weather-check .badge { margin-top: .1rem; flex-shrink: 0; }
+.weather-button:hover { background: var(--surface-2, var(--bg-soft, var(--surface))); }
+.weather-button:hover .weather-chevron { transform: translateX(2px); opacity: .9; }
+.weather-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.weather-chevron {
+  width: 18px; height: 18px; flex-shrink: 0; margin-left: auto;
+  color: var(--text-dim); opacity: .6; transition: transform .12s ease, opacity .12s ease;
+}
+.weather-main { min-width: 0; }
+
+/* ---- Fenetre de detail ---- */
+/* Selecteur double a dessein : `.modal-box` est declare plus bas dans ce
+   fichier et l'emporterait a specificite egale. */
+.modal-box.modal-wide { max-width: 720px; }
+.health-modal { padding: 0; }
+.health-modal-head {
+  display: flex; align-items: center; gap: 1rem;
+  padding: 1.3rem 1.5rem; border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; background: var(--surface); z-index: 1;
+}
+.health-modal-head .weather-icon { width: 34px; height: 34px; flex-shrink: 0; }
+.health-modal-head .weather-icon svg { width: 100%; height: 100%; }
+.health-modal-head.weather-beau .weather-icon { color: var(--success); }
+.health-modal-head.weather-nuageux .weather-icon { color: var(--warning); }
+.health-modal-head.weather-orageux .weather-icon { color: var(--danger); }
+.health-modal-head.weather-inconnu .weather-icon { color: var(--text-dim); }
+.health-modal-head h2 { margin: 0; font-size: 1.05rem; }
+.health-modal-head > button { margin-left: auto; flex-shrink: 0; }
+.health-modal-body { padding: .4rem 1.5rem 1.5rem; }
+
+.health-row {
+  display: flex; align-items: flex-start; gap: .7rem;
+  padding: .85rem 0; border-bottom: 1px solid var(--border); font-size: .85rem;
+}
+.health-row:last-of-type { border-bottom: none; }
+.health-row .badge { margin-top: .1rem; flex-shrink: 0; }
+.health-row-body { min-width: 0; flex: 1; }
+/* Un filet colore a gauche pour ce qui ne va pas : le tri met deja ces
+   lignes en tete, le filet dit d'un coup d'oeil ou s'arrete la zone a lire. */
+.health-row-CRITIQUE, .health-row-ATTENTION {
+  padding-left: .7rem; border-left: 3px solid var(--danger);
+  margin-left: -.7rem;
+}
+.health-row-ATTENTION { border-left-color: var(--warning); }
 .weather-check-detail { color: var(--text-muted); font-size: .8rem; margin-top: .1rem; line-height: 1.5; }
+
+.health-updates { margin-top: .7rem; }
+.health-updates-foot {
+  display: flex; align-items: center; gap: .8rem; flex-wrap: wrap;
+  margin-top: .7rem;
+}
+.health-modal-note {
+  font-size: .72rem; color: var(--text-dim); line-height: 1.6;
+  margin: 1rem 0 0; padding-top: .9rem; border-top: 1px solid var(--border);
+}
 
 /* ---------------------------------------------------------------------
    Console Docker interactive (Phase 7b)

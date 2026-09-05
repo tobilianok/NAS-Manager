@@ -9,6 +9,18 @@
   <link rel="stylesheet" href="/static/css/style.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.3/htmx.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.14.1/cdn.min.js" defer></script>
+  <script>
+    // Alpine n'initialise que ce qui est present au chargement. Les
+    // fragments remplaces par HTMX arrivent apres coup : sans ce pont, leurs
+    // directives (x-show, @click) resteraient inertes - une fenetre ouverte
+    // sur le tableau de bord cesserait de repondre au premier
+    // rafraichissement automatique. L'etat lui-meme vit sur un conteneur
+    // situe HORS de la zone remplacee, sinon il repartirait a zero toutes
+    // les 30 secondes et la fenetre se refermerait toute seule.
+    document.addEventListener('htmx:afterSwap', function (event) {
+      if (window.Alpine) { window.Alpine.initTree(event.target); }
+    });
+  </script>
   {% block extra_head %}{% endblock %}
 </head>
 <body {% block body_attrs %}{% endblock %}>

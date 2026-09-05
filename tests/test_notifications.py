@@ -209,18 +209,18 @@ def test_the_dashboard_fragment_never_touches_the_network(client, monkeypatch):
     monkeypatch.setattr(notifications, "refresh", forbidden)
     monkeypatch.setattr(appupdate, "get_status", forbidden)
     monkeypatch.setattr(dockerstacks, "check_stack_updates", forbidden)
-    assert client.get("/partials/notifications").status_code == 200
+    assert client.get("/partials/health").status_code == 200
 
 
 def test_the_fragment_says_when_nothing_has_been_checked(client):
-    assert "Aucune verification" in client.get("/partials/notifications").text
+    assert "Aucune verification" in client.get("/partials/health").text
 
 
 def test_the_fragment_lists_what_is_pending(client, monkeypatch):
     monkeypatch.setattr(notifications, "read", lambda: notifications.Snapshot(
         checked_epoch=time.time(), system_count=12, system_security=3,
         nasmanager_label="v1.8.0", docker_stacks=["jellyfin"]))
-    text = client.get("/partials/notifications").text
+    text = client.get("/partials/health").text
     assert "Systeme Ubuntu" in text and "12" in text
     assert "v1.8.0" in text
     assert "jellyfin" in text
@@ -229,13 +229,13 @@ def test_the_fragment_lists_what_is_pending(client, monkeypatch):
 def test_the_fragment_says_when_all_is_well(client, monkeypatch):
     monkeypatch.setattr(notifications, "read",
                         lambda: notifications.Snapshot(checked_epoch=time.time()))
-    assert "Tout est a jour" in client.get("/partials/notifications").text
+    assert "Tout est a jour" in client.get("/partials/health").text
 
 
 def test_failed_sources_are_visible_rather_than_silent(client, monkeypatch):
     monkeypatch.setattr(notifications, "read", lambda: notifications.Snapshot(
         checked_epoch=time.time(), errors=["NAS Manager : GitHub injoignable"]))
-    text = client.get("/partials/notifications").text
+    text = client.get("/partials/health").text
     assert "non verifiee" in text
     assert "GitHub injoignable" in text
 
@@ -247,13 +247,20 @@ def test_the_button_triggers_a_real_check(client, monkeypatch):
                             checked_epoch=time.time()))
     resp = client.post("/notifications/refresh")
     assert resp.status_code == 200 and called
+    # La reponse est le fragment de sante : la fenetre reste ouverte pendant
+    # que son contenu se met a jour.
+    assert "weather-card" in resp.text
 
 
 def test_the_age_of_the_result_is_shown(client, monkeypatch):
     monkeypatch.setattr(notifications, "read", lambda: notifications.Snapshot(
         checked_epoch=time.time() - 7200))
-    assert "il y a 2 h" in client.get("/partials/notifications").text
+    assert "il y a 2 h" in client.get("/partials/health").text
 
 
 def test_the_dashboard_embeds_the_fragment(client):
-    assert "/partials/notifications" in client.get("/").text
+    """Depuis la v1.8.0 les mises a jour vivent dans la fenetre de sante :
+    plus de carte autonome sur le tableau de bord."""
+    text = client.get("/").text
+    assert "/partials/health" in text
+    assert "/partials/notifications" not in text

@@ -101,6 +101,25 @@ class HealthReport:
     def weather_label(self) -> str:
         return WEATHER_LABELS[self.weather]
 
+    @property
+    def sorted_checks(self) -> list[HealthCheck]:
+        """Ce qui demande une action d'abord (v1.8.0).
+
+        La liste etait rendue dans l'ordre d'execution : un pool degrade
+        pouvait se retrouver en septieme position, entre deux lignes vertes.
+        Trier par gravite met le probleme sous les yeux sans avoir a lire
+        huit lignes. L'ordre reste stable a gravite egale - une liste qui se
+        reorganise a chaque rafraichissement serait illisible."""
+        rank = {LEVEL_CRITIQUE: 0, LEVEL_ATTENTION: 1, LEVEL_INCONNU: 2, LEVEL_OK: 3}
+        return sorted(self.checks, key=lambda c: rank.get(c.level, 9))
+
+    @property
+    def attention_count(self) -> int:
+        """Nombre de controles qui ne sont pas au vert. Affiche sur la carte
+        fermee : sans ca, il faudrait ouvrir la fenetre pour savoir s'il y a
+        quelque chose a y voir."""
+        return sum(1 for c in self.checks if c.level in (LEVEL_CRITIQUE, LEVEL_ATTENTION))
+
 
 def check_disks() -> HealthCheck:
     """Pire statut SMART parmi tous les disques physiques detectes."""
@@ -259,6 +278,65 @@ def check_share_admins() -> HealthCheck:
     )
 
 
+def check_updates() -> HealthCheck:
+    """Mises a jour en attente (v1.8.0).
+
+    Seuls les correctifs de SECURITE non appliques et un redemarrage requis
+    pesent sur la meteo, et jamais au-dela de « a surveiller ». La rubrique
+    s'appelle Sante & securite : un correctif de securite qui traine en est
+    un vrai sujet, alors qu'un NAS avec des stacks Docker a presque toujours
+    une image ou un paquet a mettre a jour. Les faire tous compter
+    maintiendrait la meteo au gris en permanence, et une alerte permanente
+    est une alerte qu'on apprend a ignorer.
+
+    Lecture seule : ce controle relit le dernier resultat range dans un
+    fichier, il n'interroge ni apt ni GitHub. La verification se declenche
+    sur un bouton (v1.7.0)."""
+    from app import notifications
+
+    snapshot = notifications.read()
+
+    if snapshot.never_checked:
+        return HealthCheck("updates", "Mises a jour", LEVEL_INCONNU,
+                            "Aucune verification effectuee pour l'instant.")
+
+    urgent = []
+    if snapshot.system_security:
+        urgent.append(f"{snapshot.system_security} correctif(s) de securite Ubuntu")
+    if snapshot.system_reboot_required:
+        urgent.append("un redemarrage en attente")
+
+    # Ce qui est disponible sans etre urgent : affiche, jamais alarmant.
+    calm = []
+    ordinary = snapshot.system_count - snapshot.system_security
+    if ordinary > 0:
+        calm.append(f"{ordinary} paquet(s) Ubuntu")
+    if snapshot.nasmanager_label:
+        calm.append(f"NAS Manager {snapshot.nasmanager_label}")
+    if snapshot.docker_stacks:
+        calm.append(f"{len(snapshot.docker_stacks)} image(s) Docker")
+
+    suffix = f" Par ailleurs : {', '.join(calm)}." if calm else ""
+
+    if urgent:
+        return HealthCheck("updates", "Mises a jour", LEVEL_ATTENTION,
+                            f"En attente : {', '.join(urgent)}.{suffix}")
+
+    if snapshot.outdated:
+        # Un resultat trop vieux ne prouve rien : le dire plutot que
+        # d'afficher un « tout va bien » qui date de trois semaines.
+        return HealthCheck("updates", "Mises a jour", LEVEL_INCONNU,
+                            "La derniere verification est ancienne."
+                            f"{suffix or ' Relance-la pour un etat sur.'}")
+
+    if calm:
+        return HealthCheck("updates", "Mises a jour", LEVEL_OK,
+                            f"Rien d'urgent. Disponible : {', '.join(calm)}.")
+
+    return HealthCheck("updates", "Mises a jour", LEVEL_OK,
+                        "Tout est a jour.")
+
+
 def get_report() -> HealthReport:
     """Execute toutes les verifications. Peut prendre quelques secondes
     (smartctl par disque, sensors, docker compose ps par stack) - a
@@ -272,5 +350,6 @@ def get_report() -> HealthReport:
         check_firewall(),
         check_docker(),
         check_share_admins(),
+        check_updates(),
     ]
     return HealthReport(checks=checks)
