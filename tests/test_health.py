@@ -213,7 +213,7 @@ def test_get_report_smoke(monkeypatch):
     monkeypatch.setattr(health.shutil, "which", lambda name: None)
 
     report = health.get_report()
-    assert len(report.checks) == 10
+    assert len(report.checks) == 11
     # Plus aucune verification "toujours OK" (la politique de mot de passe a
     # ete retiree, cf. commentaire dans health.py) - quand toutes les sources
     # sont indisponibles, le rapport global doit donc etre "inconnu" et non
@@ -225,7 +225,7 @@ def test_get_report_real_system_smoke():
     """Test de fumee sur le vrai systeme (sandbox) : ne doit jamais lever
     d'exception, meme sans zfs/docker/ufw/sensors installes."""
     report = health.get_report()
-    assert len(report.checks) == 10
+    assert len(report.checks) == 11
     assert report.overall_level in (
         health.LEVEL_OK, health.LEVEL_ATTENTION, health.LEVEL_CRITIQUE, health.LEVEL_INCONNU,
     )
@@ -438,3 +438,60 @@ def test_healthy_replications_are_ok(monkeypatch):
     check = health.check_replication()
     assert check.level == health.LEVEL_OK
     assert "1 automatique" in check.detail
+
+
+# ---------------------------------------------------------------------------
+# Bascule (v1.16.0)
+# ---------------------------------------------------------------------------
+
+def _failover_status(monkeypatch, statuses):
+    from app import failover as fo
+    monkeypatch.setattr(fo, "group_statuses", lambda: statuses)
+
+
+class _FoCov:
+    def __init__(self, datasets=0, unprotected=(), troubled=(),
+                 lost_shares=(), lost_stacks=()):
+        self.datasets = list(range(datasets))
+        self.unprotected = list(unprotected)
+        self.troubled = list(troubled)
+        self.lost_shares = list(lost_shares)
+        self.lost_stacks = list(lost_stacks)
+
+
+def test_no_failover_group_is_unknown_not_a_warning(monkeypatch):
+    """Ne pas organiser de bascule est un choix legitime."""
+    _failover_status(monkeypatch, [])
+    assert health.check_failover().level == health.LEVEL_INCONNU
+
+
+def test_an_uncovered_group_raises_a_warning(monkeypatch):
+    from app import failover as fo
+    group = fo.Group(name="photos", pool="tank", peer="192.168.1.42")
+    cov = _FoCov(datasets=2, unprotected=["x"], lost_shares=["docs"])
+    _failover_status(monkeypatch, [fo.GroupStatus(group=group, coverage=cov,
+                                                  manifest_pushed=True)])
+    check = health.check_failover()
+    assert check.level == health.LEVEL_ATTENTION
+    assert "sans aucune replication" in check.detail
+    assert "photos" in check.detail
+
+
+def test_a_group_without_a_manifest_raises_a_warning(monkeypatch):
+    from app import failover as fo
+    group = fo.Group(name="photos", pool="tank", peer="192.168.1.42")
+    _failover_status(monkeypatch, [fo.GroupStatus(
+        group=group, coverage=_FoCov(datasets=1), manifest_pushed=False)])
+    check = health.check_failover()
+    assert check.level == health.LEVEL_ATTENTION
+    assert "manifeste" in check.detail
+
+
+def test_a_covered_group_is_ok(monkeypatch):
+    from app import failover as fo
+    group = fo.Group(name="photos", pool="tank", peer="192.168.1.42")
+    _failover_status(monkeypatch, [fo.GroupStatus(
+        group=group, coverage=_FoCov(datasets=3), manifest_pushed=True)])
+    check = health.check_failover()
+    assert check.level == health.LEVEL_OK
+    assert "3 dataset(s)" in check.detail

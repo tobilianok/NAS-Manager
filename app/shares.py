@@ -358,6 +358,68 @@ def purge_pool_shares(pool_name: str) -> tuple[list[str], list[str]]:
     return removed, _apply_config(remaining)
 
 
+def purge_share_definition(name: str) -> list[str]:
+    """Retire un partage du registre et de la configuration Samba/NFS,
+    SANS toucher a son dataset ni a son contenu.
+
+    Sert a la liberation d'un groupe de bascule (v1.16.0) : la machine
+    cesse de servir ces donnees pour qu'une autre les reprenne, elle ne
+    s'en debarrasse pas. `delete_share()` ferait exactement le contraire —
+    il detruit le dataset — et l'utiliser ici perdrait tout ce qu'on
+    cherchait justement a transmettre."""
+    shares = _load_registry()
+    if not any(s.name == name for s in shares):
+        raise ShareError(f"Aucun partage nomme '{name}'.")
+    remaining = [s for s in shares if s.name != name]
+    _save_registry(remaining)
+    logger.warning("Partage '%s' retire du service (dataset et contenu intacts)", name)
+    return _apply_config(remaining)
+
+
+def adopt_share(share: Share) -> list[str]:
+    """Inscrit un partage sur un dataset QUI EXISTE DEJA, sans le creer.
+
+    Sert a la bascule (v1.16.0) : apres promotion, le dataset est une
+    replique recue par `zfs receive`, il est deja la avec son contenu. Le
+    passer par `create_share()` echouerait — cette fonction cree le dataset
+    et refuserait de l'ecraser — et surtout ce n'est pas ce qu'on veut :
+    reprendre les donnees telles quelles est tout l'objet de l'operation.
+
+    Ne touche JAMAIS au contenu : ni `zfs create`, ni `chmod`, ni `chown`,
+    **ni `setfacl -R`**. Les ACL POSIX voyagent avec le flux `zfs send` ;
+    les reappliquer recursivement reecrirait les metadonnees de plusieurs
+    millions d'inodes, dans la requete web, sur des donnees qu'on vient
+    tout juste de recevoir. Si elles manquent vraiment, c'est une action
+    separee et consciente, pas un effet de bord de l'adoption.
+
+    Un partage de meme nom deja present est refuse : ecraser une definition
+    existante ferait disparaitre des acces sans que personne ne l'ait
+    demande."""
+    if not SHARE_NAME_RE.match((share.name or "").strip()):
+        raise ShareError(f"Nom de partage invalide : '{share.name}'.")
+    if share.name.lower() in RESERVED_SHARE_NAMES:
+        raise ShareError(
+            f"'{share.name}' est un nom reserve par Samba : l'inscrire casserait "
+            "la configuration de cette machine."
+        )
+    if any(p not in ("smb", "nfs") for p in share.protocols):
+        raise ShareError(f"Protocole inconnu dans le partage '{share.name}'.")
+    if get_share(share.name) is not None:
+        raise ShareError(f"Un partage nomme '{share.name}' existe deja sur cette machine.")
+    if not share.mountpoint or not os.path.isdir(share.mountpoint):
+        raise ShareError(
+            f"Le point de montage '{share.mountpoint}' du partage '{share.name}' "
+            "n'existe pas sur cette machine : le dataset est-il bien monte ?"
+        )
+
+    shares = _load_registry()
+    shares.append(share)
+    _save_registry(shares)
+    logger.warning("Partage '%s' adopte sur %s (dataset existant)",
+                   share.name, share.mountpoint)
+    return _apply_config(shares)
+
+
 def _apply_filesystem_acl(share: Share) -> None:
     for u in share.users:
         perm = "rwx" if u.access == "rw" else "r-x"

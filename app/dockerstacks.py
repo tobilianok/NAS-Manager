@@ -251,6 +251,61 @@ def prepare_stack(name: str, pool_name: str, compose_content: str) -> Stack:
     return stack
 
 
+def adopt_stack(name: str, dataset: str, directory: str) -> Stack:
+    """Inscrit une stack sur un dataset QUI EXISTE DEJA, sans rien creer.
+
+    Sert a la bascule (v1.16.0). Le point important est que le
+    `docker-compose.yml` vit DANS le dataset de la stack : quand celui-ci
+    est replique, le fichier voyage avec les donnees. Il n'y a donc rien a
+    transporter a part le lien nom → dataset, que le registre porte et qui,
+    lui, vit hors du pool.
+
+    Ne demarre pas la stack : c'est une decision separee, et demarrer des
+    containers en meme temps qu'on reprend des donnees melangerait deux
+    operations dont l'une peut echouer sans l'autre."""
+    import datetime
+
+    name = (name or "").strip()
+    if not STACK_NAME_RE.match(name):
+        raise DockerStackError(f"Nom de stack invalide : '{name}'.")
+    if name in _RESERVED_STACK_NAMES:
+        raise DockerStackError(
+            f"'{name}' est un nom reserve par l'interface : la stack serait "
+            "inaccessible depuis la page Docker."
+        )
+    if get_stack(name) is not None:
+        raise DockerStackError(f"Une stack nommee '{name}' existe deja sur cette machine.")
+
+    compose = Path(directory) / COMPOSE_FILENAME
+    if not compose.is_file():
+        raise DockerStackError(
+            f"Aucun {COMPOSE_FILENAME} dans '{directory}' : la stack '{name}' ne "
+            "peut pas etre reprise. Le dataset a-t-il bien ete replique, et "
+            "est-il monte ?"
+        )
+    # Le compose vient d'une autre machine : il peut avoir ete ecrit par une
+    # version differente de Compose, ou etre arrive tronque. On le valide
+    # avant de l'inscrire, comme `prepare_stack` le fait a la creation.
+    code, out, err = _run(["docker", "compose", "-f", str(compose), "config", "-q"],
+                          timeout=60)
+    if code != 0:
+        raise DockerStackError(
+            f"Le {COMPOSE_FILENAME} de la stack '{name}' n'est pas valide sur "
+            f"cette machine : {err or out}"
+        )
+
+    stack = Stack(
+        name=name, pool=dataset.split("/")[0], dataset=dataset,
+        directory=directory,
+        created_at=datetime.datetime.now().isoformat(timespec="seconds"),
+    )
+    stacks = _load_registry()
+    stacks.append(stack)
+    _save_registry(stacks)
+    logger.warning("Stack Docker '%s' adoptee sur %s (dataset existant)", name, directory)
+    return stack
+
+
 def unregister_stack(name: str) -> None:
     """Retire une stack du registre SANS toucher a ses fichiers. Sert au
     nettoyage quand le demarrage echoue juste apres la preparation."""

@@ -408,6 +408,37 @@ def check_replication() -> HealthCheck:
                         f"{scheduled} automatique(s).")
 
 
+def check_failover() -> HealthCheck:
+    """Ce qui ne repartirait pas si cette machine tombait maintenant.
+
+    C'est la question que la page Replication ne pose pas : elle dit si les
+    envois se font, pas s'ils couvrent tout. Un dataset qui porte un
+    partage mais qu'aucune replication ne transmet est invisible partout
+    ailleurs — tout a l'air normal jusqu'au jour ou l'on cherche ce
+    partage sur l'autre machine et qu'il n'y est pas.
+
+    Aucun groupe = INCONNU : ne pas organiser de bascule est un choix
+    legitime."""
+    from app import failover
+
+    statuses = failover.group_statuses()
+    if not statuses:
+        return HealthCheck("failover", "Bascule", LEVEL_INCONNU,
+                            "Aucun groupe de bascule configure.")
+
+    troubled = [s for s in statuses if s.problem]
+    if troubled:
+        details = ", ".join(f"{s.group.name} ({s.problem})" for s in troubled[:3])
+        suffix = "..." if len(troubled) > 3 else ""
+        return HealthCheck("failover", "Bascule", LEVEL_ATTENTION,
+                            f"{details}{suffix}.")
+
+    total = sum(len(s.coverage.datasets) for s in statuses)
+    return HealthCheck("failover", "Bascule", LEVEL_OK,
+                        f"{len(statuses)} groupe(s) entierement repliques "
+                        f"({total} dataset(s)).")
+
+
 def get_report() -> HealthReport:
     """Execute toutes les verifications. Peut prendre quelques secondes
     (smartctl par disque, sensors, docker compose ps par stack) - a
@@ -423,6 +454,7 @@ def get_report() -> HealthReport:
         check_share_admins(),
         check_snapshots(),
         check_replication(),
+        check_failover(),
         check_updates(),
     ]
     return HealthReport(checks=checks)

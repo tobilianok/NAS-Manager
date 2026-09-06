@@ -27,7 +27,7 @@ from app import (
     sysupdate, appupdate, liverun, gitauth, diskwipe, smarttests, diskjobs,
     power, servicerestart, sensors, diskage, timezone, notifications,
     systemsettings, fancontrol, cluster, snapshots as snapshots_module,
-    replication, zfsreplicate,
+    replication, zfsreplicate, failover,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -3412,3 +3412,200 @@ def zfsrepl_remove(request: Request, key: str, confirm_password: str = Form(...)
     except zfsreplicate.ReplicationError as exc:
         return _zfsrepl_response(request, username, error=str(exc), status_code=400)
     return _zfsrepl_response(request, username, notice=message)
+
+
+# ---------------------------------------------------------------------------
+# Groupes de bascule (v1.16.0)
+# ---------------------------------------------------------------------------
+
+def _failover_context(request: Request, username: str, error: str | None = None,
+                      notice: str | None = None) -> dict:
+    protected = snapshots_module.system_pool_names()
+    statuses = failover.group_statuses()
+    return {
+        "request": request,
+        "username": username,
+        "statuses": statuses,
+        "inventories": {s.group.name: failover.inventory(s.group) for s in statuses},
+        "manifests": failover.list_manifests(),
+        "promotions": failover.promotions(),
+        "released": failover._released_groups(),
+        "inflight": failover.inflight(),
+        "pools": [p.name for p in zfs.list_pools() if p.name not in protected],
+        "peers": replication.list_peers(),
+        "error": error,
+        "notice": notice,
+    }
+
+
+def _failover_response(request: Request, username: str, error: str | None = None,
+                       notice: str | None = None, status_code: int = 200):
+    return templates.TemplateResponse(
+        "failover.html",
+        _failover_context(request, username, error=error, notice=notice),
+        status_code=status_code,
+    )
+
+
+@app.get("/cluster/failover", response_class=HTMLResponse)
+def failover_page(request: Request, username: str = Depends(require_login)):
+    return _failover_response(request, username)
+
+
+@app.post("/cluster/failover")
+def failover_add(request: Request, name: str = Form(...), pool: str = Form(...),
+                 peer: str = Form(...), label: str = Form(""),
+                 username: str = Depends(require_login)):
+    try:
+        group = failover.add_group(name, pool, peer, label)
+    except (failover.FailoverError, replication.ReplicationError) as exc:
+        return _failover_response(request, username, error=str(exc), status_code=400)
+    return _failover_response(
+        request, username,
+        notice=(f"Groupe « {group.name} » cree. Verifie la couverture ci-dessous : "
+                "c'est elle qui dit ce qui repartirait vraiment."),
+    )
+
+
+@app.post("/cluster/failover/{name}/manifest")
+def failover_push_manifest(request: Request, name: str,
+                           username: str = Depends(require_login)):
+    group = failover.get_group(name)
+    if group is None:
+        return _failover_response(request, username,
+                                  error="Ce groupe n'existe pas.", status_code=404)
+    try:
+        message = failover.push_manifest(group)
+    except (failover.FailoverError, replication.ReplicationError) as exc:
+        return _failover_response(request, username, error=str(exc), status_code=400)
+    return _failover_response(request, username, notice=message)
+
+
+@app.post("/cluster/failover/{name}/remove")
+def failover_remove(request: Request, name: str, confirm_password: str = Form(...),
+                    username: str = Depends(require_login)):
+    try:
+        message = failover.remove_group(name, username, confirm_password)
+    except failover.FailoverError as exc:
+        return _failover_response(request, username, error=str(exc), status_code=400)
+    return _failover_response(request, username, notice=message)
+
+
+@app.post("/cluster/failover/{name}/release")
+def failover_release(request: Request, name: str, confirm_password: str = Form(...),
+                     username: str = Depends(require_login)):
+    """Liberer le groupe a la main, depuis le proprietaire.
+
+    Utile pour une maintenance : arreter proprement de servir sans qu'une
+    autre machine reprenne dans la foulee. Le mot de passe est exige — ca
+    coupe des partages et arrete des containers."""
+    try:
+        failover._require_password(username, confirm_password)
+        report = failover.release_group(name)
+    except failover.FailoverError as exc:
+        return _failover_response(request, username, error=str(exc), status_code=400)
+    detail = (f"{len(report.stopped_stacks)} stack(s) arretee(s), "
+              f"{len(report.removed_shares)} partage(s) retire(s), "
+              f"{len(report.readonly_datasets)} dataset(s) en lecture seule. "
+              "Le bouton « Reprendre ce groupe ici » le remet en service.")
+    if report.problems:
+        return _failover_response(request, username,
+                                  notice="Groupe libere. " + detail,
+                                  error=" | ".join(report.problems))
+    return _failover_response(request, username, notice="Groupe libere. " + detail)
+
+
+@app.get("/cluster/failover/incoming/{key}", response_class=HTMLResponse)
+def failover_plan(request: Request, key: str, username: str = Depends(require_login)):
+    """Page de bascule : ce que reprendre ce groupe ferait ici.
+
+    Le plan est CALCULE PAR LE SERVEUR, en interrogeant le noeud d'origine.
+    C'est la qu'on apprend s'il repond encore — donc si la bascule est
+    planifiee ou d'urgence."""
+    manifest = failover.get_manifest(key)
+    if manifest is None:
+        return _failover_response(request, username,
+                                  error="Ce manifeste n'existe pas.", status_code=404)
+    try:
+        plan = failover.plan_promotion(manifest)
+    except failover.FailoverError as exc:
+        return _failover_response(request, username, error=str(exc), status_code=400)
+    return templates.TemplateResponse(
+        "failover_promote.html",
+        {"request": request, "username": username, "plan": plan,
+         "key": key, "error": None},
+    )
+
+
+@app.post("/cluster/failover/incoming/{key}/promote")
+def failover_promote(request: Request, key: str, confirm_password: str = Form(...),
+                     confirm_name: str = Form(""), acknowledge: str = Form(""),
+                     start_stacks: str = Form(""), expected_mode: str = Form(""),
+                     username: str = Depends(require_login)):
+    """`expected_mode` transporte le mode AFFICHE quand la case a ete
+    cochee. Sans lui, on consentait a une bascule planifiee (« rien n'est
+    perdu ») et une reprise d'urgence pouvait s'executer a la place — ou
+    l'inverse, arretant les services d'une machine qu'on croyait morte."""
+    try:
+        report = failover.promote(
+            key, username, confirm_password, confirm_name,
+            acknowledge=_checked(acknowledge),
+            start_stacks=_checked(start_stacks),
+            expected_mode=(expected_mode or "").strip(),
+        )
+    except failover.FailoverError as exc:
+        manifest = failover.get_manifest(key)
+        if manifest is None:
+            return _failover_response(request, username, error=str(exc), status_code=400)
+        try:
+            fresh = failover.plan_promotion(manifest)
+        except failover.FailoverError:
+            return _failover_response(request, username, error=str(exc), status_code=400)
+        return templates.TemplateResponse(
+            "failover_promote.html",
+            {"request": request, "username": username, "plan": fresh,
+             "key": key, "error": str(exc)},
+            status_code=400,
+        )
+    detail = (f"Bascule {report.mode} du groupe « {report.group} » : "
+              f"{len(report.promoted_datasets)} dataset(s) promus, "
+              f"{len(report.adopted_shares)} partage(s) republies, "
+              f"{len(report.adopted_stacks)} stack(s) reprises.")
+    if report.problems:
+        # Integralement, jamais tronques : une bascule qui a laisse des
+        # choses en plan ne doit pas s'afficher comme une reussite nette.
+        return _failover_response(
+            request, username,
+            error="Bascule terminee avec des points a regler — "
+                  + " | ".join(report.problems),
+            notice=detail,
+        )
+    return _failover_response(request, username, notice=detail)
+
+
+@app.post("/cluster/failover/{name}/readopt")
+def failover_readopt(request: Request, name: str, confirm_password: str = Form(...),
+                     username: str = Depends(require_login)):
+    """Reprendre ici un groupe qu'on avait libere : la porte de sortie
+    quand une bascule planifiee echoue en face."""
+    try:
+        report = failover.readopt_group(name, username, confirm_password)
+    except failover.FailoverError as exc:
+        return _failover_response(request, username, error=str(exc), status_code=400)
+    detail = (f"Groupe repris ici : {len(report.readonly_datasets)} dataset(s) "
+              f"rendus inscriptibles, {len(report.removed_shares)} partage(s) "
+              f"republies, {len(report.stopped_stacks)} stack(s) redemarrees.")
+    if report.problems:
+        return _failover_response(request, username, notice=detail,
+                                  error=" | ".join(report.problems))
+    return _failover_response(request, username, notice=detail)
+
+
+@app.post("/cluster/failover/incoming/{key}/forget")
+def failover_forget(request: Request, key: str, confirm_password: str = Form(...),
+                    username: str = Depends(require_login)):
+    try:
+        message = failover.remove_manifest(key, username, confirm_password)
+    except failover.FailoverError as exc:
+        return _failover_response(request, username, error=str(exc), status_code=400)
+    return _failover_response(request, username, notice=message)

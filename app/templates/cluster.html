@@ -18,14 +18,16 @@
 
 <div class="link-card">
   <h2>Redondance de stockage —
-    <a href="/cluster/replication">appairage</a> puis
-    <a href="/cluster/replication/zfs">replication</a>
+    <a href="/cluster/replication">appairage</a>,
+    <a href="/cluster/replication/zfs">replication</a>, puis
+    <a href="/cluster/failover">bascule</a>
   </h2>
   <p class="stat-sub">
     Le chantier avance a part de Docker Swarm : la replication ZFS passe par
     SSH, pas par le cluster de calcul, et n'exige donc pas qu'un cluster Swarm
-    soit forme. L'appairage pose le lien de confiance entre deux machines ;
-    l'envoi des donnees viendra ensuite.
+    soit forme. L'appairage pose le lien de confiance entre deux machines, la
+    replication transporte les donnees, et la <strong>bascule</strong> dit ce
+    qui repartirait ailleurs si cette machine tombait — puis le fait.
   </p>
 </div>
 

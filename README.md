@@ -6,7 +6,7 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
-**Version actuelle : v1.15.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+**Version actuelle : v1.16.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
 est affiché en bas du menu latéral ; le survol donne le commit déployé et
 signale si des fichiers ont été modifiés à la main sur le serveur.
 
@@ -33,10 +33,14 @@ répliqué d'un nœud à l'autre), et depuis la v1.12.0 une page Snapshots gère
 les instantanés ZFS, manuels comme automatiques, avec retour arrière encadré.
 La v1.13.0 ajoute l'appairage SSH entre nœuds, la v1.14.0 la réplication
 elle-même — envoi d'un dataset vers une autre machine, complet la première
-fois puis incrémental, en tâche de fond — et la v1.15.0 en fait une
-sauvegarde tenable : envois planifiés (qui n'écrasent jamais rien tout seuls),
-rétention des snapshots sur la réplique, et alerte quand le dernier envoi
-réussi remonte à trop longtemps.
+fois puis incrémental, en tâche de fond — la v1.15.0 en fait une
+sauvegarde tenable — envois planifiés (qui n'écrasent jamais rien tout seuls),
+rétention des snapshots sur la réplique, alerte quand le dernier envoi réussi
+remonte à trop longtemps — et la v1.16.0 ajoute les **groupes de bascule** :
+un pool, ses partages et ses stacks forment une unité qui dit ce qui ne
+repartirait pas en cas de panne, et qui peut être reprise sur l'autre machine,
+proprement quand elle répond encore, en urgence sinon — jamais les deux à la
+fois.
 Le tout s'installe par un script unique après une installation fraîche
 d'Ubuntu Server 26.04 LTS.
 
@@ -143,7 +147,7 @@ pytest tests/ -v
 ```
 
 Optionnel (pas nécessaire pour faire tourner NAS Manager), mais recommandé
-avant de valider une modification faite à la main. **1527 tests** couvrent :
+avant de valider une modification faite à la main. **1633 tests** couvrent :
 
 - **Stockage** : détection et identité des disques (étiquette ZFS plutôt que
   nom de périphérique), validation des pools, agrandissement, suppression en
@@ -165,6 +169,12 @@ avant de valider une modification faite à la main. **1527 tests** couvrent :
   quoi que ce soit d'une lecture distante qui a échoué, planification (qui ne
   force jamais), rétention distante (qui ne touche jamais au snapshot portant
   la chaîne incrémentale) et alerte de dérive.
+- **Bascule** : composition d'un groupe depuis les registres existants,
+  couverture (ce qui ne repartirait pas, datasets enfants compris), manifeste
+  sans aucun secret, validation stricte de ce qui arrive d'une autre machine,
+  ordre des opérations à la libération comme à la reprise, et le garde-fou
+  central — une reprise d'urgence est refusée tant que le nœud d'origine
+  répond.
 - **Appairage des nœuds** : validation de l'adresse et de la clé publique,
   restrictions posées dans `authorized_keys`, préservation des clés
   personnelles présentes dans le même fichier, test de lien.

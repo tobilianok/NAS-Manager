@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+{% block title %}Bascule de {{ plan.group }} - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/cluster">Cluster</a> /
+<a href="/cluster/failover">Bascule</a> / <strong>{{ plan.group }}</strong>{% endblock %}
+
+{% block content %}
+<div x-data="{ confirmed: false }">
+<h1>Reprendre le groupe « {{ plan.group }} » ici</h1>
+
+{% if error %}<div class="danger-banner">{{ error }}</div>{% endif %}
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Le mode : c'est le noeud d'origine qui le decide, pas nous          -->
+<!-- ------------------------------------------------------------------ -->
+{% if plan.owner_reachable %}
+<div class="info-panel">
+  <h2>Bascule planifiee</h2>
+  <p>
+    Le noeud d'origine <span class="mono">{{ plan.owner_address }}</span>
+    <strong>repond</strong>. La bascule se fera donc proprement, dans cet
+    ordre :
+  </p>
+  <ol>
+    <li>il arrete ses stacks, pendant que ses datasets sont encore
+      inscriptibles ;</li>
+    <li>il retire ses partages, pour couper les ecritures des clients ;</li>
+    <li>il passe ses datasets en lecture seule ;</li>
+    <li>il envoie une derniere fois ce qui a change, et on attend la fin ;</li>
+    <li>cette machine reprend alors la main.</li>
+  </ol>
+  <p>
+    <strong>Rien n'est perdu</strong>, et a aucun moment les deux machines ne
+    servent les memes donnees.
+  </p>
+</div>
+{% else %}
+<div class="danger-banner">
+  <h2>Bascule d'urgence</h2>
+  <p>
+    Le noeud d'origine ne repond pas. Cette machine va reprendre le groupe
+    avec ce qu'elle a recu — <strong>tout ce qui a ete ecrit la-bas depuis le
+    dernier envoi reussi sera perdu</strong>. Les dates ci-dessous disent
+    exactement de quand datent les repliques.
+  </p>
+</div>
+{% endif %}
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Ce qui bloque                                                       -->
+<!-- ------------------------------------------------------------------ -->
+{% for b in plan.blockers %}
+<div class="danger-banner"><strong>Bloque.</strong> {{ b }}</div>
+{% endfor %}
+
+{% for w in plan.warnings %}
+<div class="warning-banner">{{ w }}</div>
+{% endfor %}
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Les repliques                                                       -->
+<!-- ------------------------------------------------------------------ -->
+<div class="card">
+  <h2>Datasets repris</h2>
+  <table class="data-table">
+    <thead>
+      <tr><th>Chez le proprietaire</th><th>Ici</th><th>Age des donnees</th><th>Etat</th></tr>
+    </thead>
+    <tbody>
+      {% for d in plan.datasets %}
+      <tr>
+        <td class="mono">{{ d.source }}</td>
+        <td class="mono">{{ d.destination }}</td>
+        <td>
+          {% if d.last_snapshot %}
+          {% if d.stale %}<span class="badge badge-warn">{{ d.age_label }}</span>
+          {% else %}{{ d.age_label }}{% endif %}
+          <div class="stat-sub mono">{{ d.last_snapshot }}</div>
+          {% else %}
+          <span class="badge badge-warn">inconnu</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if d.ready %}
+          <span class="badge badge-ok">pret</span>
+          monte sur <span class="mono">{{ d.mountpoint }}</span>
+          {% elif not d.exists %}
+          <span class="badge badge-warn">jamais recu</span>
+          {% elif not d.is_replica %}
+          <span class="badge badge-warn">pas notre replique — non touche</span>
+          {% else %}
+          <span class="badge badge-warn">pas de point de montage</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="stat-sub">
+    Les datasets repris passent en ecriture, et <strong>perdent leur marque de
+    replique</strong>. C'est volontaire : si le noeud d'origine revient, son
+    prochain envoi sera refuse au lieu d'ecraser ce qui aura ete ecrit ici.
+  </div>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Partages et stacks                                                  -->
+<!-- ------------------------------------------------------------------ -->
+<div class="card">
+  <h2>Partages et stacks republies</h2>
+  <ul>
+    {% for s in plan.manifest.shares %}
+    <li>
+      partage <strong>{{ s.name }}</strong>
+      ({{ (s.protocols or [])|join(', ') }})
+      {% if s.name in plan.unpromotable_shares %}
+      — <span class="badge badge-warn">non repris : sa replique n'est pas la</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+    {% for s in plan.manifest.stacks %}
+    <li>
+      stack <strong>{{ s.name }}</strong>
+      {% if s.name in plan.unpromotable_stacks %}
+      — <span class="badge badge-warn">non reprise : sa replique n'est pas la</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  <div class="stat-sub">
+    Le <span class="mono">docker-compose.yml</span> d'une stack vit dans son
+    dataset : il est deja arrive avec les donnees, il n'y a rien a transporter
+    de plus.
+  </div>
+
+  {% if plan.missing_accounts %}
+  <div class="warning-banner">
+    <strong>Comptes absents de cette machine :</strong>
+    {{ plan.missing_accounts|join(', ') }}.
+    Les mots de passe ne voyagent jamais dans un manifeste. Ces comptes sont a
+    recreer ici, avec de nouveaux mots de passe, sinon les partages repris
+    refuseront les connexions.
+  </div>
+  {% endif %}
+  {% if plan.uid_conflicts %}
+  <div class="danger-banner">
+    <strong>Comptes de meme nom, identifiant numerique different :</strong>
+    {{ plan.uid_conflicts|join(', ') }}.
+    Les fichiers arrivent avec leur numero, pas avec leur nom : les republier
+    ainsi donnerait leur contenu au mauvais compte, et NFS le respecterait a
+    la lettre. Aligne les UID avant de basculer.
+  </div>
+  {% endif %}
+  {% if plan.missing_groups %}
+  <div class="warning-banner">
+    Groupes Linux absents : {{ plan.missing_groups|join(', ') }}. Les
+    permissions de groupe des partages ne s'appliqueront pas tant qu'ils
+    n'existent pas ici.
+  </div>
+  {% endif %}
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Confirmation                                                        -->
+<!-- ------------------------------------------------------------------ -->
+{% if plan.possible %}
+<div class="card">
+  <h2>Confirmer la bascule</h2>
+  <div class="warning-banner">
+    Cette machine va se mettre a servir des donnees qu'une autre servait.
+    L'operation ne s'annule pas d'un clic : pour revenir en arriere, il
+    faudrait refaire le chemin dans l'autre sens.
+  </div>
+
+  {% if plan.oldest %}
+  <div class="{% if plan.any_stale %}danger-banner{% else %}info-panel{% endif %}">
+    <strong>La replique la plus ancienne date de {{ plan.oldest.age_label }}</strong>
+    (<span class="mono">{{ plan.oldest.destination }}</span>).
+    {% if not plan.owner_reachable %}
+    Tout ce qui a ete ecrit sur le noeud d'origine depuis sera perdu.
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <form method="post" action="/cluster/failover/incoming/{{ key }}/promote">
+    {# Le mode affiche part avec le formulaire : si la situation a change
+       entre l'affichage et le clic, la bascule est refusee plutot que
+       d'executer autre chose que ce qui a ete confirme. #}
+    <input type="hidden" name="expected_mode" value="{{ plan.mode }}">
+    <label for="confirm_name">
+      Retapez le nom du groupe : <span class="mono">{{ plan.group }}</span>
+    </label>
+    <input type="text" id="confirm_name" name="confirm_name" required
+           autocomplete="off">
+
+    <label for="confirm_password">Votre mot de passe</label>
+    <input type="password" id="confirm_password" name="confirm_password" required>
+
+    <label class="checkbox-line">
+      <input type="checkbox" name="start_stacks" value="1" checked>
+      Demarrer les stacks apres la reprise
+    </label>
+    <div class="stat-sub">
+      Decoche si tu preferes verifier les fichiers avant de lancer les
+      containers. Les stacks seront reprises dans tous les cas, et
+      demarrables depuis la page Docker.
+    </div>
+
+    <label class="checkbox-line">
+      <input type="checkbox" name="acknowledge" value="1" x-model="confirmed">
+      Je comprends que cette machine devient celle qui sert ces donnees
+      {% if not plan.owner_reachable %}, et que ce qui a ete ecrit depuis le
+      dernier envoi est perdu{% endif %}.
+    </label>
+
+    <div class="btn-row">
+      <button type="submit" class="btn btn-solid-danger" :disabled="!confirmed">
+        {% if plan.owner_reachable %}Lancer la bascule planifiee{% else %}Reprendre en urgence{% endif %}
+      </button>
+      <a class="btn btn-muted" href="/cluster/failover">Annuler</a>
+    </div>
+  </form>
+</div>
+{% else %}
+<div class="card">
+  <div class="empty-state">
+    La bascule n'est pas possible en l'etat. Corrige ce qui est signale
+    ci-dessus, puis reviens sur cette page.
+  </div>
+  <div class="btn-row">
+    <a class="btn btn-muted" href="/cluster/failover">Retour</a>
+  </div>
+</div>
+{% endif %}
+
+</div>
+{% endblock %}

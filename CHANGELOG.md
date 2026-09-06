@@ -13,6 +13,152 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.16.0 — 2026-09-06
+
+**Les groupes de bascule.** Étape 2d, la dernière de la redondance de stockage
+à deux nœuds. Les versions précédentes savaient copier des données d'une
+machine à l'autre ; celle-ci répond à la question qui restait : **qu'est-ce
+qui repart, et comment, quand la machine d'origine ne répond plus ?**
+
+### Ce qu'un groupe de bascule est
+
+Un pool ne bascule pas tout seul. Ce qui bascule, c'est un ensemble : le pool,
+les **partages** SMB/NFS servis depuis ses datasets, les **stacks Docker**
+dont les données vivent dessus, et les **réplications** qui portent tout ça
+vers le nœud de secours. Basculer un pool sans redémarrer les stacks qui y
+écrivent laisserait des conteneurs pointant vers un montage disparu.
+
+**Rien n'est dupliqué** : un groupe ne retient qu'un nom, un pool et l'adresse
+du nœud de secours. Le contenu est recalculé à chaque affichage depuis les
+registres qui existent déjà — un partage créé demain fait partie du groupe
+sans que personne ait à y penser. Même principe que `netplan`, sa propre
+source de vérité depuis la v1.7.
+
+### La couverture — ce qui ne repartirait pas
+
+Avant même de savoir basculer, il faut savoir ce qui manque. Un dataset qui
+porte un partage mais qu'aucune réplication ne transmet est un trou
+**invisible partout ailleurs** : la page Réplication affiche « à jour », et le
+jour où la machine meurt on découvre que ce partage-là n'existait nulle part.
+La page nomme ces datasets, dit quels partages et quelles stacks ils portent,
+et une onzième vérification les remonte dans la carte Santé & sécurité.
+
+Elle compte aussi les **datasets enfants** : `tank/partages/photos/2024` est un
+système de fichiers distinct, `zfs send` sans `-R` ne le transmet pas, et il
+n'apparaissait nulle part.
+
+### Le manifeste
+
+Le `docker-compose.yml` d'une stack vit dans son dataset : il voyage avec les
+données, sans rien faire de spécial. Les registres de NAS Manager, eux, vivent
+hors du pool — ni les définitions de partages, ni le lien nom de stack →
+dataset ne sont répliqués. D'où un **manifeste** poussé vers le nœud de
+secours par le lien SSH déjà appairé, sans lequel il aurait les données mais
+ignorerait quoi en faire.
+
+**Les mots de passe ne voyagent jamais.** Le manifeste nomme les comptes dont
+les partages ont besoin ; il ne transporte aucun secret. Les comptes manquants
+sont à recréer, et c'est dit à l'écran avant la bascule plutôt que découvert
+par un utilisateur qui n'arrive plus à se connecter.
+
+### Deux façons de basculer, une seule interdiction
+
+- **Bascule planifiée** — le nœud d'origine répond. On le fait *libérer* le
+  groupe d'abord : stacks arrêtées pendant que ses datasets sont encore
+  inscriptibles, partages retirés pour couper les écritures des clients,
+  datasets passés en lecture seule **seulement après**. Un dernier envoi
+  capture le delta, on attend qu'il finisse, et alors seulement on reprend la
+  main. Rien n'est perdu, et à aucun moment les deux machines ne servent les
+  mêmes données.
+- **Bascule d'urgence** — le nœud d'origine ne répond plus. On reprend avec ce
+  qui a été reçu, et l'écran dit de quand datent les répliques, dataset par
+  dataset.
+
+**L'interdiction est absolue** : une bascule d'urgence est refusée tant que le
+nœud d'origine répond. À deux nœuds, on ne peut pas distinguer « il est
+tombé » de « le lien est coupé mais il vit » ; se tromper ferait servir les
+mêmes données depuis deux machines. S'il répond, c'est une bascule planifiée ;
+s'il doit vraiment sortir du jeu, l'éteindre est un geste physique.
+
+La promotion **retire la marque `nasmanager:replica`** des datasets repris.
+Conséquence voulue : si l'ancien nœud revient, son envoi habituel est refusé
+au lieu d'écraser ce qui aura été écrit depuis.
+
+### Corrections issues de la relecture adverse
+
+Vingt-trois défauts trouvés en relecture hostile avant livraison, dont cinq
+critiques. Les plus importants :
+
+- **Les répliques n'étaient jamais montées.** Elles arrivent avec
+  `zfs receive -u` et leur parent est créé en `canmount=off` : le répertoire
+  n'existait même pas. Tous les partages auraient échoué à la republication —
+  après que le propriétaire ait tout lâché. Pire encore si le répertoire
+  existait par accident : les clients auraient écrit dans un dossier vide du
+  pool racine pendant que les vraies données dormaient à côté. La promotion
+  monte désormais chaque réplique et **vérifie qu'elle est montée** avant de
+  republier quoi que ce soit.
+- **La marque de réplique était retirée après `readonly=off`**, et son échec
+  n'empêchait rien. Entre les deux, le dataset était inscriptible *et* encore
+  reconnu comme réplique : l'envoi de l'ancien nœud passait tous les
+  garde-fous. Et si le retrait échouait, on promouvait quand même — le
+  planificateur de la v1.15.0 aurait écrasé le dataset promu, ou l'aurait
+  repassé en lecture seule en pleine production. L'ordre est inversé, l'échec
+  abandonne ce dataset, et le retrait est **vérifié par relecture**.
+- **Le planificateur de réplication n'était pas désarmé pendant la bascule** :
+  un envoi lancé au mauvais moment atterrissait après la promotion. La
+  libération le désarme, la reprise le restaure.
+- **Le manifeste n'était pas validé.** Il vient d'une autre machine et ses
+  champs finissent dans `smb.conf` et `/etc/exports` via `adopt_share`, qui —
+  contrairement à `create_share` — ne validait rien : un nom de partage
+  contenant un saut de ligne y injectait une section Samba entière, une plage
+  NFS libre ouvrait un export au monde. Sans malveillance non plus : un
+  partage nommé `global` cassait la configuration Samba de la machine de
+  secours. Tout est validé à l'entrée, et refusé en bloc.
+- **Le mode confirmé n'était pas celui exécuté.** Le formulaire ne portait pas
+  le mode affiché : on consentait à une bascule planifiée « rien n'est perdu »
+  et une reprise d'urgence pouvait s'exécuter à la place — ou l'inverse,
+  arrêtant les services d'une machine qu'on croyait morte.
+- **Rien de ce que répondait le propriétaire n'était bloquant** : une
+  libération partielle, un envoi qui n'aboutit pas, une attente qui échoue —
+  tout finissait en avertissement et la promotion continuait. Un dataset resté
+  inscriptible chez lui pendant qu'on republie son partage ici, c'est
+  exactement le split-brain que le module interdit, atteint par le chemin
+  planifié. Ces trois cas lèvent désormais.
+- **Une libération était un aller simple** : les définitions de partage étaient
+  effacées du propriétaire et la seule copie survivante était le manifeste
+  chez le voisin. Elles sont maintenant sauvegardées avant, et un bouton
+  « Reprendre ce groupe ici » les restaure.
+- **Un manifeste sans adresse désactivait le garde-fou** anti-split-brain (zéro
+  sonde, donc « il ne répond pas »). Refus fail-closed.
+- **Le groupe n'était identifié que par son nom** dans l'appel distant : un
+  groupe retiré puis recréé sur un autre pool aurait fait libérer un pool en
+  pleine production. Le pool attendu part avec le nom.
+- **Les UID ne sont pas les noms.** Le flux ZFS transporte des numéros : un
+  compte homonyme d'UID différent donnait les fichiers au mauvais compte, et
+  NFS le respectait à la lettre. Détecté et bloquant.
+- **`local_addresses()` ignorait bonds et VLAN** — sur une machine à cartes
+  agrégées, la liste qui décide si le propriétaire est tombé était vide ou
+  fausse.
+- Plus : aucun verrou sur les opérations destructrices, aucun état durable
+  « bascule en cours » (un redémarrage au milieu laissait une machine à moitié
+  promue sans trace), les blocages du plan recalculé ignorés, les chemins
+  absolus des composes invisibles côté secours, `manifest_pushed` jamais
+  invalidé (un partage ajouté après le dépôt n'aurait jamais été republié),
+  un groupe libéré affiché en vert, un manifeste malformé provoquant une
+  erreur 500 irrécupérable, `adopt_stack` sans validation du compose ni des
+  noms réservés, et `adopt_share` qui réappliquait récursivement les ACL sur
+  des téraoctets dans la requête web.
+
+### Corrections annexes
+
+- **Un test de version écrit en dur** a survécu à deux montées de version sans
+  échouer — parce qu'il correspondait par hasard au dernier tag git de l'arbre
+  de travail — puis a cassé la suite quand le tag a avancé. Il lit désormais
+  ce que l'application rapporte.
+- **1633 tests** (contre 1527).
+
+---
+
 ## v1.15.0 — 2026-09-06
 
 **La réplication devient une sauvegarde sur laquelle on peut compter.** La

@@ -1,0 +1,351 @@
+{% extends "base.html" %}
+{% block title %}Bascule - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/cluster">Cluster</a> / <strong>Bascule</strong>{% endblock %}
+
+{% block content %}
+<div x-data="{ addOpen: false, removeFor: null, releaseFor: null, forgetFor: null }">
+<h1>Groupes de bascule</h1>
+<p class="page-intro">
+  Un pool ne bascule pas tout seul. Ce qui bascule, c'est un ensemble : le
+  pool, les partages servis depuis ses datasets, et les stacks Docker dont les
+  donnees vivent dessus. Un groupe rassemble ces trois-la et repond a la seule
+  question qui compte — <strong>qu'est-ce qui repartirait ailleurs si cette
+  machine tombait maintenant ?</strong>
+</p>
+
+{% if error %}<div class="danger-banner">{{ error }}</div>{% endif %}
+{% if notice %}<div class="success-banner">{{ notice }}</div>{% endif %}
+
+{% if inflight %}
+<div class="danger-banner">
+  <strong>Une bascule n'a jamais abouti.</strong> Groupe
+  « {{ inflight.group }} », commencee le {{ inflight.started_at }}, arretee a
+  l'etape « {{ inflight.phase }} ». Verifie l'etat des deux machines avant
+  d'en relancer une : promouvoir par-dessus une reprise inachevee melangerait
+  deux etats. Aucune nouvelle bascule ne partira tant que ce message est la.
+</div>
+{% endif %}
+
+<div class="info-panel">
+  <strong>Rien n'est duplique ici.</strong> Un groupe ne retient qu'un nom, un
+  pool et l'adresse du noeud de secours. Le contenu est recalcule a chaque
+  affichage depuis les partages, les stacks et les replications qui existent
+  deja : un partage cree demain fera partie du groupe sans que vous ayez a y
+  penser.
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Les groupes que cette machine possede                               -->
+<!-- ------------------------------------------------------------------ -->
+<h2>Groupes de cette machine</h2>
+
+{% if statuses %}
+{% for status in statuses %}
+{% set group = status.group %}
+{% set cov = status.coverage %}
+{% set inv = inventories.get(group.name) %}
+<div class="card">
+  <div class="storage-head">
+    <h2 class="storage-name">
+      {{ group.name }}
+      <span class="stat-sub">— pool <span class="mono">{{ group.pool }}</span>,
+        secours <span class="mono">{{ group.peer }}</span></span>
+    </h2>
+    {% if group.label %}<div class="stat-sub">{{ group.label }}</div>{% endif %}
+  </div>
+
+  {% if cov.unprotected %}
+  <div class="danger-banner">
+    <strong>{{ cov.summary }}</strong>
+    <ul>
+      {% for d in cov.unprotected %}
+      <li>
+        <span class="mono">{{ d.dataset }}</span>
+        {% if d.shares %} — partage(s) : {{ d.shares|join(', ') }}{% endif %}
+        {% if d.stacks %} — stack(s) : {{ d.stacks|join(', ') }}{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    Enregistre une replication de chacun de ces datasets vers
+    <span class="mono">{{ group.peer }}</span> depuis la page
+    <a href="/cluster/replication/zfs">Replication</a>.
+  </div>
+  {% elif cov.datasets %}
+  <div class="result-card">
+    <span class="badge badge-ok">couvert</span> {{ cov.summary }}
+  </div>
+  {% else %}
+  <div class="empty-state">{{ cov.summary }}</div>
+  {% endif %}
+
+  {% for w in cov.warnings %}
+  <div class="warning-banner">{{ w }}</div>
+  {% endfor %}
+
+  {% if cov.datasets %}
+  <table class="data-table">
+    <thead>
+      <tr><th>Dataset</th><th>Contenu</th><th>Replication</th><th>Derniere copie</th></tr>
+    </thead>
+    <tbody>
+      {% for d in cov.datasets %}
+      <tr>
+        <td class="mono">{{ d.dataset }}</td>
+        <td>
+          {% for s in d.shares %}<span class="badge">partage {{ s }}</span> {% endfor %}
+          {% for s in d.stacks %}<span class="badge">stack {{ s }}</span> {% endfor %}
+        </td>
+        <td>
+          {% if d.replicated %}
+          <span class="mono">{{ d.task.destination }}</span>
+          {% else %}
+          <span class="badge badge-warn">aucune</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if d.problem %}
+          <span class="badge badge-warn">{{ d.problem }}</span>
+          {% else %}
+          a jour
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if not status.manifest_pushed %}
+  <div class="warning-banner">
+    <strong>Le manifeste n'a jamais ete transmis a {{ group.peer }}.</strong>
+    Sans lui, ce noeud aura bien les donnees mais ignorera quels partages les
+    servaient, avec quels acces, et a quelles stacks appartiennent les
+    datasets — donc il ne pourra rien reprendre. Depose-le, et repose-le apres
+    chaque changement de partage ou de stack.
+  </div>
+  {% endif %}
+
+  {% if status.released %}
+  <div class="warning-banner">
+    <strong>Ce groupe a ete libere.</strong> Cette machine ne le sert plus :
+    stacks arretees, partages retires, datasets en lecture seule. Si la reprise
+    a echoue en face, le bouton ci-dessous le remet en service ici, avec ses
+    partages et leurs acces.
+    <form method="post" action="/cluster/failover/{{ group.name }}/readopt">
+      <label for="ra_pw_{{ loop.index }}">Votre mot de passe</label>
+      <input type="password" id="ra_pw_{{ loop.index }}" name="confirm_password" required>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-primary">Reprendre ce groupe ici</button>
+      </div>
+    </form>
+  </div>
+  {% elif status.manifest_pushed and not status.manifest_current %}
+  <div class="warning-banner">
+    <strong>Le manifeste depose sur {{ group.peer }} est perime.</strong> La
+    configuration a change depuis (partage ajoute, acces modifie, stack
+    creee) : ces changements ne seraient pas repris apres une bascule.
+    Redepose-le.
+  </div>
+  {% endif %}
+
+  <div class="btn-row">
+    <form method="post" action="/cluster/failover/{{ group.name }}/manifest">
+      <button type="submit" class="btn btn-primary">
+        Deposer le manifeste sur {{ group.peer }}
+      </button>
+    </form>
+    <button type="button" class="btn btn-muted"
+            @click="releaseFor = '{{ group.name }}'">Liberer ce groupe</button>
+    <button type="button" class="btn btn-muted"
+            @click="removeFor = '{{ group.name }}'">Retirer de la liste</button>
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="card">
+  <div class="empty-state">
+    Aucun groupe de bascule. Cree-en un ci-dessous pour savoir ce qui
+    repartirait ailleurs en cas de panne.
+  </div>
+</div>
+{% endif %}
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Ajouter un groupe                                                   -->
+<!-- ------------------------------------------------------------------ -->
+<div class="card">
+  <div class="btn-row">
+    <button type="button" class="btn btn-link" @click="addOpen = !addOpen">
+      <span x-text="addOpen ? 'Annuler' : 'Creer un groupe de bascule'"></span>
+    </button>
+  </div>
+
+  <div x-show="addOpen" x-cloak>
+    {% if not peers %}
+    <div class="warning-banner">
+      Aucun noeud appaire. Un groupe de bascule a besoin d'un noeud de secours
+      joignable : commence par la page <a href="/cluster/replication">Appairage</a>.
+    </div>
+    {% endif %}
+    <form method="post" action="/cluster/failover">
+      <label for="name">Nom du groupe</label>
+      <input type="text" id="name" name="name" required placeholder="donnees-photo">
+
+      <label for="pool">Pool</label>
+      <select id="pool" name="pool" required>
+        {% for p in pools %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+      </select>
+      <div class="stat-sub">
+        Les pools systeme ne sont pas proposes : ce sont eux qui font tourner
+        NAS Manager, ils ne basculent pas.
+      </div>
+
+      <label for="peer">Noeud de secours</label>
+      <select id="peer" name="peer" required>
+        {% for p in peers %}
+        <option value="{{ p.address }}">{{ p.name }} — {{ p.address }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="label">Etiquette (facultatif)</label>
+      <input type="text" id="label" name="label" placeholder="Photos et Immich">
+
+      <div class="btn-row">
+        <button type="submit" class="btn btn-primary">Creer</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Les groupes que cette machine saurait reprendre                     -->
+<!-- ------------------------------------------------------------------ -->
+<h2>Groupes que cette machine peut reprendre</h2>
+
+{% if manifests %}
+{% for m in manifests %}
+{% set done = promotions.get(m._key) %}
+<div class="card">
+  <div class="storage-head">
+    <h2 class="storage-name">
+      {{ m.group }}
+      <span class="stat-sub">— venu de
+        <span class="mono">{{ (m.owner_addresses or ['?'])[0] }}</span>,
+        pool <span class="mono">{{ m.pool }}</span></span>
+    </h2>
+    <div class="stat-sub">
+      Manifeste depose le {{ m.generated_at }} —
+      {{ (m.shares or [])|length }} partage(s), {{ (m.stacks or [])|length }} stack(s),
+      {{ (m.replicas or {})|length }} replique(s).
+    </div>
+  </div>
+
+  {% if done %}
+  <div class="result-card">
+    <span class="badge badge-ok">repris ici</span>
+    Bascule {{ done.mode }} effectuee le {{ done.at }} :
+    {{ (done.datasets or [])|length }} dataset(s),
+    {{ (done.shares or [])|length }} partage(s),
+    {{ (done.stacks or [])|length }} stack(s).
+  </div>
+  {% endif %}
+
+  <div class="btn-row">
+    <a class="btn btn-primary" href="/cluster/failover/incoming/{{ m._key }}">
+      Preparer une bascule
+    </a>
+    <button type="button" class="btn btn-muted"
+            @click="forgetFor = '{{ m._key }}'">Oublier ce manifeste</button>
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="card">
+  <div class="empty-state">
+    Aucun manifeste recu. Une autre machine doit d'abord creer un groupe qui
+    designe celle-ci comme noeud de secours, puis y deposer son manifeste.
+  </div>
+</div>
+{% endif %}
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Modales                                                             -->
+<!-- ------------------------------------------------------------------ -->
+{% for status in statuses %}
+{% set group = status.group %}
+<div class="modal-overlay" x-show="removeFor === '{{ group.name }}'" x-cloak
+     @click.self="removeFor = null">
+  <div class="modal-box">
+    <div class="modal-close" @click="removeFor = null">&times;</div>
+    <h2>Retirer le groupe « {{ group.name }} » ?</h2>
+    <p>
+      Il disparait de cette liste. <strong>Rien d'autre ne change</strong> : ni
+      les partages, ni les stacks, ni les replications, ni le manifeste deja
+      depose sur {{ group.peer }}.
+    </p>
+    <form method="post" action="/cluster/failover/{{ group.name }}/remove">
+      <label for="rm_pw_{{ loop.index }}">Votre mot de passe</label>
+      <input type="password" id="rm_pw_{{ loop.index }}" name="confirm_password" required>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-solid-danger">Retirer</button>
+        <button type="button" class="btn btn-muted" @click="removeFor = null">Annuler</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal-overlay" x-show="releaseFor === '{{ group.name }}'" x-cloak
+     @click.self="releaseFor = null">
+  <div class="modal-box">
+    <div class="modal-close" @click="releaseFor = null">&times;</div>
+    <h2>Liberer le groupe « {{ group.name }} » ?</h2>
+    <p>
+      Cette machine cesse de servir ce groupe, dans cet ordre :
+      <strong>les stacks sont arretees</strong> pendant que les datasets sont
+      encore inscriptibles, <strong>les partages sont retires</strong> pour
+      couper les ecritures des clients, et <strong>seulement apres</strong> les
+      datasets passent en lecture seule.
+    </p>
+    <p>
+      <strong>Aucune donnee n'est detruite</strong> : les datasets et leur
+      contenu restent en place. C'est ce que fait automatiquement une bascule
+      planifiee lancee depuis le noeud de secours ; ce bouton sert quand on
+      veut le faire seul, pour une maintenance.
+    </p>
+    <form method="post" action="/cluster/failover/{{ group.name }}/release">
+      <label for="rl_pw_{{ loop.index }}">Votre mot de passe</label>
+      <input type="password" id="rl_pw_{{ loop.index }}" name="confirm_password" required>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-solid-danger">Liberer</button>
+        <button type="button" class="btn btn-muted" @click="releaseFor = null">Annuler</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+
+{% for m in manifests %}
+<div class="modal-overlay" x-show="forgetFor === '{{ m._key }}'" x-cloak
+     @click.self="forgetFor = null">
+  <div class="modal-box">
+    <div class="modal-close" @click="forgetFor = null">&times;</div>
+    <h2>Oublier le manifeste de « {{ m.group }} » ?</h2>
+    <p>
+      Les repliques deja recues <strong>restent en place</strong> : rien n'est
+      supprime. Cette machine ne saurait simplement plus les remettre en
+      service toute seule.
+    </p>
+    <form method="post" action="/cluster/failover/incoming/{{ m._key }}/forget">
+      <label for="fg_pw_{{ loop.index }}">Votre mot de passe</label>
+      <input type="password" id="fg_pw_{{ loop.index }}" name="confirm_password" required>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-solid-danger">Oublier</button>
+        <button type="button" class="btn btn-muted" @click="forgetFor = null">Annuler</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+
+</div>
+{% endblock %}

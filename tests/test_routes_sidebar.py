@@ -77,16 +77,30 @@ def test_only_one_link_is_highlighted_at_a_time(client):
 
 
 def test_sidebar_shows_the_version(client):
+    """Le numero affiche est celui que l'application rapporte, jamais une
+    constante recopiee dans le test.
+
+    La version ecrite en dur ici a survecu a deux montees de version sans
+    echouer — parce qu'elle correspondait par hasard au dernier tag git du
+    depot de travail — puis a casse la suite au moment ou le tag a avance.
+    Un test qui depend de l'etat git de l'arbre de travail ne teste pas ce
+    qu'il croit tester."""
+    from app import version as version_module
+
     text = client.get("/").text
-    assert "v1.14.1" in text
+    assert version_module.get_version_info_cached().label in text
 
 
 def test_sidebar_is_identical_on_every_page(client):
     """Le menu vient d'une donnee partagee : aucune page ne peut l'oublier
     ni en afficher une version differente."""
-    for path in ("/", "/pools", "/shares", "/snapshots", "/docker", "/cluster", "/network", "/system", "/backup",
+    from app import version as version_module
+
+    label = version_module.get_version_info_cached().label
+    for path in ("/", "/pools", "/shares", "/snapshots", "/docker", "/cluster",
+                 "/cluster/failover", "/network", "/system", "/backup",
                  "/share-users", "/admin-accounts", "/disks", "/updates"):
         resp = client.get(path)
         assert resp.status_code == 200, path
         assert "Parametres" in resp.text, path
-        assert "v1.14.1" in resp.text, path
+        assert label in resp.text, path
