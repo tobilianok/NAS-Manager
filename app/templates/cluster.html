@@ -17,7 +17,10 @@
 {% if notice %}<div class="success-banner">{{ notice }}</div>{% endif %}
 
 <div class="link-card">
-  <h2>Redondance de stockage — <a href="/cluster/replication">appairage des noeuds</a></h2>
+  <h2>Redondance de stockage —
+    <a href="/cluster/replication">appairage</a> puis
+    <a href="/cluster/replication/zfs">replication</a>
+  </h2>
   <p class="stat-sub">
     Le chantier avance a part de Docker Swarm : la replication ZFS passe par
     SSH, pas par le cluster de calcul, et n'exige donc pas qu'un cluster Swarm

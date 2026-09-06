@@ -13,6 +13,83 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.14.0 — 2026-09-06
+
+**Réplication ZFS** (Cluster → Réplication). Sous-étape 2c, première moitié :
+l'envoi, à la main. La planification, la rétention côté destination et
+l'alerte de dérive viendront ensuite — il fallait d'abord un envoi qui tienne
+la distance.
+
+### Ce que la page permet
+- Enregistrer une réplication : un dataset d'ici, l'adresse d'un nœud appairé,
+  un dataset là-bas.
+- Voir, **avant** de lancer, ce qui va se passer : envoi complet ou
+  incrémental, quel snapshot part, ce que ZFS estime devoir transmettre.
+- Lancer, et suivre la progression. Le transfert est **détaché** : il survit à
+  la fermeture du navigateur et au redémarrage du service, comme les
+  effacements longs de la Phase 12b. Un envoi complet de plusieurs centaines
+  de gigaoctets dure des heures.
+- Voir **l'âge du dernier envoi réussi** pour chaque réplication. C'est le
+  chiffre qui compte : tout ce qui a été écrit depuis n'existe que sur la
+  source.
+
+### Ce qu'une réplique est, et n'est pas
+- **Une copie décalée dans le temps, pas une sauvegarde permanente.** Entre
+  deux envois, le delta n'existe nulle part ailleurs.
+- **Pas un pool actif des deux côtés.** La destination est passée en lecture
+  seule après réception : deux machines qui écrivent dans le même pool, c'est
+  exactement la corruption que tout ce chantier cherche à éviter.
+
+### Garde-fous
+- **`zfs receive -F` peut détruire des données sur la machine distante** — il
+  fait reculer le dataset destination pour le faire correspondre à la source.
+  Il n'est jamais utilisé sans confirmation explicite, sur une page qui dit ce
+  qu'il emporterait.
+- **Une destination qui n'est pas déjà une réplique est refusée.** Chaque
+  dataset reçu porte une propriété ZFS `nasmanager:replica=<source>` posée par
+  nous. Un dataset existant qui ne la porte pas — ou qui la porte pour une
+  autre source — n'est jamais écrasé.
+- **Le pool système est hors d'atteinte des deux côtés.** Côté distant, la
+  liste est demandée à NAS Manager là-bas plutôt que redevinée ; s'il ne
+  répond pas, la page le dit au lieu de prétendre avoir vérifié.
+- **Deux sources vers une même destination sont refusées** : elles se
+  détruiraient mutuellement, chacune faisant reculer le dataset vers la
+  sienne.
+- **Répliquer vers soi-même est refusé.** Ça ne protège de rien.
+- **Retirer une réplication de la liste ne supprime rien à distance.** Les
+  données déjà envoyées restent en place.
+
+### Ce que la relecture adverse a rattrapé (cinq défauts sérieux)
+- **Un envoi échoué restait affiché « en cours » pendant trois jours.** Le
+  suiveur de progression tournait dans un sous-shell dont le PID n'était pas
+  celui de `tail` : le tuer laissait la boucle survivre au script, écraser
+  l'état final, et bloquer tout nouvel envoi. On croyait avoir une réplique
+  qu'on n'avait pas. Le suiveur s'arrête maintenant sur un fichier témoin, et
+  le script attend qu'il ait fini avant d'écrire l'état final.
+- **Le pool système du nœud distant n'était pas protégé** : rien n'empêchait
+  de remplir le pool de démarrage de la machine d'en face.
+- **Une propriété `nasmanager:replica` héritée valait permission.** C'est une
+  propriété utilisateur, donc héritée par les descendants : un dataset plein
+  de vraies données descendant d'une réplique passait pour « à nous ».
+  Corrigé par `zfs get -s local`.
+- **Deux impasses où `zfs receive` échouait à chaque tentative** sans que la
+  confirmation d'écrasement soit jamais proposée : destination existante sans
+  aucun snapshot, et destination ayant pris ses propres snapshots (une
+  politique de snapshots sur le nœud de sauvegarde le fait ; `readonly=on` ne
+  l'en empêche pas). Les deux sont maintenant détectées et nommées.
+- **La rétention des snapshots pouvait rompre la chaîne incrémentale**, ce qui
+  poussait ensuite vers un envoi complet avec écrasement — donc la perte de
+  tout l'historique de la sauvegarde. Le snapshot envoyé est désormais protégé
+  par un `zfs hold`, relâché quand le suivant est confirmé.
+- Plus : clés de tâches qui ne peuvent plus entrer en collision après
+  troncature, verrou sur le registre et le lancement, dataset parent créé sans
+  montage (il masquait un répertoire existant), et la page de préparation ne
+  prend plus de snapshot — c'est un GET, il ne doit rien modifier.
+
+**1434 tests** passent (102 de plus), sans régression.
+
+---
+
 ## v1.13.0 — 2026-09-05
 
 **Appairage des nœuds** (Cluster → Appairage). Deuxième des quatre étapes de

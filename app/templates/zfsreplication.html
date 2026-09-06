@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block title %}Replication ZFS - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/cluster">Cluster</a> / <strong>Replication</strong>{% endblock %}
+
+{% block content %}
+<div x-data="{ addOpen: false, removeFor: null, sendFor: null }">
+<h1>Replication ZFS</h1>
+<p class="page-intro">
+  Envoyer un dataset vers un autre noeud, pour en avoir une copie ailleurs.
+  Le premier envoi transmet tout ; les suivants ne transmettent que ce qui a
+  change depuis — c'est ce qui rend l'operation tenable au quotidien.
+</p>
+
+{% if error %}<div class="danger-banner">{{ error }}</div>{% endif %}
+{% if notice %}<div class="success-banner">{{ notice }}</div>{% endif %}
+
+<div class="warning-banner">
+  <strong>Une replique est une copie decalee dans le temps, pas une
+  sauvegarde permanente.</strong> Entre deux envois, ce qui est ecrit sur la
+  source n'existe nulle part ailleurs : une panne brutale perd ce delta.
+  L'age du dernier envoi reussi est affiche pour chaque replication — c'est
+  exactement ce que vous perdriez.
+</div>
+
+{% if not has_key %}
+<div class="info-panel">
+  Cette machine n'a pas encore de cle de replication. Genere-la depuis la
+  page <a href="/cluster/replication">Appairage</a>, et fais autoriser sa cle
+  publique sur le noeud qui recevra les donnees.
+</div>
+{% endif %}
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Les replications enregistrees                                       -->
+<!-- ------------------------------------------------------------------ -->
+{% if tasks %}
+{% for task in tasks %}
+{% set state = states.get(task.key) %}
+<div class="card">
+  <div class="storage-head">
+    <h2 class="storage-name">
+      <span class="mono">{{ task.source }}</span>
+      &nbsp;→&nbsp;
+      <span class="mono">{{ task.address }}:{{ task.destination }}</span>
+    </h2>
+    {% if task.label %}<div class="stat-sub">{{ task.label }}</div>{% endif %}
+  </div>
+
+  {% if state and state.running %}
+  <div class="job-panel">
+    <div class="job-head">
+      <strong>{{ state.step }}</strong>
+      {% if state.percent is not none %}
+      <span class="job-percent">{{ state.percent }} %</span>
+      {% endif %}
+    </div>
+    <div class="bar-bg">
+      <div class="bar-fill bar-ok" style="width: {{ state.percent or 0 }}%"></div>
+    </div>
+    <div class="stat-sub">
+      Envoi <strong>{{ state.mode }}</strong> du snapshot
+      <span class="mono">{{ state.snapshot }}</span>.
+      {% if state.bytes_total %}
+      {{ format_bytes(state.bytes_done) }} sur environ {{ format_bytes(state.bytes_total) }}.
+      {% endif %}
+      Le transfert continue meme si vous fermez cette page.
+    </div>
+    {% if state.stale %}
+    <div class="warning-banner">
+      Cet envoi est marque « en cours » depuis plus de trois jours. Le service
+      ou la machine a probablement redemarre en pleine transmission. Relancer
+      l'envoi repartira du dernier snapshot commun.
+    </div>
+    {% endif %}
+  </div>
+
+  {% elif state and state.status == 'success' %}
+  <div class="result-card">
+    <span class="badge badge-ok">a jour</span>
+    Dernier envoi reussi <strong>{{ state.age_label }}</strong>
+    ({{ state.mode }}, snapshot <span class="mono">{{ state.snapshot }}</span>).
+    <div class="stat-sub">
+      Tout ce qui a ete ecrit dans <span class="mono">{{ task.source }}</span>
+      depuis n'existe que sur cette machine.
+    </div>
+  </div>
+
+  {% elif state and state.status == 'failed' %}
+  <div class="danger-banner">
+    <strong>Dernier envoi en echec.</strong> {{ state.message }}
+  </div>
+
+  {% else %}
+  <div class="empty-state">Aucun envoi n'a encore ete lance.</div>
+  {% endif %}
+
+  <div class="btn-row">
+    <a class="btn btn-primary" href="/cluster/replication/zfs/{{ task.key }}/plan">
+      Preparer un envoi
+    </a>
+    <button type="button" class="btn btn-muted"
+            @click="removeFor = '{{ task.key }}'">Retirer de la liste</button>
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="card">
+  <div class="empty-state">
+    Aucune replication enregistree. Ajoutes-en une ci-dessous.
+  </div>
+</div>
+{% endif %}
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Ajouter une replication                                             -->
+<!-- ------------------------------------------------------------------ -->
+<div class="card">
+  <div class="btn-row">
+    <button type="button" class="btn btn-link" @click="addOpen = !addOpen">
+      <span x-text="addOpen ? 'Annuler' : 'Ajouter une replication'"></span>
+    </button>
+  </div>
+
+  <div x-show="addOpen" x-cloak>
+    <form method="post" action="/cluster/replication/zfs">
+      <label for="source">Dataset a repliquer (sur cette machine)</label>
+      <select id="source" name="source" required>
+        {% for ds in datasets %}
+        <option value="{{ ds }}">{{ ds }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="address">Adresse IP du noeud qui recoit</label>
+      <input type="text" id="address" name="address" required placeholder="192.168.1.42">
+      <div class="stat-sub">
+        Ce noeud doit avoir autorise la cle publique de cette machine, sur sa
+        propre page <a href="/cluster/replication">Appairage</a>. Verifiez-le
+        avec le test de lien avant de lancer un envoi de plusieurs heures.
+      </div>
+
+      <label for="destination">Dataset de destination (sur ce noeud)</label>
+      <input type="text" id="destination" name="destination" required
+             placeholder="backup/photos">
+      <div class="stat-sub">
+        Il sera <strong>cree</strong> par le premier envoi. S'il existe deja
+        sans avoir ete cree par NAS Manager, l'envoi sera refuse plutot que
+        d'ecraser son contenu.
+      </div>
+
+      <label for="label">Etiquette (facultatif)</label>
+      <input type="text" id="label" name="label" placeholder="Photos vers le NAS du garage">
+
+      <div class="btn-row">
+        <button type="submit" class="btn btn-primary">Enregistrer</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Modales de retrait                                                  -->
+<!-- ------------------------------------------------------------------ -->
+{% for task in tasks %}
+<div class="modal-overlay" x-show="removeFor === '{{ task.key }}'" x-cloak
+     @click.self="removeFor = null">
+  <div class="modal-box">
+    <div class="modal-close" @click="removeFor = null">&times;</div>
+    <h2>Retirer cette replication ?</h2>
+    <p>
+      <span class="mono">{{ task.source }}</span> →
+      <span class="mono">{{ task.address }}:{{ task.destination }}</span>
+    </p>
+    <p>
+      Elle disparait de cette liste. <strong>Les donnees deja envoyees restent
+      en place</strong> sur le noeud distant : rien n'y est supprime. Pour les
+      effacer, il faut le faire depuis ce noeud.
+    </p>
+    <form method="post" action="/cluster/replication/zfs/{{ task.key }}/remove">
+      <label for="rm_pw_{{ loop.index }}">Votre mot de passe</label>
+      <input type="password" id="rm_pw_{{ loop.index }}" name="confirm_password" required>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-solid-danger">Retirer</button>
+        <button type="button" class="btn btn-muted" @click="removeFor = null">Annuler</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+
+</div>
+{% endblock %}

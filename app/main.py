@@ -27,7 +27,7 @@ from app import (
     sysupdate, appupdate, liverun, gitauth, diskwipe, smarttests, diskjobs,
     power, servicerestart, sensors, diskage, timezone, notifications,
     systemsettings, fancontrol, cluster, snapshots as snapshots_module,
-    replication,
+    replication, zfsreplicate,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -3252,3 +3252,114 @@ def replication_test_link(request: Request, address: str = Form(...),
     except replication.ReplicationError as exc:
         return _replication_response(request, username, error=str(exc), status_code=400)
     return _replication_response(request, username, report=report)
+
+
+# ---------------------------------------------------------------------------
+# Replication ZFS entre noeuds (v1.14.0)
+# ---------------------------------------------------------------------------
+
+def _zfsrepl_context(request: Request, username: str, error: str | None = None,
+                     notice: str | None = None) -> dict:
+    protected = snapshots_module.system_pool_names()
+    return {
+        "request": request,
+        "username": username,
+        "tasks": zfsreplicate.list_tasks(),
+        "states": zfsreplicate.all_states(),
+        "datasets": [ds for ds in snapshots_module.list_datasets()
+                     if ds.split("/")[0] not in protected],
+        "has_key": replication.has_key(),
+        "format_bytes": sysstats.format_bytes,
+        "error": error,
+        "notice": notice,
+    }
+
+
+def _zfsrepl_response(request: Request, username: str, error: str | None = None,
+                      notice: str | None = None, status_code: int = 200):
+    return templates.TemplateResponse(
+        "zfsreplication.html",
+        _zfsrepl_context(request, username, error=error, notice=notice),
+        status_code=status_code,
+    )
+
+
+@app.get("/cluster/replication/zfs", response_class=HTMLResponse)
+def zfsrepl_page(request: Request, username: str = Depends(require_login)):
+    return _zfsrepl_response(request, username)
+
+
+@app.post("/cluster/replication/zfs")
+def zfsrepl_add(request: Request, source: str = Form(...), address: str = Form(...),
+                destination: str = Form(...), label: str = Form(""),
+                username: str = Depends(require_login)):
+    try:
+        task = zfsreplicate.add_task(source, address, destination, label)
+    except (zfsreplicate.ReplicationError, replication.ReplicationError) as exc:
+        return _zfsrepl_response(request, username, error=str(exc), status_code=400)
+    return _zfsrepl_response(
+        request, username,
+        notice=f"Replication enregistree : {task.source} vers {task.address}.",
+    )
+
+
+@app.get("/cluster/replication/zfs/{key}/plan", response_class=HTMLResponse)
+def zfsrepl_plan(request: Request, key: str, username: str = Depends(require_login)):
+    """Page de preparation : le plan est CALCULE PAR LE SERVEUR, en
+    interrogeant le noeud distant. C'est la qu'on apprend si l'envoi sera
+    complet ou incrementiel, et s'il ecraserait quelque chose."""
+    task = zfsreplicate.get_task(key)
+    if task is None:
+        return _zfsrepl_response(request, username,
+                                 error="Cette replication n'existe pas.", status_code=404)
+    try:
+        # `create_snapshot=False` : un GET ne doit rien modifier. Le
+        # snapshot d'envoi est pris au lancement, pas a l'affichage.
+        plan = zfsreplicate.plan_send(task, create_snapshot=False)
+    except (zfsreplicate.ReplicationError, replication.ReplicationError) as exc:
+        return _zfsrepl_response(request, username, error=str(exc), status_code=400)
+    return templates.TemplateResponse(
+        "zfsreplication_plan.html",
+        {"request": request, "username": username, "plan": plan,
+         "format_bytes": sysstats.format_bytes, "error": None},
+    )
+
+
+@app.post("/cluster/replication/zfs/{key}/send")
+def zfsrepl_send(request: Request, key: str, confirm_password: str = Form(...),
+                 confirm_force: str = Form(""), username: str = Depends(require_login)):
+    task = zfsreplicate.get_task(key)
+    if task is None:
+        return _zfsrepl_response(request, username,
+                                 error="Cette replication n'existe pas.", status_code=404)
+    try:
+        plan = zfsreplicate.start_send(task, username, confirm_password,
+                                       confirm_force=_checked(confirm_force))
+    except (zfsreplicate.ReplicationError, replication.ReplicationError) as exc:
+        # Re-rendu de la page de preparation avec l'erreur, plan recalcule :
+        # l'etat des deux machines a pu changer depuis l'affichage.
+        try:
+            fresh = zfsreplicate.plan_send(task, create_snapshot=False)
+        except (zfsreplicate.ReplicationError, replication.ReplicationError):
+            return _zfsrepl_response(request, username, error=str(exc), status_code=400)
+        return templates.TemplateResponse(
+            "zfsreplication_plan.html",
+            {"request": request, "username": username, "plan": fresh,
+             "format_bytes": sysstats.format_bytes, "error": str(exc)},
+            status_code=400,
+        )
+    return _zfsrepl_response(
+        request, username,
+        notice=(f"Envoi {plan.mode} lance vers {task.address}. Il continue meme "
+                "si vous fermez cette page."),
+    )
+
+
+@app.post("/cluster/replication/zfs/{key}/remove")
+def zfsrepl_remove(request: Request, key: str, confirm_password: str = Form(...),
+                   username: str = Depends(require_login)):
+    try:
+        message = zfsreplicate.remove_task(key, username, confirm_password)
+    except zfsreplicate.ReplicationError as exc:
+        return _zfsrepl_response(request, username, error=str(exc), status_code=400)
+    return _zfsrepl_response(request, username, notice=message)

@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Preparer un envoi - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/cluster">Cluster</a> / <a href="/cluster/replication/zfs">Replication</a> / <strong>Envoi</strong>{% endblock %}
+
+{% block content %}
+<h1>Preparer un envoi</h1>
+
+{% if error %}<div class="danger-banner">{{ error }}</div>{% endif %}
+
+<div class="card">
+  <div class="facts-grid">
+    <div>
+      <div class="stat-label">SOURCE</div>
+      <div class="stat-value stat-value-small mono">{{ plan.task.source }}</div>
+    </div>
+    <div>
+      <div class="stat-label">DESTINATION</div>
+      <div class="stat-value stat-value-small mono">{{ plan.task.address }}:{{ plan.task.destination }}</div>
+    </div>
+    <div>
+      <div class="stat-label">TYPE D'ENVOI</div>
+      <div class="stat-value stat-value-small">{{ plan.mode }}</div>
+    </div>
+    <div>
+      <div class="stat-label">A TRANSMETTRE (ESTIME)</div>
+      <div class="stat-value stat-value-small">
+        {% if plan.estimated_bytes %}{{ format_bytes(plan.estimated_bytes) }}{% else %}inconnu{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <p class="stat-sub">
+    Snapshot envoye : <span class="mono">{{ plan.send_snapshot }}</span>.
+    {% if plan.base_snapshot %}
+    Seule la difference depuis <span class="mono">{{ plan.base_snapshot }}</span>
+    — le dernier snapshot present des deux cotes — sera transmise.
+    {% else %}
+    Aucun snapshot commun : le contenu part en entier. Les envois suivants
+    seront incrementaux, donc beaucoup plus courts.
+    {% endif %}
+  </p>
+
+  {% if plan.estimated_bytes > 50000000000 %}
+  <div class="info-panel">
+    Plus de 50 Go a transmettre : comptez plusieurs heures sur un lien
+    gigabit, davantage sur un lien plus lent. Le transfert est detache — vous
+    pouvez fermer cette page, et meme redemarrer l'interface, il continue.
+  </div>
+  {% endif %}
+</div>
+
+{% if plan.remote and plan.remote.exists %}
+<div class="card">
+  <h2>Ce qui existe deja a destination</h2>
+  <p class="stat-sub">
+    Le dataset <span class="mono">{{ plan.task.destination }}</span> est present
+    sur {{ plan.task.address }}
+    {% if plan.remote.replica_of %}
+    et porte la marque de replique de <span class="mono">{{ plan.remote.replica_of }}</span>.
+    {% endif %}
+    {% if plan.remote.snapshots %}
+    Il y contient {{ plan.remote.snapshots|length }} snapshot(s).
+    {% endif %}
+  </p>
+</div>
+{% endif %}
+
+{% for warning in plan.warnings %}
+<div class="warning-banner">{{ warning }}</div>
+{% endfor %}
+
+{% if plan.needs_force %}
+<div class="danger-banner">
+  <strong>Cet envoi effacera ce qui se trouve a destination.</strong> Les deux
+  machines n'ont plus aucun snapshot en commun : ZFS ne peut donc pas
+  poursuivre la chaine, il doit faire reculer le dataset distant pour le
+  remplacer par le contenu de la source. Tout ce qui a ete ecrit ou snapshote
+  la-bas depuis la rupture disparaitra.
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Lancer</h2>
+  <form method="post" action="/cluster/replication/zfs/{{ plan.task.key }}/send">
+    {% if plan.needs_force %}
+    <div class="checkbox-row">
+      <input type="checkbox" id="confirm_force" name="confirm_force" value="1" required>
+      <label for="confirm_force">
+        Je comprends que le contenu actuel de
+        <span class="mono">{{ plan.task.destination }}</span> sur
+        {{ plan.task.address }} sera remplace.
+      </label>
+    </div>
+    {% endif %}
+
+    <label for="confirm_password">Votre mot de passe</label>
+    <input type="password" id="confirm_password" name="confirm_password" required>
+
+    <div class="btn-row">
+      <button type="submit" class="btn {% if plan.needs_force %}btn-solid-danger{% else %}btn-primary{% endif %}">
+        {% if plan.needs_force %}Remplacer la destination et envoyer{% else %}Lancer l'envoi{% endif %}
+      </button>
+      <a class="btn btn-muted" href="/cluster/replication/zfs">Annuler</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
