@@ -189,6 +189,18 @@ echo "==> [13/15] Script de mise a jour automatique"
 # depot (archive zip notamment) : on le repose a chaque installation.
 chmod +x "${INSTALL_DIR}/scripts/"*.sh 2>/dev/null || true
 
+# `git push` n'envoie PAS les tags par defaut. Quatre livraisons de suite
+# (v1.11.0 a v1.14.0) sont parties sans leur tag, et la page Mises a jour
+# annoncait alors une « version stable » plus ancienne que celle qui
+# tournait. Le rappel dans la documentation n'a jamais suffi : on supprime
+# l'etape humaine. Avec ce reglage, git joint les tags annotes tout seul,
+# meme quand la branche est deja a jour.
+if [[ -d "${INSTALL_DIR}/.git" ]]; then
+    git -C "${INSTALL_DIR}" -c "safe.directory=${INSTALL_DIR}" \
+        config --local push.followTags true 2>/dev/null \
+        && echo "    git push joindra desormais les tags automatiquement."
+fi
+
 echo "==> [14/15] Installation du service systemd"
 # Le fichier .service reference /opt/nas-manager en dur : on l'adapte au
 # dossier reel d'installation (utile si le depot n'est pas clone exactement

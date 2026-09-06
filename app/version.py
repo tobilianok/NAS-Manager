@@ -19,7 +19,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 
-VERSION = "1.14.0"
+VERSION = "1.14.1"
 
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

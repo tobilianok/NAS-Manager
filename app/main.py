@@ -76,6 +76,15 @@ templates.env.globals["nav_entries"] = navigation.NAV
 
 
 @app.on_event("startup")
+def _ensure_git_push_follow_tags() -> None:
+    """Le tag d'une version restait sur le serveur alors que les commits
+    partaient : quatre livraisons de suite. `push.followTags` supprime
+    l'etape humaine plutot que de repeter la consigne - voir
+    app.appupdate.ensure_push_follow_tags."""
+    appupdate.ensure_push_follow_tags()
+
+
+@app.on_event("startup")
 def _start_snapshot_scheduler() -> None:
     """Les politiques de snapshots ne valent que si quelque chose les
     execute. Un thread de fond plutot qu'un timer systemd : ca evite

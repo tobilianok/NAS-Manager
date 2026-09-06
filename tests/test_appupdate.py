@@ -708,3 +708,78 @@ def test_a_repository_without_any_tag_is_reported_too(monkeypatch):
     status = _status_with_tag(monkeypatch, "")
     assert status.untagged
     assert status.untagged_version == ""
+
+
+# ---------------------------------------------------------------------------
+# push.followTags : supprimer l'etape humaine plutot que repeter la consigne
+#
+# Quatre livraisons de suite (v1.11.0 a v1.14.0) sont parties sans leur tag,
+# parce que `git push origin main` ne les envoie pas par defaut. Le rappel
+# dans la documentation n'a jamais suffi.
+# ---------------------------------------------------------------------------
+
+def _git_recorder(existing=None):
+    """Faux git qui repond a `config --get` et enregistre les ecritures."""
+    calls = []
+
+    def fake_git(*args, timeout=60):
+        calls.append(args)
+        if args[:3] == ("config", "--local", "--get"):
+            return (0, existing, "") if existing else (1, "", "")
+        return 0, "", ""
+    return fake_git, calls
+
+
+def test_the_setting_is_applied_when_missing(monkeypatch):
+    fake_git, calls = _git_recorder(existing=None)
+    monkeypatch.setattr(appupdate, "_git", fake_git)
+    assert appupdate.ensure_push_follow_tags() is True
+    assert ("config", "--local", "push.followTags", "true") in calls
+
+
+def test_the_setting_is_left_alone_when_already_there(monkeypatch):
+    fake_git, calls = _git_recorder(existing="true")
+    monkeypatch.setattr(appupdate, "_git", fake_git)
+    assert appupdate.ensure_push_follow_tags() is False
+    # Seule la lecture a eu lieu, aucune ecriture.
+    assert calls == [("config", "--local", "--get", "push.followTags")]
+
+
+def test_a_false_value_is_corrected(monkeypatch):
+    """Quelqu'un a pu le desactiver a la main : on le repose."""
+    fake_git, calls = _git_recorder(existing="false")
+    monkeypatch.setattr(appupdate, "_git", fake_git)
+    assert appupdate.ensure_push_follow_tags() is True
+    assert ("config", "--local", "push.followTags", "true") in calls
+
+
+def test_a_failure_to_apply_is_not_fatal(monkeypatch):
+    """Depot en lecture seule, dossier different : on n'empeche pas le
+    service de demarrer pour un reglage de confort."""
+    def fake_git(*args, timeout=60):
+        return 1, "", "could not lock config file"
+    monkeypatch.setattr(appupdate, "_git", fake_git)
+    assert appupdate.ensure_push_follow_tags() is False
+
+
+def test_the_status_reports_whether_the_setting_is_on(monkeypatch):
+    monkeypatch.setattr(appupdate.version_module, "VERSION", "1.6.0")
+
+    def with_setting(value):
+        def fake_git(*args, timeout=60):
+            if args == ("rev-parse", "--git-dir"):
+                return 0, ".git", ""
+            if args[:3] == ("config", "--local", "--get"):
+                return (0, value, "") if value else (1, "", "")
+            if args[0] == "tag":
+                return 0, "v1.5.3", ""
+            if args[:2] == ("rev-list", "-n"):
+                return 0, "bbbb222", ""
+            if args in (("rev-parse", "HEAD"), ("rev-parse", "origin/main")):
+                return 0, "aaaa111", ""
+            return 0, "", ""
+        monkeypatch.setattr(appupdate, "_git", fake_git)
+        return appupdate.get_status(fetch=False)
+
+    assert with_setting("true").follow_tags is True
+    assert with_setting(None).follow_tags is False

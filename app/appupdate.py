@@ -108,6 +108,10 @@ class AppUpdateStatus:
     # quand tout concorde ; peut valoir "" aussi lorsqu'aucun tag n'existe -
     # `untagged` distingue les deux cas.
     untagged_version: str | None = None
+    # `push.followTags` est-il pose sur le depot ? S'il l'est, l'oubli du
+    # `--tags` ne peut plus se reproduire, et l'ecran peut le dire au lieu
+    # de repeter une consigne que personne n'appliquera.
+    follow_tags: bool = False
 
     @property
     def untagged(self) -> bool:
@@ -163,6 +167,41 @@ def _git(*args: str, timeout: int = 60) -> tuple[int, str, str]:
 def _git_out(*args: str) -> str | None:
     code, out, _ = _git(*args)
     return out if code == 0 and out else None
+
+
+# Un tag annote qui reste sur le serveur alors que les commits sont partis :
+# c'est ce qui s'est produit a chaque livraison de la v1.11.0 a la v1.14.0.
+# `git push origin main` ne pousse PAS les tags par defaut, et l'ecran des
+# mises a jour nommait alors une version stable plus ancienne que celle qui
+# tourne. Le rappel dans la documentation n'a pas suffi : quatre fois de
+# suite, le `--tags` a ete oublie.
+#
+# `push.followTags` supprime l'etape humaine : git joint de lui-meme les tags
+# annotes accessibles depuis ce qui est pousse - y compris quand la branche
+# est deja a jour et qu'il n'y a rien d'autre a envoyer.
+PUSH_FOLLOW_TAGS = "push.followTags"
+
+
+def ensure_push_follow_tags() -> bool:
+    """Pose `push.followTags` sur le depot deploye s'il ne l'est pas.
+
+    Appelee au demarrage du service : `install.sh` le pose aussi, mais une
+    installation mise a jour depuis l'interface ne repasse jamais par lui.
+    Reglage local au depot, sans effet ailleurs, et sans risque : il ne
+    fait qu'ajouter des tags a un push que l'on a demande."""
+    current = _git_out("config", "--local", "--get", PUSH_FOLLOW_TAGS)
+    if (current or "").strip().lower() == "true":
+        return False
+    code, _, err = _git("config", "--local", PUSH_FOLLOW_TAGS, "true")
+    if code != 0:
+        logger.warning("Reglage %s non applique : %s", PUSH_FOLLOW_TAGS, err)
+        return False
+    logger.info("Reglage git %s active sur %s", PUSH_FOLLOW_TAGS, REPO_DIR)
+    return True
+
+
+def push_follow_tags_enabled() -> bool:
+    return (_git_out("config", "--local", "--get", PUSH_FOLLOW_TAGS) or "").strip().lower() == "true"
 
 
 def version_tuple(label: str) -> tuple[int, ...]:
@@ -238,6 +277,7 @@ def get_status(fetch: bool = True) -> AppUpdateStatus:
     # sans dire pourquoi (v1.7.1).
     if version_tuple(version_module.VERSION) > version_tuple(latest_tag or ""):
         status.untagged_version = latest_tag or ""
+    status.follow_tags = push_follow_tags_enabled()
 
     if latest_tag:
         tag_commit = _git_out("rev-list", "-n", "1", latest_tag)

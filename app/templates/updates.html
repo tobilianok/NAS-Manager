@@ -90,9 +90,26 @@
       </p>
       <p>
         Rien n'est casse et aucune donnee n'est en jeu : il manque juste
-        l'etiquette. Depuis le serveur :
+        l'etiquette. Pour la rattraper, depuis le serveur :
         <span class="mono">git push origin --tags</span>
       </p>
+      {% if app_status.follow_tags %}
+      <p class="stat-sub">
+        <strong>Ca ne se reproduira plus.</strong> Le depot est regle avec
+        <span class="mono">push.followTags</span> : git joint desormais les
+        tags de lui-meme a chaque <span class="mono">git push</span>, y compris
+        quand la branche est deja a jour. La commande ci-dessus ne sert qu'a
+        rattraper les tags des versions precedentes.
+      </p>
+      {% else %}
+      <p class="stat-sub">
+        Pour que l'oubli ne se reproduise pas, posez le reglage une fois :
+        <span class="mono">git config push.followTags true</span> — git
+        joindra alors les tags tout seul a chaque envoi. NAS Manager le fait
+        normalement au demarrage ; s'il apparait ici, c'est qu'il n'a pas pu
+        (depot en lecture seule, ou dossier different).
+      </p>
+      {% endif %}
     </div>
     {% endif %}
 
@@ -257,6 +274,11 @@
           </p>
           {% endif %}
 
+          {# Un bouton, meme grise, qui nomme une version PLUS ANCIENNE que
+             celle qui tourne ne peut que semer le doute : le texte au-dessus
+             vient d'expliquer qu'elle ne sera pas proposee. On ne l'affiche
+             donc pas du tout dans ce cas. #}
+          {% if not target.already_included %}
           <form method="post" action="/updates/app/{{ target.kind }}">
             <button type="submit"
                     class="{{ 'btn-primary' if target.kind == 'stable' else 'btn-warn' }}"
@@ -265,6 +287,7 @@
               Mettre a jour vers {{ target.label }}
             </button>
           </form>
+          {% endif %}
         </div>
         {% endfor %}
       </div>

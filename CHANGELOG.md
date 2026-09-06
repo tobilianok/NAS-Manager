@@ -13,6 +13,36 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.14.1 — 2026-09-06
+
+**Le tag d'une version ne peut plus rester derrière.** `git push origin main`
+n'envoie pas les tags : quatre livraisons de suite (v1.11.0 à v1.14.0) sont
+parties sans le leur, et la page Mises à jour annonçait alors une « version
+stable » plus ancienne que celle qui tournait. Le rappel dans la documentation
+n'a jamais suffi — on supprime donc l'étape humaine plutôt que de la répéter.
+
+- **`push.followTags` est posé sur le dépôt.** Git joint désormais les tags
+  annotés de lui-même à chaque `git push`, y compris quand la branche est déjà
+  à jour et qu'il n'y a rien d'autre à envoyer.
+- **Posé à deux endroits**, pour qu'aucune installation n'y échappe :
+  `install.sh` le fait à l'installation, et NAS Manager le vérifie **au
+  démarrage du service** — une installation mise à jour depuis l'interface ne
+  repasse jamais par `install.sh`. Un échec (dépôt en lecture seule) n'empêche
+  pas le service de démarrer : c'est un réglage de confort, pas un prérequis.
+- **L'avertissement de la page le dit maintenant** : la commande de rattrapage
+  pour les tags des versions précédentes, et le fait que le problème ne se
+  reproduira plus. Si le réglage n'a pas pu être posé, la page donne la
+  commande à taper.
+- **Plus de bouton de mise à jour vers une version antérieure.** Quand la
+  version stable publiée est déjà contenue dans ce qui tourne, le bouton
+  disparaît au lieu d'apparaître grisé : le texte venait d'expliquer qu'elle
+  ne serait pas proposée, un bouton la nommant quand même ne pouvait que semer
+  le doute.
+
+**1443 tests** passent (9 de plus).
+
+---
+
 ## v1.14.0 — 2026-09-06
 
 **Réplication ZFS** (Cluster → Réplication). Sous-étape 2c, première moitié :

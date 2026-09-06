@@ -531,3 +531,62 @@ def test_no_missing_tag_banner_when_everything_matches(client, monkeypatch):
     status = appupdate.AppUpdateStatus(current_commit="d761171", branch="main")
     monkeypatch.setattr(appupdate, "get_status", lambda fetch=True: status)
     assert "git push origin --tags" not in client.get("/updates").text
+
+
+def test_the_banner_says_it_will_not_happen_again_once_set(client, monkeypatch):
+    """Quand `push.followTags` est pose, l'ecran doit le dire : repeter une
+    consigne oubliee quatre fois de suite ne sert a rien, annoncer qu'elle
+    n'est plus necessaire si."""
+    status = appupdate.AppUpdateStatus(current_commit="d761171", branch="main",
+                                       untagged_version="v1.13.0",
+                                       follow_tags=True)
+    monkeypatch.setattr(appupdate, "get_status", lambda fetch=True: status)
+    monkeypatch.setattr(version_module, "_cache", None)
+    monkeypatch.setattr(version_module, "get_version_info",
+                        lambda: version_module.VersionInfo(
+                            version="1.14.0", commit="d761171",
+                            boot_commit="d761171aa", disk_version="1.14.0"))
+    text = client.get("/updates").text
+    assert "ne se reproduira plus" in text
+    assert "push.followTags" in text
+
+
+def test_the_banner_gives_the_setting_when_it_is_missing(client, monkeypatch):
+    status = appupdate.AppUpdateStatus(current_commit="d761171", branch="main",
+                                       untagged_version="v1.13.0",
+                                       follow_tags=False)
+    monkeypatch.setattr(appupdate, "get_status", lambda fetch=True: status)
+    monkeypatch.setattr(version_module, "_cache", None)
+    monkeypatch.setattr(version_module, "get_version_info",
+                        lambda: version_module.VersionInfo(
+                            version="1.14.0", commit="d761171",
+                            boot_commit="d761171aa", disk_version="1.14.0"))
+    text = client.get("/updates").text
+    assert "git config push.followTags true" in text
+    assert "ne se reproduira plus" not in text
+
+
+def test_no_update_button_towards_an_older_version(client, monkeypatch):
+    """Un bouton, meme grise, qui nomme une version PLUS ANCIENNE que celle
+    qui tourne ne peut que semer le doute."""
+    target = appupdate.UpdateTarget(
+        kind=appupdate.STABLE, label="v1.12.0", ref="v1.12.0",
+        commit="abc1234", available=False, already_included=True,
+    )
+    status = appupdate.AppUpdateStatus(current_commit="d761171", branch="main",
+                                       targets=[target])
+    monkeypatch.setattr(appupdate, "get_status", lambda fetch=True: status)
+    text = client.get("/updates").text
+    assert "deja inclus" in text
+    assert "Mettre a jour vers v1.12.0" not in text
+
+
+def test_the_button_stays_for_a_real_update(client, monkeypatch):
+    target = appupdate.UpdateTarget(
+        kind=appupdate.STABLE, label="v1.15.0", ref="v1.15.0",
+        commit="abc1234", available=True,
+    )
+    status = appupdate.AppUpdateStatus(current_commit="d761171", branch="main",
+                                       targets=[target])
+    monkeypatch.setattr(appupdate, "get_status", lambda fetch=True: status)
+    assert "Mettre a jour vers v1.15.0" in client.get("/updates").text
