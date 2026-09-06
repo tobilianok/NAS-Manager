@@ -29,7 +29,14 @@ KNOWN_HOSTS="${9:?known_hosts manquant}"
 TOTAL="${10:-0}"
 
 # Etiquette des `zfs hold` poses sur les snapshots envoyes.
-SEND_PREFIX_TAG="nasmgr-repl"
+#
+# Elle porte l'empreinte de LA tache (dernier segment de la cle), pas un nom
+# global. Avec une etiquette commune, deux replications de la meme source
+# vers deux destinations se marchaient dessus : la plus rapide relachait le
+# hold que l'autre venait de poser sur SA base incrementale, qui devenait
+# alors destructible - et la seconde replication se retrouvait sans snapshot
+# commun, donc bloquee sur un envoi complet avec ecrasement.
+SEND_PREFIX_TAG="nasmgr-repl-${KEY##*-}"
 
 STATE_DIR="${NAS_MANAGER_STATE_DIR:-/var/lib/nas-manager}/replication_jobs"
 STATE_FILE="${STATE_DIR}/${KEY}.json"
@@ -68,6 +75,13 @@ fail() {
     write_state "failed" "Echec" "$1"
     exit 1
 }
+
+# Sans ce piege, un arret force (systemd qui coupe l'unite, machine qui
+# s'eteint, `systemctl stop`) laissait le fichier d'etat fige sur
+# « running » : l'interface affichait une barre de progression pour un
+# transfert mort, et le planificateur sautait chaque passage pendant les
+# soixante-douze heures du seuil « peri ».
+trap 'write_state "failed" "Interrompu" "Envoi interrompu avant la fin (arret du service, extinction, ou annulation)."; exit 143' TERM INT
 
 # La meme commande ssh que le module Python : cle dediee, jamais d'invite
 # (le script n'a pas de terminal pour y repondre), hotes epingles dans notre
@@ -183,9 +197,18 @@ rm -f "${PROGRESS_FILE}"
 # destination ferait diverger le dataset et romprait la chaine incrementale,
 # ce qui obligerait a tout retransmettre.
 write_state "running" "Marquage de la replique"
-"${SSH[@]}" "zfs set nasmanager:replica='${SOURCE}' '${DESTINATION}' && \
-             zfs set readonly=on '${DESTINATION}'" >/dev/null 2>&1 \
-    || write_state "running" "Marquage partiel" "La replique a ete recue mais n'a pas pu etre marquee en lecture seule."
+MARK_WARNING=""
+if ! "${SSH[@]}" "zfs set nasmanager:replica='${SOURCE}' '${DESTINATION}' && \
+                  zfs set readonly=on '${DESTINATION}'" >/dev/null 2>&1; then
+    # Cet avertissement etait ecrit dans l'etat... puis immediatement ecrase
+    # par le message de succes final. Personne ne le voyait jamais. Or sans
+    # la marque `nasmanager:replica`, l'envoi SUIVANT refuse la destination
+    # (« ce dataset n'a pas ete cree par NAS Manager ») et la seule issue que
+    # propose l'interface est l'envoi force, qui detruit l'historique.
+    MARK_WARNING=" ATTENTION : la replique a ete recue mais n'a pas pu etre \
+marquee (propriete nasmanager:replica / lecture seule). Le prochain envoi \
+sera refuse tant que ce n'est pas corrige sur ${ADDRESS}."
+fi
 
 # Le snapshot qui vient de partir devient la base du prochain incremental.
 # Sans protection, la retention d'app.snapshots pouvait le detruire : au
@@ -200,5 +223,9 @@ while read -r snap; do
     zfs release "${SEND_PREFIX_TAG}" "${snap}" 2>/dev/null
 done < <(zfs list -H -o name -t snapshot -r "${SOURCE}" 2>/dev/null | grep "^${SOURCE}@" || true)
 
+if [[ -n "${MARK_WARNING}" ]]; then
+    write_state "failed" "Marquage incomplet" "Transfert termine.${MARK_WARNING}"
+    exit 1
+fi
 write_state "success" "Termine" "Replique a jour sur ${ADDRESS}." "${TOTAL}"
 exit 0

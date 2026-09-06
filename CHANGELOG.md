@@ -13,6 +13,139 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.15.0 — 2026-09-06
+
+**La réplication devient une sauvegarde sur laquelle on peut compter.** La
+v1.14.0 savait envoyer un dataset vers un autre nœud, à la main. Il y
+manquait les trois choses qui font la différence entre une fonctionnalité et
+une protection : que l'envoi parte tout seul, que la réplique ne gonfle pas
+indéfiniment, et que quelqu'un soit prévenu quand tout ça s'arrête.
+
+### Planification des envois
+
+- **Quatre rythmes** : toutes les heures, toutes les six heures, une fois par
+  jour, une fois par semaine. Chacun est accompagné de ce à quoi il convient
+  et de ce qu'il coûte — un envoi occupe le réseau et les disques des deux
+  machines, contrairement à un snapshot.
+- **Un envoi planifié n'écrase JAMAIS rien.** Il tourne sans personne devant
+  l'écran, il ne peut donc demander aucune confirmation : dès que reprendre la
+  réplication exigerait de remplacer le contenu de la destination (chaîne
+  incrémentale rompue, snapshots pris sur la réplique), la planification
+  s'arrête, enregistre pourquoi, et l'affiche. Le seul chemin vers
+  l'écrasement reste le bouton, avec la case à cocher et le mot de passe.
+- **Rien de nouveau, rien d'envoyé** : quand aucune donnée n'a été écrite
+  depuis le dernier envoi, le passage le constate sans créer de snapshot ni
+  ouvrir de transfert — mais seulement après avoir vérifié que la destination
+  porte bien le même état, pas seulement la même étiquette.
+- Le planificateur est un fil d'exécution interne, comme celui des snapshots :
+  pas de `sudo ./install.sh` à relancer, la mise à jour depuis l'interface
+  suffit. L'envoi lui-même reste détaché et survit au redémarrage du service.
+
+### Rétention côté destination
+
+- **Le nombre de snapshots conservés sur la réplique est réglable.** Sans
+  cela, la destination accumulait un snapshot par envoi, indéfiniment : au
+  rythme horaire, le pool de sauvegarde saturait en quelques mois sans que
+  rien ne le signale.
+- **Trois invariants**, dans cet ordre : rien n'est jamais supprimé au-delà du
+  snapshot commun qui porte la chaîne incrémentale — ni lui, ni aucun
+  snapshot plus récent que lui, qui aurait été pris sur la destination
+  elle-même ; le dataset distant doit porter la marque `nasmanager:replica`
+  pour cette source exacte ; le pool système du nœud distant est hors
+  d'atteinte. Jamais de `zfs destroy -r`.
+- **L'ordre vient de `createtxg`**, le numéro de transaction ZFS, jamais du
+  nom ni de la date : un snapshot reçu conserve la date de la source, et les
+  préfixes de nommage ne se classent pas par ancienneté.
+- Augmenter la rétention distante **demande le mot de passe** : c'est le seul
+  réglage de cette page qui arme une suppression automatique sur une autre
+  machine. Régler une fréquence ou une alerte ne coûte rien.
+
+### Alerte de dérive
+
+- **Une réplication qui a cessé de fonctionner ne se voyait pas.** La page
+  affichait toujours la dernière copie, la réplique distante existait
+  toujours, et l'écart entre les deux machines grandissait chaque jour.
+- Une dixième vérification rejoint la carte **Santé & sécurité** : envoi
+  suspendu en attente de décision, dernier envoi en échec, transfert bloqué,
+  réplication planifiée jamais partie, ou dernier envoi réussi trop ancien.
+- Le seuil n'est jamais deviné : deux fois l'intervalle choisi, ou le délai
+  saisi à la main. Une réplication purement manuelle sans délai explicite
+  n'est jamais signalée en retard — personne ne s'est engagé sur une cadence.
+
+### Corrections issues de la relecture adverse
+
+Sept défauts trouvés en relecture hostile avant livraison, dont quatre
+pouvaient coûter des données.
+
+- **Une lecture ratée ne devient plus une proposition d'écrasement.** Un
+  `zfs list` distant qui dépassait son délai rendait une liste vide,
+  indistinguable de « la destination ne contient aucun snapshot » : l'interface
+  proposait alors de la remplacer *en affirmant qu'il n'y avait rien à perdre*,
+  devant des années d'historique. Une lecture qui n'aboutit pas est désormais
+  une inconnue, et aucun envoi ne part tant que l'état de la destination n'est
+  pas connu avec certitude.
+- **Les datasets enfants ne partaient pas, en silence.** `zfs send` ne
+  transmet que le dataset nommé : choisir un conteneur (`tank/partages`, le
+  choix le plus naturel) donnait une réplique vide, marquée « à jour »,
+  découverte le jour de la restauration. C'est maintenant dit en clair, sur la
+  page comme dans le plan d'envoi.
+- **Un « déjà à jour » ne peut plus masquer une réplication morte.** Le
+  contrôle « la destination a pris ses propres snapshots » ne s'appliquait que
+  lorsqu'il y avait du nouveau à envoyer : sur un dataset d'archives immobile,
+  la réplication était déjà cassée et l'interface répondait « à jour » à chaque
+  passage, indéfiniment.
+- **Les snapshots d'envoi ne s'accumulent plus sans fin sur la source.** Ils
+  sont immortels par construction (la rétention des snapshots ne les reconnaît
+  pas, et c'est voulu). Un envoi refusé en laissait un derrière lui à chaque
+  tentative, et chacun retient les blocs libérés depuis : le pool **source**
+  se remplissait. Trois corrections : le refus tombe désormais avant la
+  création du snapshot, celui d'un lancement échoué est repris, et les vieux
+  snapshots d'envoi sont purgés (les trois plus récents restent, ceux qu'une
+  réplication utilise ne sont jamais touchés).
+- **Le planificateur relit la tâche avant d'agir.** Un passage peut durer des
+  minutes ; désactiver la rétention pendant ce temps, voir la confirmation à
+  l'écran, et regarder les snapshots distants disparaître trente secondes plus
+  tard n'est plus possible.
+- **Une horloge qui recule ne fige plus la réplication.** L'écart devenait
+  négatif, jamais supérieur à l'intervalle : plus aucun envoi ne partait — et
+  l'alerte de dérive, calculée de la même façon, ne se déclenchait pas non
+  plus. Les deux sont corrigés, et un horodatage dans le futur est signalé
+  pour lui-même.
+- **Un échec inattendu laisse désormais une trace visible.** Auparavant il
+  n'apparaissait que dans le journal système : l'interface et la carte Santé
+  continuaient d'afficher « à jour » pendant qu'aucun envoi ne partait plus.
+- **Un envoi initial de plusieurs jours peut aboutir.** Le seuil « cet envoi
+  n'avance plus » (72 h) servait aussi de délai à systemd, qui tuait donc le
+  transfert au moment précis où on le déclarait suspect — la sauvegarde
+  initiale d'un gros pool ne pouvait jamais s'établir. Les deux sont
+  dissociés, et une interruption est maintenant enregistrée au lieu de laisser
+  l'état figé sur « en cours ».
+- **Deux réplications de la même source ne se gênent plus.** L'étiquette des
+  `zfs hold` était commune : la plus rapide relâchait la protection que
+  l'autre venait de poser sur sa base incrémentale. Elle porte maintenant
+  l'empreinte de chaque tâche — laquelle est aussi relâchée quand on retire
+  une réplication, sinon le snapshot restait indestructible pour toujours.
+- **Le nom d'unité systemd garde son empreinte** (il était tronqué avant
+  elle : deux réplications proches partageaient le même nom et la seconde
+  échouait de façon inexplicable), **la rétention distante est plafonnée par
+  passage** (sinon un premier ménage gelait toutes les autres réplications
+  pendant des heures), **un fichier d'état corrompu ne fait plus tomber la
+  page**, et **le garde-fou « pool système distant » ne disparaît plus** quand
+  NAS Manager n'est pas installé au même endroit sur l'autre machine.
+
+### Corrections annexes
+
+- **La v1.14.0 ne prenait jamais de snapshot frais.** Elle n'en créait un que
+  si le dataset n'en avait aucun ; dès qu'il en existait un, elle renvoyait le
+  plus récent — c'est-à-dire, après le premier envoi, exactement celui déjà
+  présent à destination. Le plan annonçait « rien de nouveau » après avoir
+  écrit des gigaoctets, et l'envoi ne transmettait rien.
+- **L'inventaire des snapshots est trié par `createtxg`** partout où l'ordre
+  sert à décider, et non par nom comme le faisait `zfs list` par défaut.
+- **1527 tests** (contre 1443).
+
+---
+
 ## v1.14.1 — 2026-09-06
 
 **Le tag d'une version ne peut plus rester derrière.** `git push origin main`

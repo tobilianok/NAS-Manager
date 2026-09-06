@@ -213,7 +213,7 @@ def test_get_report_smoke(monkeypatch):
     monkeypatch.setattr(health.shutil, "which", lambda name: None)
 
     report = health.get_report()
-    assert len(report.checks) == 9
+    assert len(report.checks) == 10
     # Plus aucune verification "toujours OK" (la politique de mot de passe a
     # ete retiree, cf. commentaire dans health.py) - quand toutes les sources
     # sont indisponibles, le rapport global doit donc etre "inconnu" et non
@@ -225,7 +225,7 @@ def test_get_report_real_system_smoke():
     """Test de fumee sur le vrai systeme (sandbox) : ne doit jamais lever
     d'exception, meme sans zfs/docker/ufw/sensors installes."""
     report = health.get_report()
-    assert len(report.checks) == 9
+    assert len(report.checks) == 10
     assert report.overall_level in (
         health.LEVEL_OK, health.LEVEL_ATTENTION, health.LEVEL_CRITIQUE, health.LEVEL_INCONNU,
     )
@@ -376,3 +376,65 @@ def test_only_real_problems_are_counted_as_needing_attention():
         health.HealthCheck("c", "C", health.LEVEL_ATTENTION, ""),
     ])
     assert report.attention_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Replication (v1.15.0)
+# ---------------------------------------------------------------------------
+
+def _repl_status(monkeypatch, statuses):
+    from app import zfsreplicate as zr
+    monkeypatch.setattr(zr, "task_statuses", lambda: statuses)
+
+
+def _repl_task(frequency="horaire", alert=0):
+    from app import zfsreplicate as zr
+    task = zr.Task(source="tank/photos", address="192.168.1.42",
+                   destination="backup/photos")
+    task.frequency = frequency
+    task.alert_hours = alert
+    return task
+
+
+def test_no_replication_is_unknown_not_a_warning(monkeypatch):
+    """Ne pas repliquer est un choix legitime, pas une anomalie."""
+    _repl_status(monkeypatch, [])
+    check = health.check_replication()
+    assert check.level == health.LEVEL_INCONNU
+
+
+def test_a_drifted_replication_raises_a_warning(monkeypatch):
+    import time as _time
+    from app import zfsreplicate as zr
+    task = _repl_task()
+    state = zr.JobState(status="success", finished_epoch=_time.time() - 6 * 3600)
+    _repl_status(monkeypatch, [zr.TaskStatus(task=task, state=state,
+                                             schedule=zr.ScheduleState())])
+    check = health.check_replication()
+    assert check.level == health.LEVEL_ATTENTION
+    assert "tank/photos" in check.detail
+
+
+def test_a_blocked_replication_raises_a_warning(monkeypatch):
+    import time as _time
+    from app import zfsreplicate as zr
+    task = _repl_task()
+    _repl_status(monkeypatch, [zr.TaskStatus(
+        task=task,
+        state=zr.JobState(status="success", finished_epoch=_time.time() - 60),
+        schedule=zr.ScheduleState(blocked_reason="ecrasement requis"))])
+    check = health.check_replication()
+    assert check.level == health.LEVEL_ATTENTION
+    assert "suspendu" in check.detail
+
+
+def test_healthy_replications_are_ok(monkeypatch):
+    import time as _time
+    from app import zfsreplicate as zr
+    task = _repl_task()
+    state = zr.JobState(status="success", finished_epoch=_time.time() - 60)
+    _repl_status(monkeypatch, [zr.TaskStatus(task=task, state=state,
+                                             schedule=zr.ScheduleState())])
+    check = health.check_replication()
+    assert check.level == health.LEVEL_OK
+    assert "1 automatique" in check.detail

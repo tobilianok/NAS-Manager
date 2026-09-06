@@ -6,7 +6,7 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
-**Version actuelle : v1.14.1** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+**Version actuelle : v1.15.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
 est affiché en bas du menu latéral ; le survol donne le commit déployé et
 signale si des fichiers ont été modifiés à la main sur le serveur.
 
@@ -31,9 +31,12 @@ permet de réunir plusieurs machines NAS Manager en une grappe Docker Swarm
 (mise en cluster des machines uniquement — le stockage n'est pas encore
 répliqué d'un nœud à l'autre), et depuis la v1.12.0 une page Snapshots gère
 les instantanés ZFS, manuels comme automatiques, avec retour arrière encadré.
-La v1.13.0 ajoute l'appairage SSH entre nœuds, et la v1.14.0 la réplication
-elle-même : envoi d'un dataset vers une autre machine, complet la première
-fois puis incrémental, en tâche de fond.
+La v1.13.0 ajoute l'appairage SSH entre nœuds, la v1.14.0 la réplication
+elle-même — envoi d'un dataset vers une autre machine, complet la première
+fois puis incrémental, en tâche de fond — et la v1.15.0 en fait une
+sauvegarde tenable : envois planifiés (qui n'écrasent jamais rien tout seuls),
+rétention des snapshots sur la réplique, et alerte quand le dernier envoi
+réussi remonte à trop longtemps.
 Le tout s'installe par un script unique après une installation fraîche
 d'Ubuntu Server 26.04 LTS.
 
@@ -140,7 +143,7 @@ pytest tests/ -v
 ```
 
 Optionnel (pas nécessaire pour faire tourner NAS Manager), mais recommandé
-avant de valider une modification faite à la main. **1443 tests** couvrent :
+avant de valider une modification faite à la main. **1527 tests** couvrent :
 
 - **Stockage** : détection et identité des disques (étiquette ZFS plutôt que
   nom de périphérique), validation des pools, agrandissement, suppression en
@@ -158,7 +161,10 @@ avant de valider une modification faite à la main. **1443 tests** couvrent :
   retour arrière, sauvegarde et restauration, alimentation.
 - **Réplication** : choix du snapshot commun, refus d'écraser un dataset qui
   n'est pas déjà une réplique, protection du pool système des deux côtés,
-  détection des cas où la destination doit être remplacée.
+  détection des cas où la destination doit être remplacée, refus de conclure
+  quoi que ce soit d'une lecture distante qui a échoué, planification (qui ne
+  force jamais), rétention distante (qui ne touche jamais au snapshot portant
+  la chaîne incrémentale) et alerte de dérive.
 - **Appairage des nœuds** : validation de l'adresse et de la clé publique,
   restrictions posées dans `authorized_keys`, préservation des clés
   personnelles présentes dans le même fichier, test de lien.

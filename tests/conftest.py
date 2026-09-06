@@ -13,3 +13,8 @@ os.environ.setdefault("SESSION_SECRET_KEY", "test-secret-key-not-for-production"
 # tournent. Le comportement du planificateur est teste directement, sans
 # passer par le thread.
 os.environ.setdefault("NAS_MANAGER_SNAPSHOT_SCHEDULER", "0")
+
+# Meme raison pour le planificateur de replication (v1.15.0), en plus grave :
+# celui-la ouvre des sessions SSH vers de vraies adresses et peut lancer un
+# `zfs send`. Rien de tel ne doit partir d'une suite de tests.
+os.environ.setdefault("NAS_MANAGER_REPLICATION_SCHEDULER", "0")

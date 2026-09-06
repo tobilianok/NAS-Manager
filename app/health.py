@@ -371,6 +371,43 @@ def check_snapshots() -> HealthCheck:
                         f"{len(statuses)} politique(s) a jour, {total} snapshot(s) automatique(s).")
 
 
+def check_replication() -> HealthCheck:
+    """Les replications partent-elles encore ?
+
+    C'est le pendant exact du controle des snapshots, et il existe pour la
+    meme raison : une replication qui a cesse de fonctionner ne se voit pas.
+    La page continue d'afficher la derniere copie envoyee, la replique
+    distante existe toujours, tout a l'air normal - et l'ecart entre les
+    deux machines grandit chaque jour.
+
+    Aucune replication = INCONNU, pas ATTENTION : ne pas en avoir est un
+    choix legitime.
+
+    Le seuil n'est jamais devine : il vient de la frequence choisie (deux
+    intervalles) ou du delai saisi. Une replication purement manuelle, sans
+    delai explicite, n'est donc jamais en retard - personne ne s'est engage
+    sur une cadence."""
+    from app import zfsreplicate
+
+    statuses = zfsreplicate.task_statuses()
+    if not statuses:
+        return HealthCheck("replication", "Replication", LEVEL_INCONNU,
+                            "Aucune replication configuree.")
+
+    troubled = [s for s in statuses if s.problem]
+    if troubled:
+        details = ", ".join(f"{s.task.source} → {s.task.address} ({s.problem})"
+                            for s in troubled[:3])
+        suffix = "..." if len(troubled) > 3 else ""
+        return HealthCheck("replication", "Replication", LEVEL_ATTENTION,
+                            f"{details}{suffix}.")
+
+    scheduled = sum(1 for s in statuses if s.task.scheduled)
+    return HealthCheck("replication", "Replication", LEVEL_OK,
+                        f"{len(statuses)} replication(s) a jour, "
+                        f"{scheduled} automatique(s).")
+
+
 def get_report() -> HealthReport:
     """Execute toutes les verifications. Peut prendre quelques secondes
     (smartctl par disque, sensors, docker compose ps par stack) - a
@@ -385,6 +422,7 @@ def get_report() -> HealthReport:
         check_docker(),
         check_share_admins(),
         check_snapshots(),
+        check_replication(),
         check_updates(),
     ]
     return HealthReport(checks=checks)

@@ -359,3 +359,115 @@ def test_every_action_requires_login(path):
     with TestClient(main.app) as c:
         resp = c.post(path, data={}, follow_redirects=False)
         assert resp.status_code in (302, 303, 307, 401, 422)
+
+
+# ---------------------------------------------------------------------------
+# v1.15.0 - Planification depuis l'interface
+# ---------------------------------------------------------------------------
+
+def _scheduled_task(frequency="quotidien", keep=5, alert=0):
+    task = _task()
+    task.frequency = frequency
+    task.keep_remote = keep
+    task.alert_hours = alert
+    return task
+
+
+def test_the_schedule_route_requires_a_login():
+    with TestClient(main.app) as anon:
+        resp = anon.post("/cluster/replication/zfs/x/schedule",
+                         data={"frequency": "horaire"}, follow_redirects=False)
+    assert resp.status_code in (302, 303, 307, 401)
+
+
+def test_setting_a_schedule_reports_what_was_applied(client, monkeypatch):
+    seen = {}
+
+    def fake(key, frequency, keep_remote, alert_hours, **kwargs):
+        seen.update(key=key, frequency=frequency, keep=keep_remote, alert=alert_hours)
+        return "Envoi automatique une fois par jour."
+
+    monkeypatch.setattr(zr, "set_schedule", fake)
+    resp = client.post("/cluster/replication/zfs/abc/schedule",
+                       data={"frequency": "quotidien", "keep_remote": "7",
+                             "alert_hours": "48"})
+    assert resp.status_code == 200
+    assert seen == {"key": "abc", "frequency": "quotidien", "keep": "7", "alert": "48"}
+    assert "Envoi automatique une fois par jour" in _flat(resp.text)
+
+
+def test_a_refused_schedule_comes_back_with_the_reason(client, monkeypatch):
+    def refuse(*a, **k):
+        raise zr.ReplicationError("Il faut en conserver au moins 2")
+
+    monkeypatch.setattr(zr, "set_schedule", refuse)
+    resp = client.post("/cluster/replication/zfs/abc/schedule",
+                       data={"frequency": "quotidien", "keep_remote": "1",
+                             "alert_hours": ""})
+    assert resp.status_code == 400
+    assert "au moins 2" in _flat(resp.text)
+
+
+def test_the_page_says_a_scheduled_send_never_overwrites(client, monkeypatch):
+    monkeypatch.setattr(zr, "list_tasks", lambda: [_scheduled_task()])
+    body = _flat(client.get("/cluster/replication/zfs").text)
+    assert "Un envoi automatique n" in body      # « n'ecrase jamais rien »
+    assert "ecrase jamais rien" in body
+
+
+def test_the_page_shows_the_frequency_and_the_remote_retention(client, monkeypatch):
+    monkeypatch.setattr(zr, "list_tasks", lambda: [_scheduled_task()])
+    body = _flat(client.get("/cluster/replication/zfs").text)
+    assert "Une fois par jour" in body
+    assert "5 snapshots conserves a destination" in body
+
+
+def test_a_manual_replication_says_so(client, monkeypatch):
+    monkeypatch.setattr(zr, "list_tasks", lambda: [_task()])
+    body = _flat(client.get("/cluster/replication/zfs").text)
+    assert "Envoi manuel" in body
+    assert "aucune retention a destination" in body
+
+
+def test_a_blocked_schedule_is_shown_with_its_reason(client, monkeypatch):
+    task = _scheduled_task()
+    monkeypatch.setattr(zr, "list_tasks", lambda: [task])
+    monkeypatch.setattr(zr, "task_statuses", lambda: [zr.TaskStatus(
+        task=task, state=zr.JobState(),
+        schedule=zr.ScheduleState(key=task.key,
+                                  blocked_reason="Envoi automatique suspendu : "
+                                                 "la destination a diverge."),
+    )])
+    body = _flat(client.get("/cluster/replication/zfs").text)
+    assert "Envoi automatique suspendu" in body
+    assert "la destination a diverge" in body
+    assert "vous qui decidez" in body
+
+
+def test_a_drifted_replica_is_flagged_on_the_card(client, monkeypatch):
+    task = _scheduled_task(frequency="horaire", keep=0)
+    state = zr.JobState(key=task.key, status="success", mode="incremental",
+                        snapshot="s9", finished_epoch=time.time() - 5 * 3600)
+    monkeypatch.setattr(zr, "list_tasks", lambda: [task])
+    monkeypatch.setattr(zr, "all_states", lambda: {task.key: state})
+    monkeypatch.setattr(zr, "task_statuses", lambda: [zr.TaskStatus(
+        task=task, state=state, schedule=zr.ScheduleState(key=task.key))])
+    body = _flat(client.get("/cluster/replication/zfs").text)
+    assert "en retard" in body
+    assert "depasse le delai" in body
+
+
+def test_a_fresh_replica_is_not_flagged(client, monkeypatch):
+    task = _scheduled_task(frequency="horaire", keep=0)
+    state = zr.JobState(key=task.key, status="success", mode="incremental",
+                        snapshot="s9", finished_epoch=time.time() - 60)
+    monkeypatch.setattr(zr, "list_tasks", lambda: [task])
+    monkeypatch.setattr(zr, "all_states", lambda: {task.key: state})
+    monkeypatch.setattr(zr, "task_statuses", lambda: [zr.TaskStatus(
+        task=task, state=state, schedule=zr.ScheduleState(key=task.key))])
+    body = _flat(client.get("/cluster/replication/zfs").text)
+    # « en retard » figure aussi dans l'aide du formulaire de planification :
+    # c'est le badge lui-meme qu'on verifie.
+    assert "badge-warn" not in body
+    assert "depasse le delai" not in body
+    assert "badge-ok" in body

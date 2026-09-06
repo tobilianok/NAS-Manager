@@ -230,11 +230,17 @@ def _parse_snapshot_line(line: str) -> Snapshot | None:
 
 
 def _list_raw(dataset: str | None = None, recursive: bool = False) -> list[Snapshot]:
-    """Snapshots DANS L'ORDRE OU ZFS LES REND, c'est-a-dire l'ordre de
-    creation reel (par txg). Cet ordre est la seule source fiable pour
-    savoir ce qui est plus recent que quoi : deux snapshots pris dans la
-    meme seconde ont la meme date, et une date peut etre illisible."""
-    cmd = ["zfs", "list", "-H", "-p", "-t", "snapshot",
+    """Snapshots du PLUS ANCIEN au PLUS RECENT, dans l'ordre `createtxg`.
+
+    `createtxg` est le numero de groupe de transactions ZFS : il augmente
+    strictement a chaque nouveau snapshot du pool. C'est la seule source
+    fiable pour savoir ce qui est plus recent que quoi - deux snapshots pris
+    dans la meme seconde portent la meme date, une date peut etre illisible,
+    et une horloge peut reculer. Le tri est demande explicitement (`-s
+    createtxg`) : par defaut, `zfs list` classe par NOM, ce qui melangeait
+    les prefixes ('nasmgr-quotidien-...' avant 'nasmgr-repl-...' quelle que
+    soit leur anciennete)."""
+    cmd = ["zfs", "list", "-H", "-p", "-t", "snapshot", "-s", "createtxg",
            "-o", "name,creation,used,referenced"]
     if dataset:
         cmd += ["-r", dataset]
@@ -248,6 +254,31 @@ def _list_raw(dataset: str | None = None, recursive: bool = False) -> list[Snaps
         # qui appartient vraiment au dataset demande.
         snapshots = [s for s in snapshots if s.dataset == dataset]
     return snapshots
+
+
+def list_by_creation(dataset: str | None = None) -> list[Snapshot]:
+    """Du PLUS ANCIEN au PLUS RECENT, ordre `createtxg`.
+
+    A utiliser partout ou l'ordre sert a DECIDER (que repliquer, quoi
+    supprimer), par opposition a `list_snapshots` qui trie par date pour
+    l'affichage. Voir `_list_raw`."""
+    return _list_raw(dataset)
+
+
+def list_children(dataset: str) -> list[str]:
+    """Datasets descendants de celui-ci, hors lui-meme.
+
+    `zfs send` sans `-R` ne transmet QUE le dataset nomme : ses enfants sont
+    des systemes de fichiers distincts et restent sur place. Repliquer un
+    dataset conteneur donne donc une sauvegarde vide, sans que rien ne le
+    signale. Cette fonction existe pour que l'interface puisse le dire."""
+    cmd = ["zfs", "list", "-H", "-o", "name", "-r", "-t", "filesystem,volume", dataset]
+    code, out, _ = _run(cmd)
+    if code != 0 or not out:
+        return []
+    prefix = dataset + "/"
+    return [line.strip() for line in out.splitlines()
+            if line.strip().startswith(prefix)]
 
 
 def list_snapshots(dataset: str | None = None) -> list[Snapshot]:

@@ -95,6 +95,16 @@ def _start_snapshot_scheduler() -> None:
 
 
 @app.on_event("startup")
+def _start_replication_scheduler() -> None:
+    """Une replication planifiee n'a de valeur que si elle part vraiment.
+    Meme mecanique que les snapshots : un thread de fond, sans etat propre
+    (l'echeance se recalcule a partir des fichiers d'etat), et l'envoi
+    lui-meme reste detache via systemd-run pour survivre au redemarrage du
+    service."""
+    zfsreplicate.start_scheduler()
+
+
+@app.on_event("startup")
 def _reapply_fan_profile() -> None:
     """Un profil de ventilation choisi hier ne doit pas etre oublie
     silencieusement au redemarrage du service (mise a jour, reboot) - cf.
@@ -3275,6 +3285,16 @@ def _zfsrepl_context(request: Request, username: str, error: str | None = None,
         "username": username,
         "tasks": zfsreplicate.list_tasks(),
         "states": zfsreplicate.all_states(),
+        "statuses": {s.task.key: s for s in zfsreplicate.task_statuses()},
+        # Un envoi ZFS ne transmet que le dataset nomme : les enfants
+        # restent sur place. Choisir un dataset conteneur donnait une
+        # replique vide, marquee « a jour », decouverte le jour de la
+        # restauration. La liste est calculee ici pour que la page
+        # principale le dise, pas seulement la page de preparation.
+        "children": {t.key: snapshots_module.list_children(t.source)
+                     for t in zfsreplicate.list_tasks()},
+        "frequencies": zfsreplicate.FREQUENCIES,
+        "min_keep": zfsreplicate.MIN_REMOTE_KEEP,
         "datasets": [ds for ds in snapshots_module.list_datasets()
                      if ds.split("/")[0] not in protected],
         "has_key": replication.has_key(),
@@ -3362,6 +3382,26 @@ def zfsrepl_send(request: Request, key: str, confirm_password: str = Form(...),
         notice=(f"Envoi {plan.mode} lance vers {task.address}. Il continue meme "
                 "si vous fermez cette page."),
     )
+
+
+@app.post("/cluster/replication/zfs/{key}/schedule")
+def zfsrepl_schedule(request: Request, key: str, frequency: str = Form(""),
+                     keep_remote: str = Form(""), alert_hours: str = Form(""),
+                     confirm_password: str = Form(""),
+                     username: str = Depends(require_login)):
+    """Rythme d'envoi, retention distante et seuil d'alerte.
+
+    Le mot de passe n'est exige que si ce reglage AUGMENTE la retention
+    distante : c'est le seul cas ou il arme une suppression automatique de
+    snapshots sur une autre machine. Regler une frequence ou un seuil
+    d'alerte ne detruit rien, et n'a donc pas a etre payant."""
+    try:
+        message = zfsreplicate.set_schedule(key, frequency, keep_remote, alert_hours,
+                                            username=username,
+                                            password=confirm_password)
+    except zfsreplicate.ReplicationError as exc:
+        return _zfsrepl_response(request, username, error=str(exc), status_code=400)
+    return _zfsrepl_response(request, username, notice=message)
 
 
 @app.post("/cluster/replication/zfs/{key}/remove")

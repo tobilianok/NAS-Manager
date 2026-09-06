@@ -3,7 +3,7 @@
 {% block breadcrumb %}<a href="/cluster">Cluster</a> / <strong>Replication</strong>{% endblock %}
 
 {% block content %}
-<div x-data="{ addOpen: false, removeFor: null, sendFor: null }">
+<div x-data="{ addOpen: false, removeFor: null, sendFor: null, scheduleFor: null }">
 <h1>Replication ZFS</h1>
 <p class="page-intro">
   Envoyer un dataset vers un autre noeud, pour en avoir une copie ailleurs.
@@ -36,6 +36,7 @@
 {% if tasks %}
 {% for task in tasks %}
 {% set state = states.get(task.key) %}
+{% set status = statuses.get(task.key) %}
 <div class="card">
   <div class="storage-head">
     <h2 class="storage-name">
@@ -44,7 +45,52 @@
       <span class="mono">{{ task.address }}:{{ task.destination }}</span>
     </h2>
     {% if task.label %}<div class="stat-sub">{{ task.label }}</div>{% endif %}
+    <div class="stat-sub">
+      {% if task.scheduled %}
+      <span class="badge badge-ok">{{ task.frequency_label }}</span>
+      {% else %}
+      <span class="badge">Envoi manuel</span>
+      {% endif %}
+      {% if task.keep_remote %}
+      &nbsp;{{ task.keep_remote }} snapshots conserves a destination
+      {% else %}
+      &nbsp;aucune retention a destination
+      {% endif %}
+    </div>
   </div>
+
+  {% set kids = children.get(task.key, []) %}
+  {% if kids %}
+  <div class="danger-banner">
+    <strong>Attention : les datasets enfants ne sont pas repliques.</strong>
+    <span class="mono">{{ task.source }}</span> contient {{ kids|length }}
+    dataset(s) enfant(s) —
+    {% for kid in kids[:4] %}<span class="mono">{{ kid }}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% if kids|length > 4 %}…{% endif %}.
+    Un envoi ZFS ne transmet que le dataset nomme : leur contenu reste
+    uniquement sur cette machine. Enregistrez une replication par dataset
+    enfant si vous voulez les sauvegarder.
+  </div>
+  {% endif %}
+
+  {% if status and status.clock_suspect %}
+  <div class="warning-banner">
+    <strong>Horodatage dans le futur.</strong> L'heure du serveur a recule
+    (pile de carte mere, machine virtuelle restauree, premiere synchro NTP).
+    Tant que ce n'est pas corrige, les delais affiches ici sont faux.
+    Verifiez Parametres → Systeme.
+  </div>
+  {% endif %}
+
+  {% if status and status.schedule.blocked %}
+  <div class="danger-banner">
+    <strong>Envoi automatique suspendu.</strong> {{ status.schedule.blocked_reason }}
+    <div class="stat-sub">
+      Un envoi planifie ne detruit jamais rien tout seul. Ouvrez
+      « Preparer un envoi » : la page dit exactement ce qui serait ecrase, et
+      c'est vous qui decidez.
+    </div>
+  </div>
+  {% endif %}
 
   {% if state and state.running %}
   <div class="job-panel">
@@ -76,13 +122,24 @@
 
   {% elif state and state.status == 'success' %}
   <div class="result-card">
+    {% if status and status.drifted %}
+    <span class="badge badge-warn">en retard</span>
+    {% else %}
     <span class="badge badge-ok">a jour</span>
+    {% endif %}
     Dernier envoi reussi <strong>{{ state.age_label }}</strong>
     ({{ state.mode }}, snapshot <span class="mono">{{ state.snapshot }}</span>).
     <div class="stat-sub">
+      {% if state.message %}{{ state.message }}<br>{% endif %}
       Tout ce qui a ete ecrit dans <span class="mono">{{ task.source }}</span>
       depuis n'existe que sur cette machine.
     </div>
+    {% if status and status.drifted %}
+    <div class="warning-banner">
+      Cette replique a depasse le delai que vous avez fixe. Ce qui a ete
+      ecrit depuis n'est nulle part ailleurs.
+    </div>
+    {% endif %}
   </div>
 
   {% elif state and state.status == 'failed' %}
@@ -94,12 +151,96 @@
   <div class="empty-state">Aucun envoi n'a encore ete lance.</div>
   {% endif %}
 
+  {% if status and status.schedule.last_retention_count %}
+  <div class="stat-sub">
+    Derniere retention distante : {{ status.schedule.last_retention_count }}
+    snapshot(s) supprime(s) sur {{ task.address }}.
+  </div>
+  {% endif %}
+
   <div class="btn-row">
     <a class="btn btn-primary" href="/cluster/replication/zfs/{{ task.key }}/plan">
       Preparer un envoi
     </a>
+    <button type="button" class="btn btn-link"
+            @click="scheduleFor = (scheduleFor === '{{ task.key }}' ? null : '{{ task.key }}')">
+      Planification
+    </button>
     <button type="button" class="btn btn-muted"
             @click="removeFor = '{{ task.key }}'">Retirer de la liste</button>
+  </div>
+
+  <!-- Planification, retention distante et seuil d'alerte -->
+  <div x-show="scheduleFor === '{{ task.key }}'" x-cloak>
+    <form method="post" action="/cluster/replication/zfs/{{ task.key }}/schedule">
+      <label for="freq_{{ loop.index }}">Envoi automatique</label>
+      <select id="freq_{{ loop.index }}" name="frequency">
+        <option value="" {% if not task.scheduled %}selected{% endif %}>
+          Manuel uniquement
+        </option>
+        {% for code, freq in frequencies.items() %}
+        <option value="{{ code }}" {% if task.frequency == code %}selected{% endif %}>
+          {{ freq.label }}
+        </option>
+        {% endfor %}
+      </select>
+      <div class="stat-sub">
+        {% for code, freq in frequencies.items() %}
+        <div><strong>{{ freq.label }}</strong> — {{ freq.hint }}</div>
+        {% endfor %}
+      </div>
+
+      <div class="warning-banner">
+        <strong>Un envoi automatique n'ecrase jamais rien.</strong> S'il
+        fallait remplacer le contenu de la destination — chaine incrementale
+        rompue, snapshots pris sur la replique — la planification s'arrete et
+        vous previent, au lieu de decider a votre place.
+      </div>
+
+      <label for="keep_{{ loop.index }}">
+        Snapshots conserves sur la destination
+      </label>
+      <input type="number" id="keep_{{ loop.index }}" name="keep_remote"
+             min="{{ min_keep }}" max="500"
+             value="{{ task.keep_remote or '' }}" placeholder="vide = aucune retention">
+      <div class="stat-sub">
+        Sans retention, la replique accumule un snapshot par envoi jusqu'a
+        saturer le pool de sauvegarde. Avec, les plus anciens sont supprimes
+        a distance apres chaque envoi reussi — <strong>jamais celui qui porte
+        la chaine incrementale, ni aucun snapshot plus recent que lui</strong>.
+        Minimum {{ min_keep }} : celui de la chaine ne compte pas comme un
+        historique.
+      </div>
+
+      <label for="alert_{{ loop.index }}">
+        Alerter si aucun envoi reussi depuis (heures)
+      </label>
+      <input type="number" id="alert_{{ loop.index }}" name="alert_hours"
+             min="1" max="8760"
+             value="{{ task.alert_hours or '' }}" placeholder="vide = deduit de la frequence">
+      <div class="stat-sub">
+        Laisse vide, le seuil vaut deux fois l'intervalle choisi. Une
+        replication manuelle sans valeur ici n'est jamais signalee en retard.
+        L'alerte apparait sur la carte Sante &amp; securite du tableau de bord.
+      </div>
+
+      <label for="pw_{{ loop.index }}">
+        Votre mot de passe (uniquement pour augmenter la retention distante)
+      </label>
+      <input type="password" id="pw_{{ loop.index }}" name="confirm_password"
+             autocomplete="current-password">
+      <div class="stat-sub">
+        Augmenter la retention arme une suppression automatique de snapshots
+        sur l'autre machine. Regler seulement la frequence ou l'alerte ne
+        demande rien.
+      </div>
+
+      <div class="btn-row">
+        <button type="submit" class="btn btn-primary">Enregistrer</button>
+        <button type="button" class="btn btn-muted"
+                @click="scheduleFor = null">Annuler</button>
+      </div>
+    </form>
   </div>
 </div>
 {% endfor %}

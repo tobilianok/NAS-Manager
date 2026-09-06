@@ -1,9 +1,25 @@
 """
-Replication ZFS entre noeuds appaires (v1.14.0).
+Replication ZFS entre noeuds appaires (v1.14.0, complete en v1.15.0).
 
-Sous-etape 2c du chantier cluster, premiere moitie : **l'envoi, a la main**.
-La planification, la retention cote destination et l'alerte de derive
-viendront ensuite - il fallait d'abord un envoi qui tienne la distance.
+Sous-etape 2c du chantier cluster. La v1.14.0 a pose **l'envoi, a la main**.
+La v1.15.0 ajoute les trois choses qui font la difference entre une
+fonctionnalite et une sauvegarde sur laquelle on peut compter :
+
+- **la planification** : l'envoi part tout seul, a intervalle regulier ;
+- **la retention cote destination** : sans elle, la replique accumule les
+  snapshots jusqu'a saturer le pool de sauvegarde ;
+- **l'alerte de derive** : une replication qui a cesse de fonctionner ne se
+  voit pas. Elle affiche toujours la derniere copie, et rien ne crie. C'est
+  exactement le moment ou l'on se croit protege sans l'etre.
+
+## Ce qu'un envoi planifie ne fera JAMAIS
+
+Un envoi lance par la planification tourne sans personne devant l'ecran.
+Il ne peut donc demander aucune confirmation - et par consequent il
+**n'ecrase jamais rien** : des que le plan exige `zfs receive -F` (chaine
+incrementale rompue, destination divergente), la planification s'arrete,
+enregistre pourquoi, et attend une decision humaine. Le seul chemin vers
+`-F` reste le bouton, avec la case a cocher et le mot de passe.
 
 ## Le principe
 
@@ -71,7 +87,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass, asdict, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from app import auth, replication, snapshots as snapshots_module, zfs
@@ -81,6 +97,12 @@ logger = logging.getLogger("nas_manager.zfsreplicate")
 STATE_DIR = Path(os.environ.get("NAS_MANAGER_STATE_DIR", "/var/lib/nas-manager"))
 JOBS_DIR = STATE_DIR / "replication_jobs"
 TASKS_FILE = STATE_DIR / "replication_tasks.json"
+
+# Repertoire SEPARE de JOBS_DIR, et c'est volontaire : les fichiers de
+# JOBS_DIR sont ecrits par `scripts/zfs-send.sh` (du bash), ceux-ci par le
+# planificateur (du Python). Les melanger ferait apparaitre les seconds dans
+# `all_states()` - qui balaie `*.json` - comme s'ils etaient des envois.
+SCHEDULE_DIR = STATE_DIR / "replication_schedule"
 
 SEND_SCRIPT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -106,6 +128,60 @@ SEND_STAMP = "%Y%m%d-%H%M%S"
 STALE_AFTER_SECONDS = 72 * 3600
 
 DATASET_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.:/ -]{0,254}$")
+
+# Un label de snapshot, tel qu'il sera reinjecte dans une commande `zfs
+# destroy` executee SUR LE NOEUD DISTANT. Il vient d'un `zfs list` la-bas,
+# donc d'une machine qu'on ne controle pas entierement : on le revalide
+# avant de le remettre dans un shell, en plus du quotage.
+REMOTE_LABEL_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$")
+
+# Frequences proposees pour un envoi automatique. Volontairement plus
+# grossieres que celles des snapshots : un snapshot est instantane, un envoi
+# occupe le reseau et les disques des deux machines pendant des minutes ou
+# des heures.
+FREQUENCIES: dict[str, dict] = {
+    "horaire": {
+        "label": "Toutes les heures",
+        "interval": timedelta(hours=1),
+        "hint": "Pour des donnees qui bougent en permanence et qu'on ne veut "
+                "pas perdre. Ne convient que si un envoi tient largement dans "
+                "l'heure - sinon le suivant est simplement saute.",
+    },
+    "six-heures": {
+        "label": "Toutes les six heures",
+        "interval": timedelta(hours=6),
+        "hint": "Le bon compromis pour un partage de fichiers actif : au pire "
+                "six heures de travail a refaire, pour quatre transferts par "
+                "jour.",
+    },
+    "quotidien": {
+        "label": "Une fois par jour",
+        "interval": timedelta(days=1),
+        "hint": "Le reglage par defaut raisonnable. L'envoi part la nuit ou "
+                "personne n'utilise le NAS, et une journee de perte maximum "
+                "est acceptable pour la plupart des usages.",
+    },
+    "hebdomadaire": {
+        "label": "Une fois par semaine",
+        "interval": timedelta(days=7),
+        "hint": "Pour des donnees qui changent rarement (archives, photos "
+                "deja triees). Attention : une semaine de travail perdu, c'est "
+                "beaucoup si le dataset bouge plus que prevu.",
+    },
+}
+
+# Rendre moins de deux snapshots sur la destination reviendrait a ne garder
+# que celui qui porte la chaine incrementale : la sauvegarde n'aurait plus
+# aucune profondeur d'historique, et un fichier efface par erreur puis
+# replique serait irrecuperable des les deux cotes.
+MIN_REMOTE_KEEP = 2
+MAX_REMOTE_KEEP = 500
+
+# Duree au-dela de laquelle une replication sans envoi reussi est signalee,
+# quand aucune valeur n'a ete choisie. Sert de proposition dans le
+# formulaire, jamais de valeur imposee.
+DEFAULT_ALERT_FACTOR = 2
+MAX_ALERT_HOURS = 24 * 365
 
 
 class ReplicationError(RuntimeError):
@@ -167,13 +243,49 @@ def _ssh(address: str, remote_command: str, timeout: int = 30) -> tuple[int, str
 @dataclass
 class Task:
     """Un couple source → destination, memorise pour ne pas avoir a le
-    ressaisir. C'est aussi ce sur quoi la planification s'appuiera en
-    v1.15.0."""
+    ressaisir, et la facon dont il doit s'executer tout seul."""
     source: str            # dataset local, ex. 'tank/partages/photos'
     address: str           # adresse du noeud qui recoit
     destination: str       # dataset distant, ex. 'backup/photos'
     label: str = ""        # etiquette libre
     created_at: str = ""
+
+    # --- planification (v1.15.0) --------------------------------------
+    # Chaine vide = envoi manuel uniquement. La cle `key` ne depend
+    # VOLONTAIREMENT pas de ces champs : changer la frequence ne doit pas
+    # changer l'identite de la tache, sinon l'historique des envois (le
+    # fichier d'etat, nomme d'apres la cle) serait perdu a chaque reglage.
+    frequency: str = ""
+    keep_remote: int = 0   # 0 = aucune retention cote destination
+    alert_hours: int = 0   # 0 = aucune alerte de derive
+
+    @property
+    def scheduled(self) -> bool:
+        return self.frequency in FREQUENCIES
+
+    @property
+    def interval(self) -> timedelta | None:
+        entry = FREQUENCIES.get(self.frequency)
+        return entry["interval"] if entry else None
+
+    @property
+    def frequency_label(self) -> str:
+        entry = FREQUENCIES.get(self.frequency)
+        return entry["label"] if entry else "Manuel"
+
+    @property
+    def effective_alert_seconds(self) -> int:
+        """Age du dernier envoi reussi au-dela duquel on alerte.
+
+        Explicite s'il a ete choisi ; sinon deduit de la frequence. Une
+        replication manuelle sans valeur explicite n'alerte pas : personne
+        ne s'est engage sur un rythme, il n'y a donc pas de retard."""
+        if self.alert_hours > 0:
+            return self.alert_hours * 3600
+        interval = self.interval
+        if interval is None:
+            return 0
+        return int(interval.total_seconds() * DEFAULT_ALERT_FACTOR)
 
     @property
     def key(self) -> str:
@@ -188,9 +300,39 @@ class Task:
         peuvent aussi se reduire au meme texte une fois nettoyes
         ('tank/a-b' et 'tank/a.b')."""
         raw = f"{self.source}\x00{self.address}\x00{self.destination}"
-        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:10]
         safe = re.sub(r"[^a-zA-Z0-9]+", "-", raw.replace("\x00", "-"))
-        return f"{safe.strip('-').lower()[:60]}-{digest}"
+        return f"{safe.strip('-').lower()[:60]}-{self.digest}"
+
+    @property
+    def digest(self) -> str:
+        """La part de `key` qui porte reellement l'unicite, isolee pour
+        pouvoir servir seule la ou la longueur est contrainte (nom d'unite
+        systemd, etiquette de `zfs hold`)."""
+        raw = f"{self.source}\x00{self.address}\x00{self.destination}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:10]
+
+
+def _clamp_keep(value) -> int:
+    """Une valeur de retention hors bornes est ramenee a « aucune retention »
+    plutot qu'a une borne. Un registre corrompu qui dirait `keep_remote: 1`
+    ne doit pas se transformer en « ne garde que le snapshot de base »."""
+    try:
+        keep = int(value)
+    except (TypeError, ValueError):
+        return 0
+    if keep < MIN_REMOTE_KEEP or keep > MAX_REMOTE_KEEP:
+        return 0
+    return keep
+
+
+def _clamp_alert(value) -> int:
+    try:
+        hours = int(value)
+    except (TypeError, ValueError):
+        return 0
+    if hours <= 0 or hours > MAX_ALERT_HOURS:
+        return 0
+    return hours
 
 
 def _read_tasks() -> list[Task]:
@@ -206,11 +348,20 @@ def _read_tasks() -> list[Task]:
     tasks: list[Task] = []
     for entry in data.get("tasks", []) if isinstance(data, dict) else []:
         try:
+            frequency = str(entry.get("frequency", ""))
             tasks.append(Task(
                 source=str(entry["source"]), address=str(entry["address"]),
                 destination=str(entry["destination"]),
                 label=str(entry.get("label", "")),
                 created_at=str(entry.get("created_at", "")),
+                # Une frequence inconnue (registre ecrit par une version
+                # plus recente, fichier bricole a la main) redevient
+                # « manuel ». Le contraire - garder la valeur telle quelle -
+                # ferait qu'aucun envoi ne partirait, en affichant pourtant
+                # une planification active.
+                frequency=frequency if frequency in FREQUENCIES else "",
+                keep_remote=_clamp_keep(entry.get("keep_remote", 0)),
+                alert_hours=_clamp_alert(entry.get("alert_hours", 0)),
             ))
         except (KeyError, TypeError, ValueError):
             continue
@@ -279,6 +430,78 @@ def _add_task_locked(task: Task) -> Task:
     return task
 
 
+def set_schedule(key: str, frequency: str, keep_remote, alert_hours,
+                 username: str = "", password: str = "") -> str:
+    """Regle le rythme d'envoi, la retention distante et le seuil d'alerte.
+
+    Trois reglages dans le meme formulaire parce qu'ils n'ont de sens
+    qu'ensemble : planifier sans retention finit par saturer la destination,
+    et planifier sans alerte revient a ne pas savoir quand ca s'arrete."""
+    frequency = (frequency or "").strip()
+    if frequency and frequency not in FREQUENCIES:
+        raise ReplicationError(f"Frequence inconnue : « {frequency} ».")
+
+    keep = 0
+    raw_keep = str(keep_remote or "").strip()
+    if raw_keep:
+        try:
+            keep = int(raw_keep)
+        except ValueError:
+            raise ReplicationError("Le nombre de snapshots a conserver doit "
+                                   "etre un nombre entier.")
+        if keep and keep < MIN_REMOTE_KEEP:
+            raise ReplicationError(
+                f"Il faut en conserver au moins {MIN_REMOTE_KEEP} sur la "
+                "destination : le plus recent porte la chaine incrementale, "
+                "il ne compte donc pas comme un historique."
+            )
+        if keep > MAX_REMOTE_KEEP:
+            raise ReplicationError(
+                f"Maximum {MAX_REMOTE_KEEP} snapshots conserves a distance.")
+
+    hours = 0
+    raw_alert = str(alert_hours or "").strip()
+    if raw_alert:
+        try:
+            hours = int(raw_alert)
+        except ValueError:
+            raise ReplicationError("Le delai d'alerte doit etre un nombre "
+                                   "d'heures entier.")
+        if hours < 0 or hours > MAX_ALERT_HOURS:
+            raise ReplicationError("Delai d'alerte hors limites (1 h a 1 an).")
+
+    with _exclusive():
+        tasks = _read_tasks()
+        target = next((t for t in tasks if t.key == key), None)
+        if target is None:
+            raise ReplicationError("Cette replication n'existe pas.")
+        # Activer ou augmenter la retention distante arme une suppression
+        # automatique de snapshots sur une AUTRE machine. Regler une
+        # frequence ne detruit rien ; ceci, si - au premier passage du
+        # planificateur. Le mot de passe est donc exige pour ce seul cas,
+        # comme partout ailleurs dans le projet des qu'une action efface.
+        if keep and keep > target.keep_remote:
+            _require_password(username, password)
+        target.frequency = frequency
+        target.keep_remote = keep
+        target.alert_hours = hours
+        _write_tasks(tasks)
+        # Un reglage change la donne : le blocage enregistre au passage
+        # precedent peut ne plus s'appliquer. On l'efface pour que le
+        # prochain passage reevalue, plutot que d'afficher un motif perime.
+        _clear_schedule_state(key)
+
+    logger.info("Planification %s : frequence=%s retention=%s alerte=%sh",
+                key, frequency or "manuelle", keep or "aucune", hours or "aucune")
+    if not frequency:
+        return ("Planification desactivee : cette replication ne partira plus "
+                "que sur commande.")
+    return (f"Envoi automatique {FREQUENCIES[frequency]['label'].lower()}. "
+            + (f"{keep} snapshots conserves sur la destination. " if keep
+               else "Aucune retention distante : surveillez le remplissage du "
+                    "pool de sauvegarde. "))
+
+
 def remove_task(key: str, username: str, password: str) -> str:
     """Retire la tache. Ne supprime RIEN sur le noeud distant : la replique
     deja envoyee reste en place. Supprimer des donnees a distance depuis un
@@ -286,11 +509,15 @@ def remove_task(key: str, username: str, password: str) -> str:
     _require_password(username, password)
     with _exclusive():
         tasks = _read_tasks()
-        remaining = [t for t in tasks if t.key != key]
-        if len(remaining) == len(tasks):
+        target = next((t for t in tasks if t.key == key), None)
+        if target is None:
             raise ReplicationError("Cette replication n'existe pas.")
-        _write_tasks(remaining)
+        _write_tasks([t for t in tasks if t.key != key])
         clear_state(key)
+        _clear_schedule_state(key)
+        # Les `zfs hold` sont relaches ICI, sinon le dernier snapshot envoye
+        # restait indestructible indefiniment sur la source.
+        _release_holds(target)
     return ("Replication retiree de la liste. Les donnees deja envoyees "
             "restent en place sur le noeud distant.")
 
@@ -358,9 +585,23 @@ class RemoteState:
     reachable: bool = False
     exists: bool = False           # le dataset destination existe la-bas
     replica_of: str | None = None  # valeur de nasmanager:replica
-    snapshots: list[str] = field(default_factory=list)  # labels, plus recent en dernier
+    # Labels du dataset destination, du PLUS ANCIEN au PLUS RECENT. L'ordre
+    # vient de `createtxg` (numero de groupe de transactions ZFS), pas du nom
+    # ni de la date : un snapshot recu conserve la date de creation de la
+    # source, alors que `createtxg` est local au pool de destination et
+    # augmente strictement a chaque reception. C'est donc le seul ordre qui
+    # ne peut etre trompe ni par une horloge fausse, ni par des prefixes de
+    # nommage differents ('nasmgr-quotidien-...' se classe avant
+    # 'nasmgr-repl-...' alphabetiquement, quelle que soit leur anciennete).
+    snapshots: list[str] = field(default_factory=list)
     system_pools: set[str] = field(default_factory=set)
     system_pools_known: bool = False
+    # Une lecture qui echoue ne doit JAMAIS se confondre avec « il n'y a
+    # rien la-bas » : c'est cette confusion qui transformait un simple
+    # depassement de delai SSH en proposition d'ecrasement de la
+    # destination, avec un message affirmant qu'il n'y avait rien a perdre.
+    exists_known: bool = True
+    snapshots_known: bool = True
     error: str = ""
 
     @property
@@ -379,9 +620,15 @@ def inspect_remote(task: Task) -> RemoteState:
         return RemoteState(reachable=False, error=detail)
 
     quoted = _shell_quote(task.destination)
-    code, out, _ = _ssh(task.address, f"zfs list -H -o name {quoted}", timeout=20)
+    code, out, err = _ssh(task.address, f"zfs list -H -o name {quoted}", timeout=20)
     if code != 0:
-        return RemoteState(reachable=True, exists=False)
+        # `zfs list` rend 1 aussi bien pour « ce dataset n'existe pas » que
+        # pour « la commande a echoue ». Seul le premier cas autorise a
+        # conclure. Le second doit rester une inconnue, sinon un delai
+        # depasse ferait basculer un envoi incremental en envoi complet.
+        absent = "does not exist" in err or "dataset does not exist" in out
+        return RemoteState(reachable=True, exists=False, exists_known=absent,
+                           error="" if absent else (err or "reponse illisible"))
 
     state = RemoteState(reachable=True, exists=True)
 
@@ -399,9 +646,15 @@ def inspect_remote(task: Task) -> RemoteState:
 
     code, out, _ = _ssh(
         task.address,
-        f"zfs list -H -o name -t snapshot -r {quoted}", timeout=30,
+        f"zfs list -H -o name -t snapshot -r -s createtxg {quoted}", timeout=30,
     )
-    if code == 0 and out:
+    if code != 0:
+        # Ici l'echec est sans ambiguite dangereux : une liste vide ferait
+        # conclure « la destination n'a aucun snapshot », c'est-a-dire
+        # « il n'y a rien a perdre en l'ecrasant ». On le dit au lieu de
+        # le deviner.
+        state.snapshots_known = False
+    elif out:
         prefix = task.destination + "@"
         state.snapshots = [
             line[len(prefix):] for line in out.splitlines()
@@ -431,9 +684,31 @@ def _remote_system_pools(address: str) -> tuple[set[str], bool]:
         "from app import snapshots; print(' '.join(sorted(snapshots.system_pool_names())))\"",
         timeout=30,
     )
-    if code != 0:
+    if code == 0:
+        return {p for p in out.split() if p}, True
+
+    # Repli quand NAS Manager n'a pas repondu la-bas : installe ailleurs,
+    # dans un venv, version anterieure, python3 absent. Sans ce repli, le
+    # garde-fou « ne pas remplir le pool de demarrage du voisin »
+    # disparaissait sur un simple ecart d'installation - remplace par un
+    # avertissement dans une liste que la page principale n'affiche meme pas.
+    #
+    # `findmnt` dit quel systeme de fichiers porte la racine. Quand c'est du
+    # ZFS, le premier segment est le pool de demarrage. Quand ce n'est pas du
+    # ZFS (le cas de figure du projet : Ubuntu sur RAID1 ext4), il n'y a
+    # aucun pool systeme a proteger, et la reponse est donc « aucun », en
+    # toute certitude.
+    code, out, _ = _ssh(address, "findmnt -n -o FSTYPE,SOURCE /", timeout=20)
+    if code != 0 or not out.strip():
         return set(), False
-    return {p for p in out.split() if p}, True
+    parts = out.split(None, 1)
+    if len(parts) < 2:
+        return set(), False
+    fstype, source = parts[0].strip(), parts[1].strip()
+    if fstype != "zfs":
+        return set(), True
+    pool = source.split("/")[0].strip()
+    return ({pool} if pool else set()), bool(pool)
 
 
 def _shell_quote(value: str) -> str:
@@ -458,10 +733,37 @@ class SendPlan:
     needs_force: bool = False      # la destination a diverge
     warnings: list[str] = field(default_factory=list)
     remote: RemoteState | None = None
+    # Datasets descendants de la source. `zfs send` sans `-R` ne les
+    # transmet pas : ils sont listes pour que ce soit dit, pas devine.
+    unsent_children: list[str] = field(default_factory=list)
+    # Vrai quand CE plan a cree le snapshot d'envoi. Permet de le detruire
+    # si le lancement echoue ensuite : sinon chaque tentative refusee
+    # laissait derriere elle un snapshot que plus rien ne supprimait jamais.
+    created_snapshot: bool = False
 
     @property
     def is_full(self) -> bool:
         return self.mode == "complet"
+
+    @property
+    def confirmed_up_to_date(self) -> bool:
+        """La destination contient-elle VRAIMENT tout ce que contient la
+        source, verifie et pas suppose ?
+
+        Il ne suffit pas que le snapshot le plus recent de la source soit
+        present a destination : encore faut-il qu'il y soit le plus recent
+        la-bas aussi (sinon la destination a diverge) et que la lecture de
+        son inventaire ait reellement abouti."""
+        remote = self.remote
+        return bool(
+            remote is not None
+            and remote.snapshots_known
+            and remote.exists
+            and remote.snapshots
+            and remote.snapshots[-1] == self.send_snapshot
+            and self.base_snapshot == self.send_snapshot
+            and not self.needs_force
+        )
 
 
 def plan_send(task: Task, create_snapshot: bool = True) -> SendPlan:
@@ -474,6 +776,21 @@ def plan_send(task: Task, create_snapshot: bool = True) -> SendPlan:
     remote = inspect_remote(task)
     if not remote.reachable:
         raise ReplicationError(f"Noeud {task.address} injoignable : {remote.error}")
+
+    # Une decision destructrice ne se deduit JAMAIS d'une lecture ratee. Un
+    # simple depassement de delai SSH suffisait a faire conclure « la
+    # destination n'a aucun snapshot », donc a proposer de l'ecraser en
+    # affirmant qu'il n'y avait rien a perdre - alors qu'elle pouvait
+    # contenir des annees d'historique.
+    if not remote.exists_known or not remote.snapshots_known:
+        raise ReplicationError(
+            f"Impossible de lire l'etat de « {task.destination} » sur "
+            f"{task.address} : la commande n'a pas abouti"
+            + (f" ({remote.error})" if remote.error else "")
+            + ". Aucun envoi ne partira tant que ce qui s'y trouve n'est pas "
+            "connu avec certitude. Reessayez ; si cela persiste, verifiez le "
+            "pool de ce noeud."
+        )
 
     dest_pool = task.destination.split("/")[0]
     if remote.system_pools_known and dest_pool in remote.system_pools:
@@ -498,20 +815,58 @@ def plan_send(task: Task, create_snapshot: bool = True) -> SendPlan:
             "Envoyer dessus detruirait cette replique."
         )
 
-    local = [s.label for s in snapshots_module.list_snapshots(task.source)]
-    if not local and create_snapshot:
-        label = _make_send_snapshot(task.source)
-        local = [label]
+    # Ordre `createtxg`, du plus recent au plus ancien - pas l'ordre par
+    # date de `list_snapshots`. Ici l'ordre sert a DECIDER quoi envoyer :
+    # deux snapshots pris dans la meme seconde portent la meme date, et une
+    # horloge qui recule ferait passer le plus recent pour le plus ancien.
+    local = [s.label for s in reversed(snapshots_module.list_by_creation(task.source))]
+    created_snapshot = False
+    if create_snapshot:
+        if not local:
+            local = [_make_send_snapshot(task.source)]
+            created_snapshot = True
+        else:
+            # Correction v1.15.0. La v1.14.0 ne prenait un snapshot frais que
+            # si le dataset n'en avait AUCUN. Des qu'il en existait un, elle
+            # renvoyait le plus recent - c'est-a-dire, apres le premier
+            # envoi, exactement celui deja present a destination. Le plan
+            # affichait alors « rien de nouveau depuis le dernier envoi »
+            # meme apres avoir ecrit des gigaoctets, et l'envoi ne
+            # transmettait rien. Un snapshot ne se prend pas tout seul : il
+            # faut le creer pour capturer ce qui a ete ecrit depuis.
+            written = _written_since(task.source, local[0])
+            # `None` = ZFS n'a pas repondu. On prend le snapshot quand meme :
+            # un envoi inutile coute quelques secondes, un envoi saute a
+            # tort coute les donnees de l'intervalle.
+            if written is None or written > 0:
+                local.insert(0, _make_send_snapshot(task.source))
+                created_snapshot = True
     if not local:
         raise ReplicationError(
             f"Le dataset « {task.source} » n'a aucun snapshot : il n'y a rien "
             "a envoyer."
         )
 
-    # `list_snapshots` rend du plus recent au plus ancien.
     newest = local[0]
 
-    plan = SendPlan(task=task, mode="complet", send_snapshot=newest, remote=remote)
+    plan = SendPlan(task=task, mode="complet", send_snapshot=newest, remote=remote,
+                    created_snapshot=created_snapshot)
+
+    # `zfs send` sans `-R` ne transmet QUE le dataset nomme. Choisir un
+    # dataset conteneur - « tank/partages », le choix le plus naturel -
+    # donnait une replique vide, marquee « a jour », decouverte le jour de
+    # la restauration. Ca se dit.
+    plan.unsent_children = snapshots_module.list_children(task.source)
+    if plan.unsent_children:
+        noms = ", ".join(plan.unsent_children[:4])
+        reste = "..." if len(plan.unsent_children) > 4 else ""
+        plan.warnings.append(
+            f"ATTENTION : « {task.source} » contient "
+            f"{len(plan.unsent_children)} dataset(s) enfant(s) ({noms}{reste}) "
+            "qui NE SERONT PAS repliques - un envoi ZFS ne transmet que le "
+            "dataset nomme. Enregistrez une replication par dataset enfant si "
+            "vous voulez leur contenu."
+        )
 
     if remote.exists and not remote.snapshots:
         # Impasse : `zfs receive` refuse d'ecrire sur un dataset existant qui
@@ -533,31 +888,33 @@ def plan_send(task: Task, create_snapshot: bool = True) -> SendPlan:
                 "incrementale est rompue. Un envoi complet est necessaire, et "
                 "il remplacera ce qui se trouve a destination."
             )
-        elif common == newest:
-            plan.mode = "incremental"
-            plan.base_snapshot = common
-            plan.warnings.append(
-                "Rien de nouveau depuis le dernier envoi : la destination est "
-                "deja a jour."
-            )
         else:
             plan.mode = "incremental"
             plan.base_snapshot = common
+
             # Seconde impasse : la destination a pris ses PROPRES snapshots
             # apres le dernier envoi (une politique de snapshots active sur
             # le noeud de sauvegarde le fait, `readonly=on` ne l'en empeche
             # pas). ZFS refuse alors la reception - « destination has more
-            # recent snapshots » - et rien ne le disait.
-            if remote.snapshots and remote.snapshots[-1] != common:
-                extra = [s for s in remote.snapshots
-                         if s not in local]
-                if extra:
-                    plan.needs_force = True
-                    plan.warnings.append(
-                        f"La destination porte {len(extra)} snapshot(s) qui "
-                        "n'existent pas sur la source : ZFS refusera de "
-                        "recevoir sans les supprimer. Ils seront perdus."
-                    )
+            # recent snapshots ».
+            #
+            # Ce controle vivait dans la seule branche « il y a du nouveau a
+            # envoyer ». Quand la source ne bougeait pas, on passait a cote :
+            # la replication etait deja cassee, et l'interface repondait
+            # « deja a jour » a chaque passage, indefiniment.
+            extra = [s for s in remote.snapshots if s not in local]
+            if remote.snapshots[-1] != common and extra:
+                plan.needs_force = True
+                plan.warnings.append(
+                    f"La destination porte {len(extra)} snapshot(s) qui "
+                    "n'existent pas sur la source : ZFS refusera de "
+                    "recevoir sans les supprimer. Ils seront perdus."
+                )
+            elif common == newest:
+                plan.warnings.append(
+                    "Rien de nouveau depuis le dernier envoi : la destination "
+                    "est deja a jour."
+                )
 
     if not remote.system_pools_known:
         plan.warnings.append(
@@ -594,6 +951,26 @@ def _make_send_snapshot(source: str) -> str:
         raise ReplicationError(f"Impossible de prendre un snapshot de « {source} » : {err}")
     logger.info("Snapshot de replication cree : %s@%s", source, label)
     return label
+
+
+def _written_since(dataset: str, label: str) -> int | None:
+    """Octets ecrits dans le dataset depuis ce snapshot.
+
+    C'est ce qui dit s'il y a quelque chose a envoyer. La valeur evidente
+    (`used` du snapshot) serait fausse : elle compte les blocs que le
+    snapshot RETIENT, donc ce qui a ete supprime ou modifie - un dataset ou
+    l'on n'a fait qu'ajouter cent gigaoctets affiche `used = 0`.
+
+    `None` quand ZFS ne repond pas : les appelants doivent alors se
+    comporter comme s'il y avait des donnees nouvelles."""
+    code, out, _ = _run(["zfs", "get", "-H", "-p", "-o", "value",
+                         f"written@{label}", dataset])
+    if code != 0 or not out:
+        return None
+    try:
+        return int(out.strip())
+    except ValueError:
+        return None
 
 
 def _estimate(source: str, send_snapshot: str, base_snapshot: str = "") -> int:
@@ -677,12 +1054,46 @@ def _state_file(key: str) -> Path:
 
 
 def read_state(key: str) -> JobState:
+    """Lit l'etat d'un envoi. Ne leve jamais.
+
+    Les valeurs sont converties au type attendu plutot que reinjectees
+    telles quelles : le fichier est ecrit par un script bash, il peut avoir
+    ete tronque par une coupure ou modifie a la main. Un `started_epoch`
+    valant une chaine faisait lever un TypeError depuis la propriete
+    `stale` - c'est-a-dire une page en erreur 500, et un passage de
+    planificateur perdu."""
     try:
         raw = json.loads(_state_file(key).read_text())
     except (OSError, ValueError):
         return JobState(key=key)
-    known = {f for f in JobState.__dataclass_fields__}
-    return JobState(**{k: v for k, v in raw.items() if k in known})
+    if not isinstance(raw, dict):
+        return JobState(key=key)
+
+    def _number(value) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _text(value) -> str:
+        return value if isinstance(value, str) else ""
+
+    return JobState(
+        key=_text(raw.get("key")) or key,
+        source=_text(raw.get("source")),
+        destination=_text(raw.get("destination")),
+        address=_text(raw.get("address")),
+        mode=_text(raw.get("mode")),
+        status=_text(raw.get("status")) or "idle",
+        step=_text(raw.get("step")),
+        bytes_done=int(_number(raw.get("bytes_done"))),
+        bytes_total=int(_number(raw.get("bytes_total"))),
+        speed=_text(raw.get("speed")),
+        started_epoch=_number(raw.get("started_epoch")),
+        finished_epoch=_number(raw.get("finished_epoch")),
+        message=_text(raw.get("message")),
+        snapshot=_text(raw.get("snapshot")),
+    )
 
 
 def write_state(state: JobState) -> None:
@@ -712,6 +1123,63 @@ def all_states() -> dict[str, JobState]:
 
 
 # ---------------------------------------------------------------------------
+# Etat du planificateur (distinct de l'etat d'un envoi)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ScheduleState:
+    """Ce que le planificateur a constate au dernier passage.
+
+    Separe de `JobState` pour une raison concrete : `JobState` est ecrit par
+    le script bash detache, qui reecrit le fichier entier. Y ranger le motif
+    d'un blocage l'aurait fait disparaitre au premier envoi manuel reussi -
+    or c'est justement l'information qu'il faut garder sous les yeux."""
+    key: str = ""
+    last_attempt_epoch: float = 0.0
+    blocked_reason: str = ""
+    blocked_epoch: float = 0.0
+    retention_done_epoch: float = 0.0   # borne sur finished_epoch du dernier envoi
+    last_retention_count: int = 0
+
+    @property
+    def blocked(self) -> bool:
+        return bool(self.blocked_reason)
+
+
+def _schedule_file(key: str) -> Path:
+    safe = re.sub(r"[^a-z0-9-]+", "", key)[:180] or "inconnu"
+    return SCHEDULE_DIR / f"{safe}.json"
+
+
+def read_schedule_state(key: str) -> ScheduleState:
+    try:
+        raw = json.loads(_schedule_file(key).read_text())
+    except (OSError, ValueError):
+        return ScheduleState(key=key)
+    known = {f for f in ScheduleState.__dataclass_fields__}
+    return ScheduleState(**{k: v for k, v in raw.items() if k in known})
+
+
+def _write_schedule_state(state: ScheduleState) -> None:
+    SCHEDULE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(SCHEDULE_DIR, 0o700)
+    except OSError:
+        pass
+    path = _schedule_file(state.key)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(asdict(state), indent=2))
+    os.replace(tmp, path)
+
+
+def _clear_schedule_state(key: str) -> None:
+    try:
+        _schedule_file(key).unlink()
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Lancement
 # ---------------------------------------------------------------------------
 
@@ -727,10 +1195,21 @@ def _build_launch_command(plan: SendPlan) -> list[str]:
     if shutil.which("systemd-run"):
         return [
             "systemd-run",
-            f"--unit=nas-manager-zfssend-{task.key[:60]}",
+            # L'empreinte SEULE, jamais la cle tronquee : `key[:60]` coupait
+            # avant le hache des que la partie lisible atteignait 60
+            # caracteres, et deux replications proches partageaient alors le
+            # nom d'unite - la seconde echouait avec « unit already exists »,
+            # de facon intermittente et inexplicable.
+            f"--unit=nas-manager-zfssend-{task.digest}",
             "--collect",
             "--property=Type=oneshot",
-            f"--property=TimeoutStartSec={STALE_AFTER_SECONDS}",
+            # Jamais `STALE_AFTER_SECONDS` ici : ce seuil sert a dire « cet
+            # envoi n'avance plus », il ne doit pas devenir la cause de
+            # l'arret. Un premier envoi de plusieurs teraoctets depasse
+            # legitimement trois jours ; systemd le tuait a 72 h, sans trace
+            # d'echec, et le suivant repartait de zero - la sauvegarde
+            # initiale d'un gros pool ne pouvait donc jamais aboutir.
+            "--property=TimeoutStartSec=infinity",
             "/bin/bash", *args,
         ]
     return ["setsid", "/bin/bash", *args]
@@ -751,24 +1230,55 @@ def start_send(task: Task, username: str, password: str,
                 f"Un envoi est deja en cours pour cette replication "
                 f"({state.percent or 0:.0f} % transmis)."
             )
+        # Sondage a blanc D'ABORD : le refus d'ecrasement doit tomber AVANT
+        # qu'un snapshot soit pris. Sinon chaque clic sur « Envoyer » sans
+        # cocher la confirmation laissait derriere lui un snapshot
+        # `nasmgr-repl-*` que plus rien ne supprimait jamais - et ces
+        # snapshots retiennent des blocs, donc remplissent le pool source.
+        dry = plan_send(task, create_snapshot=False)
+        if dry.needs_force and not confirm_force:
+            raise GuardrailError(_FORCE_REFUSAL)
+
         # Le snapshot n'est cree qu'ICI, au lancement. La page de
         # preparation, elle, est un GET : elle ne doit rien modifier, or
         # elle prenait un snapshot a chaque affichage.
         plan = plan_send(task, create_snapshot=True)
 
-    # LE garde-fou : `-F` fait reculer le dataset destination. Tout ce qui
-    # a ete ecrit ou snapshote la-bas depuis disparait.
+        # LE garde-fou : `-F` fait reculer le dataset destination. Tout ce
+        # qui a ete ecrit ou snapshote la-bas depuis disparait.
+        return _launch_or_undo(task, plan, confirm_force)
+
+
+_FORCE_REFUSAL = (
+    "La destination a diverge : aucun snapshot commun ne subsiste. "
+    "Reprendre l'envoi effacerait ce qui s'y trouve pour le remplacer "
+    "par le contenu de la source. Cochez la confirmation pour l'accepter."
+)
+
+
+def _launch_or_undo(task: Task, plan: SendPlan, confirm_force: bool) -> SendPlan:
+    """Lance, et defait le snapshot d'envoi si le lancement est refuse.
+
+    Un snapshot `nasmgr-repl-*` est immortel par construction : la retention
+    d'app.snapshots ne le reconnait pas, et c'est voulu (elle romprait la
+    chaine incrementale). Un snapshot cree pour un envoi qui ne part pas
+    n'aurait donc plus jamais disparu."""
+    try:
         return _launch(task, plan, confirm_force)
+    except Exception:
+        if plan.created_snapshot and plan.send_snapshot:
+            full = f"{task.source}@{plan.send_snapshot}"
+            code, _, err = _run(["zfs", "destroy", full])
+            if code != 0:
+                logger.warning("Snapshot d'envoi '%s' non repris : %s", full, err)
+            else:
+                logger.info("Snapshot d'envoi '%s' supprime : lancement refuse", full)
+        raise
 
 
 def _launch(task: Task, plan: SendPlan, confirm_force: bool) -> SendPlan:
     if plan.needs_force and not confirm_force:
-        raise GuardrailError(
-            "La destination a diverge : aucun snapshot commun ne subsiste. "
-            "Reprendre l'envoi effacerait ce qui s'y trouve pour le remplacer "
-            "par le contenu de la source. Cochez la confirmation pour "
-            "l'accepter."
-        )
+        raise GuardrailError(_FORCE_REFUSAL)
 
     if not os.path.exists(SEND_SCRIPT):
         raise ReplicationError(
@@ -806,3 +1316,543 @@ def _launch(task: Task, plan: SendPlan, confirm_force: bool) -> SendPlan:
         plan.mode, ", avec ecrasement" if plan.needs_force else "",
     )
     return plan
+
+
+# ---------------------------------------------------------------------------
+# Retention cote destination (v1.15.0)
+# ---------------------------------------------------------------------------
+
+# Snapshots `nasmgr-repl-*` conserves sur la SOURCE. Trois suffisent : celui
+# que le `zfs hold` protege (base du prochain incremental), celui d'un envoi
+# en cours, et une marge.
+SEND_SNAPSHOT_KEEP = 3
+
+# Plafond de suppressions distantes par passage. Chaque suppression ouvre sa
+# propre session SSH ; sans plafond, un premier menage apres six mois de
+# cadence horaire enchainait des milliers de connexions dans le thread
+# unique du planificateur - pendant lesquelles AUCUNE autre replication ne
+# partait. Le reste est repris au passage suivant.
+MAX_REMOTE_DESTROY_PER_PASS = 50
+
+
+def prune_send_snapshots(source: str) -> list[str]:
+    """Supprime les vieux snapshots d'envoi de la SOURCE.
+
+    Ces snapshots sont immortels par construction : leur prefixe ne
+    correspond pas au format que la retention d'app.snapshots reconnait, et
+    c'est voulu (elle romprait la chaine incrementale). Mais « jamais
+    supprime par la retention » ne doit pas vouloir dire « jamais supprime du
+    tout » : sur un partage actif en cadence horaire face a un noeud qui
+    refuse, c'etait un snapshot permanent par heure, chacun retenant les
+    blocs liberes depuis - donc le pool SOURCE qui se remplit jusqu'a
+    l'indisponibilite des partages.
+
+    Deux protections : les `SEND_SNAPSHOT_KEEP` plus recents sont
+    intouchables, et tout snapshot designe par l'etat d'une tache l'est
+    aussi. Le `zfs hold` pose par le script forme une troisieme barriere -
+    `zfs destroy` echoue simplement dessus."""
+    existing = [s for s in snapshots_module.list_by_creation(source)
+                if s.label.startswith(SEND_PREFIX + "-")]
+    if len(existing) <= SEND_SNAPSHOT_KEEP:
+        return []
+
+    protected = set()
+    for task in list_tasks():
+        if task.source != source:
+            continue
+        label = read_state(task.key).snapshot
+        if label:
+            protected.add(label)
+
+    destroyed: list[str] = []
+    for snapshot in existing[:-SEND_SNAPSHOT_KEEP]:
+        if snapshot.label in protected:
+            continue
+        code, _, err = _run(["zfs", "destroy", snapshot.full_name])
+        if code != 0:
+            # Le plus souvent : « dataset is busy », c'est-a-dire un hold
+            # qui protege une base incrementale. C'est le comportement
+            # voulu, pas une anomalie.
+            logger.debug("Snapshot d'envoi '%s' conserve : %s",
+                         snapshot.full_name, err)
+            continue
+        destroyed.append(snapshot.full_name)
+
+    if destroyed:
+        logger.info("Snapshots d'envoi purges sur %s : %s", source, len(destroyed))
+    return destroyed
+
+
+def _release_holds(task: Task) -> None:
+    """Relache les `zfs hold` poses par CETTE tache sur la source.
+
+    Sans ca, le dernier snapshot envoye restait indestructible pour
+    toujours : `zfs destroy` echouait avec un « dataset is busy » que rien,
+    dans l'interface, ne permettait de lever."""
+    tags = [f"{SEND_PREFIX}-{task.digest}", SEND_PREFIX]  # le second : installs anterieures
+    for snapshot in snapshots_module.list_by_creation(task.source):
+        if not snapshot.label.startswith(SEND_PREFIX + "-"):
+            continue
+        for tag in tags:
+            _run(["zfs", "release", tag, snapshot.full_name])
+
+
+def apply_remote_retention(task: Task, remote: RemoteState | None = None) -> list[str]:
+    """Purge les snapshots excedentaires SUR LE NOEUD DISTANT.
+
+    Sans elle, la replique accumule un snapshot par envoi, indefiniment : au
+    rythme horaire, le pool de sauvegarde sature en quelques mois sans que
+    rien ne le signale.
+
+    Trois invariants, dans cet ordre d'importance :
+
+    1. **Rien n'est supprime au-dela du snapshot commun.** Ce snapshot est
+       la base du prochain incremental ; le detruire romprait la chaine et
+       le rattrapage serait un envoi complet AVEC ecrasement de la
+       destination - c'est-a-dire la perte de tout l'historique de la
+       sauvegarde. La regle appliquee est plus stricte encore : on ne touche
+       qu'aux snapshots **strictement plus anciens** que lui. Ceux qui lui
+       sont posterieurs ont ete pris sur la destination elle-meme ; les
+       effacer en silence serait une surprise inacceptable.
+
+    2. **Le dataset doit porter notre marque, pour CETTE source.** Sans ca,
+       une faute de frappe dans le champ destination ferait supprimer les
+       snapshots de quelqu'un d'autre.
+
+    3. **L'ordre vient de `createtxg`, pas des noms ni des dates.** Voir
+       `RemoteState.snapshots`.
+    """
+    keep = task.keep_remote
+    if keep < MIN_REMOTE_KEEP:
+        return []
+
+    if remote is None:
+        remote = inspect_remote(task)
+    if not remote.reachable:
+        raise ReplicationError(
+            f"Noeud {task.address} injoignable : la retention distante est "
+            f"reportee ({remote.error})."
+        )
+    if not remote.exists:
+        return []
+
+    if remote.replica_of != task.source:
+        raise GuardrailError(
+            f"Le dataset « {task.destination} » sur {task.address} n'est pas "
+            f"la replique de « {task.source} ». Aucun snapshot n'y sera "
+            "supprime."
+        )
+    dest_pool = task.destination.split("/")[0]
+    if remote.system_pools_known and dest_pool in remote.system_pools:
+        raise GuardrailError(
+            f"Sur {task.address}, le pool « {dest_pool} » porte le systeme. "
+            "NAS Manager n'y supprime rien."
+        )
+
+    ordered = list(remote.snapshots)
+    if len(ordered) <= keep:
+        return []
+
+    local = {s.label for s in snapshots_module.list_snapshots(task.source)}
+    base_index = -1
+    for index, labelled in enumerate(ordered):
+        if labelled in local:
+            base_index = index
+    if base_index < 0:
+        raise GuardrailError(
+            f"Aucun snapshot commun entre « {task.source} » et sa replique "
+            f"sur {task.address} : la chaine incrementale est deja rompue. "
+            "La retention est suspendue pour ne pas aggraver la situation."
+        )
+
+    excess_count = len(ordered) - keep
+    excess = [label for index, label in enumerate(ordered)
+              if index < excess_count and index < base_index]
+    if not excess:
+        return []
+    # Plafonne par passage : le reste part au suivant. Voir
+    # MAX_REMOTE_DESTROY_PER_PASS.
+    excess = excess[:MAX_REMOTE_DESTROY_PER_PASS]
+
+    destroyed: list[str] = []
+    for label in excess:
+        if not REMOTE_LABEL_RE.match(label):
+            logger.warning("Retention distante : label inattendu ignore (%r)", label)
+            continue
+        full = f"{task.destination}@{label}"
+        # Jamais `-r` ni `-R` : la suppression recursive emporterait les
+        # snapshots des datasets enfants, et `-R` les clones qui en
+        # dependent - y compris ceux que personne ici ne connait.
+        code, _, err = _ssh(task.address, f"zfs destroy {_shell_quote(full)}", timeout=60)
+        if code != 0:
+            logger.warning("Retention distante : '%s' non supprime (%s)", full, err)
+            continue
+        destroyed.append(full)
+
+    if destroyed:
+        logger.info("Retention distante %s:%s : %s snapshot(s) supprime(s)",
+                    task.address, task.destination, len(destroyed))
+    return destroyed
+
+
+# ---------------------------------------------------------------------------
+# Envois planifies (v1.15.0)
+# ---------------------------------------------------------------------------
+
+def is_due(task: Task, state: JobState, schedule: ScheduleState,
+           now: float | None = None) -> bool:
+    """Un envoi est-il attendu maintenant ?
+
+    On compte a partir de la derniere ACTIVITE - dernier envoi termine ou
+    dernier passage du planificateur - et pas seulement du dernier succes.
+    Sinon une replication en echec serait retentee a chaque passage, soit
+    toutes les quinze minutes, contre un noeud qui ne repond pas."""
+    interval = task.interval
+    if interval is None:
+        return False
+    moment = now if now is not None else time.time()
+    last = max(state.finished_epoch or 0.0, schedule.last_attempt_epoch or 0.0)
+    if not last:
+        return True
+    if last > moment:
+        # Horodatage dans le futur : l'horloge a recule (pile morte, VM
+        # restauree, premiere synchro NTP apres installation). Sans ce cas,
+        # l'ecart devenait un grand nombre negatif, jamais superieur a
+        # l'intervalle : la replication ne repartait PLUS JAMAIS, pendant
+        # tout le temps que l'horloge mettait a rattraper. On repart plutot
+        # que de se figer ; la coherence de l'horodatage est signalee a
+        # part, par TaskStatus.problem.
+        return True
+    # La tolerance de 5 % evite qu'un passage a 59 min 58 s d'intervalle
+    # reporte systematiquement d'un cycle entier.
+    return (moment - last) >= interval.total_seconds() * 0.95
+
+
+def _prune_and_report(task: Task) -> list[str]:
+    """Menage des snapshots d'envoi de la source. Jamais bloquant."""
+    try:
+        purged = prune_send_snapshots(task.source)
+    except Exception:  # noqa: BLE001 - un menage rate n'arrete rien
+        logger.exception("Purge des snapshots d'envoi de %s en echec", task.source)
+        return []
+    return [f"purge {task.source} : {len(purged)} snapshot(s) d'envoi"] if purged else []
+
+
+def _mark_up_to_date(task: Task, snapshot_label: str, now: float) -> None:
+    """Enregistre « la replique est identique a la source, maintenant ».
+
+    Sans ca, un dataset qui ne bouge jamais n'aurait plus d'envoi reussi
+    apres le premier, et l'alerte de derive se declencherait pour un systeme
+    parfaitement sain. Ce n'est pas un mensonge : a cet instant, la
+    destination contient bien tout ce que contient la source."""
+    previous = read_state(task.key)
+    write_state(JobState(
+        key=task.key, source=task.source, destination=task.destination,
+        address=task.address, mode=previous.mode or "incremental",
+        status="success", step="Deja a jour",
+        started_epoch=now, finished_epoch=now,
+        message="Aucune donnee nouvelle depuis le dernier envoi : rien a transmettre.",
+        snapshot=snapshot_label,
+    ))
+
+
+def _run_scheduled_send(task: Task, schedule: ScheduleState, now: float) -> str:
+    """Un passage pour une tache echue. Rend une ligne de rapport.
+
+    N'echoue jamais bruyamment : tout refus est enregistre comme motif de
+    blocage, visible dans l'interface et dans la carte Sante."""
+    schedule.last_attempt_epoch = now
+    schedule.blocked_reason = ""
+    schedule.blocked_epoch = 0.0
+
+    try:
+        # Sondage a blanc d'abord : `create_snapshot=False` pour savoir s'il
+        # y a lieu d'envoyer AVANT de prendre un snapshot. Prendre un
+        # snapshot a chaque passage pour decouvrir ensuite qu'il n'y avait
+        # rien a envoyer en creerait un par heure, pour rien.
+        plan = plan_send(task, create_snapshot=False)
+    except ReplicationError as exc:
+        schedule.blocked_reason = str(exc)
+        schedule.blocked_epoch = now
+        _write_schedule_state(schedule)
+        return f"BLOQUE {task.source} → {task.address} : {exc}"
+
+    if plan.needs_force:
+        detail = plan.warnings[-1] if plan.warnings else ""
+        schedule.blocked_reason = (
+            "Envoi automatique suspendu : reprendre la replication "
+            "effacerait ce qui se trouve a destination. Un envoi planifie "
+            "n'ecrase jamais rien tout seul. " + detail
+        ).strip()
+        schedule.blocked_epoch = now
+        _write_schedule_state(schedule)
+        return f"BLOQUE {task.source} → {task.address} : ecrasement requis"
+
+    # Rien de nouveau ? On le constate sans rien creer ni transmettre.
+    #
+    # `confirmed_up_to_date` verifie que le snapshot le plus recent de la
+    # source est aussi le plus recent A DESTINATION, sur un inventaire
+    # reellement lu. La simple presence du label dans une liste ne suffit
+    # pas : une destination qui a pris ses propres snapshots a diverge, et
+    # se declarer « a jour » a chaque passage aurait rafraichi
+    # indefiniment l'horodatage de succes - c'est-a-dire desactive l'alerte
+    # de derive sur une replication deja morte.
+    if plan.confirmed_up_to_date:
+        written = _written_since(task.source, plan.send_snapshot)
+        if written == 0:
+            _mark_up_to_date(task, plan.send_snapshot, now)
+            _write_schedule_state(schedule)
+            return f"a jour {task.source} → {task.address}"
+
+    _write_schedule_state(schedule)
+
+    with _exclusive():
+        state = read_state(task.key)
+        if state.running and not state.stale:
+            return f"{task.source} : un envoi est deja en cours"
+        # Deuxieme calcul, celui qui compte : il prend le snapshot et
+        # revalide tout. `confirm_force=False` sans condition - c'est ce
+        # parametre qui garantit qu'un envoi automatique ne detruira jamais
+        # rien a distance.
+        fresh = plan_send(task, create_snapshot=True)
+        _launch_or_undo(task, fresh, confirm_force=False)
+    return f"lance {task.source}@{fresh.send_snapshot} → {task.address} ({fresh.mode})"
+
+
+def _run_scheduled_send_guarded(task: Task, schedule: ScheduleState, now: float) -> str:
+    """Enveloppe qui garantit qu'un echec LAISSE UNE TRACE.
+
+    Sans elle, toute exception non prevue - snapshot impossible (pool plein),
+    garde-fou releve au second plan, lancement systemd refuse - remontait
+    jusqu'a `run_due_tasks`, qui la journalisait et passait a la suite.
+    L'interface et la carte Sante continuaient d'afficher « a jour » pendant
+    qu'aucun envoi ne partait plus."""
+    try:
+        return _run_scheduled_send(task, schedule, now)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Envoi planifie %s → %s en echec", task.source, task.address)
+        schedule.last_attempt_epoch = now
+        schedule.blocked_reason = f"Le dernier envoi automatique a echoue : {exc}"
+        schedule.blocked_epoch = now
+        try:
+            _write_schedule_state(schedule)
+        except OSError:
+            logger.warning("Motif de blocage non enregistre pour %s", task.key)
+        return f"ECHEC {task.source} → {task.address} : {exc}"
+
+
+def _process_task(task: Task, now: float) -> list[str]:
+    # La tache est RELUE avant d'agir. `run_due_tasks` fait un seul
+    # `list_tasks()` puis travaille sur des copies memoire, et un passage
+    # peut durer des minutes (une session SSH par controle, une par
+    # suppression distante). Sans cette relecture, un reglage enregistre
+    # entre-temps etait ignore : desactiver la retention depuis l'interface,
+    # voir la confirmation « aucune retention distante », et regarder le
+    # planificateur supprimer quand meme les snapshots trente secondes plus
+    # tard. Un retrait de replication produisait la meme chose.
+    current = get_task(task.key)
+    if current is None:
+        return []
+    if current != task:
+        task = current
+
+    report: list[str] = []
+    state = read_state(task.key)
+    if state.running and not state.stale:
+        return [f"{task.source} : envoi en cours, passage saute"]
+
+    schedule = read_schedule_state(task.key)
+
+    report.extend(_prune_and_report(task))
+
+    # La retention passe AVANT l'envoi : elle libere de la place sur la
+    # destination avant que le transfert suivant n'en demande. Elle ne
+    # tourne qu'apres un envoi reussi non encore purge, jamais pendant un
+    # envoi (le controle ci-dessus l'a deja garanti).
+    if (task.keep_remote >= MIN_REMOTE_KEEP and state.status == "success"
+            and state.finished_epoch > schedule.retention_done_epoch):
+        try:
+            destroyed = apply_remote_retention(task)
+        except ReplicationError as exc:
+            # On ne marque PAS la retention comme faite : elle sera
+            # retentee au prochain passage, quand le noeud repondra.
+            report.append(f"retention reportee {task.destination} : {exc}")
+        else:
+            schedule.retention_done_epoch = state.finished_epoch
+            schedule.last_retention_count = len(destroyed)
+            _write_schedule_state(schedule)
+            if destroyed:
+                report.append(
+                    f"retention {task.address}:{task.destination} : "
+                    f"{len(destroyed)} snapshot(s) supprime(s)"
+                )
+
+    if not task.scheduled:
+        return report
+    if not is_due(task, state, schedule, now):
+        return report
+
+    report.append(_run_scheduled_send_guarded(task, schedule, now))
+    return report
+
+
+def run_due_tasks(now: float | None = None) -> list[str]:
+    """Point d'entree du planificateur. Ne leve jamais : une replication en
+    echec ne doit pas empecher les autres de partir."""
+    moment = now if now is not None else time.time()
+    report: list[str] = []
+    for task in list_tasks():
+        try:
+            report.extend(_process_task(task, moment))
+        except Exception:  # noqa: BLE001 - la boucle ne doit jamais mourir
+            logger.exception("Replication %s → %s en echec",
+                             task.source, task.address)
+            report.append(f"ECHEC {task.source} → {task.address}")
+    return report
+
+
+# Toutes les quinze minutes, comme le planificateur de snapshots : assez fin
+# pour qu'une planification horaire ne derive pas de plus d'un quart
+# d'heure, assez lache pour que le cout (une lecture de fichier par tache,
+# une session SSH par tache echue) reste invisible.
+SCHEDULER_INTERVAL_SECONDS = 900
+
+# Deux minutes avant le premier passage - plus que les soixante secondes du
+# planificateur de snapshots. Ici il faut non seulement que ZFS ait importe
+# les pools, mais aussi que le reseau soit monte : un premier passage lance
+# trop tot conclurait « noeud injoignable » et enregistrerait un blocage
+# pour rien.
+SCHEDULER_FIRST_DELAY_SECONDS = 120
+
+_scheduler_thread = None
+
+
+def _scheduler_loop() -> None:
+    time.sleep(SCHEDULER_FIRST_DELAY_SECONDS)
+    while True:
+        try:
+            report = run_due_tasks()
+            if report:
+                logger.info("Replications planifiees : %s", " | ".join(report))
+        except Exception:  # noqa: BLE001
+            logger.exception("Passage du planificateur de replication en echec")
+        time.sleep(SCHEDULER_INTERVAL_SECONDS)
+
+
+def start_scheduler() -> bool:
+    """Demarre le planificateur en tache de fond, une seule fois.
+
+    Un thread plutot qu'un timer systemd, pour la meme raison que les
+    snapshots : ca evite d'exiger un `sudo ./install.sh` a chaque
+    installation, la mise a jour depuis l'interface suffit. Le thread est
+    `daemon` et ne retarde jamais l'arret du service ; rien n'est perdu s'il
+    meurt, puisque l'echeance se recalcule a partir des fichiers d'etat au
+    demarrage suivant.
+
+    L'envoi lui-meme, lui, ne vit PAS dans ce thread : il est detache via
+    systemd-run et survit au redemarrage du service."""
+    global _scheduler_thread
+    import threading
+
+    if os.environ.get("NAS_MANAGER_REPLICATION_SCHEDULER", "1") == "0":
+        logger.info("Planificateur de replication desactive par l'environnement")
+        return False
+    if _scheduler_thread is not None and _scheduler_thread.is_alive():
+        return False
+
+    _scheduler_thread = threading.Thread(
+        target=_scheduler_loop, name="replication-scheduler", daemon=True,
+    )
+    _scheduler_thread.start()
+    logger.info("Planificateur de replication demarre (toutes les %s s)",
+                SCHEDULER_INTERVAL_SECONDS)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Derive : etat consolide par replication (consomme par app.health)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TaskStatus:
+    task: Task
+    state: JobState
+    schedule: ScheduleState
+
+    @property
+    def never_sent(self) -> bool:
+        return not self.state.finished_epoch or self.state.status not in ("success", "failed")
+
+    @property
+    def last_success_seconds(self) -> int | None:
+        """Age du dernier envoi REUSSI, en secondes. `None` s'il n'y en a
+        jamais eu - un echec ne remet pas ce compteur a zero.
+
+        Borne a zero : une horloge qui recule rendait un age NEGATIF, donc
+        jamais superieur au seuil, donc aucune alerte - exactement au moment
+        ou la meme cause avait fige la planification."""
+        if self.state.status != "success" or not self.state.finished_epoch:
+            return None
+        return max(0, int(time.time() - self.state.finished_epoch))
+
+    @property
+    def clock_suspect(self) -> bool:
+        """Un horodatage dans le futur : l'horloge du NAS n'est pas fiable.
+
+        Ca se dit, parce que tout ce qui repose sur des durees - echeance,
+        derive - devient faux, et parce que le symptome (« plus rien ne
+        part ») ne designe pas la cause."""
+        stamps = [self.state.finished_epoch, self.state.started_epoch,
+                  self.schedule.last_attempt_epoch]
+        return any(stamp > time.time() + 300 for stamp in stamps)
+
+    @property
+    def drifted(self) -> bool:
+        """La replique est-elle trop vieille ?
+
+        Une replication sans rythme annonce (ni frequence, ni delai
+        explicite) ne derive jamais : personne ne s'est engage sur une
+        cadence, il n'y a donc pas de retard a signaler."""
+        threshold = self.task.effective_alert_seconds
+        if threshold <= 0:
+            return False
+        age = self.last_success_seconds
+        if age is None:
+            # Jamais reussi. Ce n'est une derive que si la replication est
+            # censee tourner toute seule depuis plus longtemps que le seuil.
+            if not self.task.scheduled:
+                return False
+            first = self.schedule.last_attempt_epoch
+            return bool(first) and (time.time() - first) > threshold
+        return age > threshold
+
+    @property
+    def problem(self) -> str:
+        """Une phrase, ou rien. C'est ce que la carte Sante affiche."""
+        if self.clock_suspect:
+            return "horodatage dans le futur, verifiez l'heure du serveur"
+        if self.schedule.blocked:
+            return "envoi automatique suspendu, decision attendue"
+        if self.state.status == "failed":
+            return "dernier envoi en echec"
+        if self.state.stale:
+            return "envoi bloque en cours depuis plus de trois jours"
+        if self.task.scheduled and self.last_success_seconds is None:
+            # Une replication planifiee qui n'a JAMAIS reussi comptait comme
+            # « a jour » tant que `last_attempt_epoch` valait zero, c'est-a-
+            # dire tant que le planificateur n'avait pas encore tourne.
+            return "planifiee mais jamais envoyee"
+        if self.drifted:
+            age = self.last_success_seconds
+            if age is None:
+                return "aucun envoi reussi depuis l'activation"
+            return f"dernier envoi reussi {self.state.age_label}"
+        return ""
+
+
+def task_statuses() -> list[TaskStatus]:
+    return [
+        TaskStatus(task=task, state=read_state(task.key),
+                   schedule=read_schedule_state(task.key))
+        for task in list_tasks()
+    ]
