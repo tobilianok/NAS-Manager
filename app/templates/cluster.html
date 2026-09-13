@@ -17,6 +17,18 @@
 {% if notice %}<div class="success-banner">{{ notice }}</div>{% endif %}
 
 <div class="link-card">
+  <h2><a href="/cluster/assistant">Assistant de redondance</a> — commence ici</h2>
+  <p class="stat-sub">
+    Les quatre pages ci-dessous sont utilisables seules, et c'est bien le
+    probleme : il faut savoir laquelle utiliser, dans quel ordre, avec quels
+    reglages. L'assistant les enchaine, mesure ce que le lien encaisse
+    vraiment, verifie que la destination a la place, et
+    <strong>eprouve la chaine complete sur un dataset jetable</strong> avant
+    de lui confier une seule vraie donnee.
+  </p>
+</div>
+
+<div class="link-card">
   <h2>Redondance de stockage —
     <a href="/cluster/replication">appairage</a>,
     <a href="/cluster/replication/zfs">replication</a>, puis

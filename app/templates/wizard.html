@@ -1,0 +1,393 @@
+{% extends "base.html" %}
+{% block title %}Assistant de redondance - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/cluster">Cluster</a> / <strong>Assistant</strong>{% endblock %}
+
+{% block content %}
+<h1>Assistant de redondance</h1>
+<p class="page-intro">
+  Les pieces existent — snapshots, appairage, replication, bascule. Cet
+  assistant les met bout a bout, dans l'ordre, en verifiant a chaque etape ce
+  qui ne se voit nulle part ailleurs : ce que le lien encaisse vraiment, ce
+  que la destination peut accueillir, et si la chaine complete fonctionne —
+  <strong>sur un dataset jetable, avant de confier une seule vraie donnee</strong>.
+</p>
+
+{% if error %}<div class="danger-banner">{{ error }}</div>{% endif %}
+{% if notice %}<div class="success-banner">{{ notice }}</div>{% endif %}
+
+<div class="info-panel">
+  <strong>Cet assistant ne touche a aucune donnee existante.</strong> Les seuls
+  datasets qu'il ecrit sont ceux de l'essai a blanc, qu'il cree lui-meme et
+  supprime ensuite. La mise en service, elle, ne fait qu'enchainer les
+  fonctions des pages Replication et Bascule, avec leurs garde-fous intacts.
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Etape 1 — les prerequis                                             -->
+<!-- ------------------------------------------------------------------ -->
+<div class="card">
+  <h2>1. Les prerequis</h2>
+  <p class="stat-sub">
+    Le lien tient-il, ZFS repond-il en face, les deux machines tournent-elles
+    la meme version, les horloges concordent-elles ? Chacun de ces controles
+    repond a une facon connue d'echouer plus tard, au milieu d'une
+    replication.
+  </p>
+
+  {% if not peers %}
+  <div class="warning-banner">
+    Aucun noeud appaire. Commence par la page
+    <a href="/cluster/replication">Appairage</a> : sans lien SSH, rien de ce
+    qui suit n'est possible.
+  </div>
+  {% else %}
+  <form method="post" action="/cluster/assistant/prerequis">
+    <label for="address">Noeud de secours</label>
+    <select id="address" name="address" required>
+      {% for p in peers %}
+      <option value="{{ p.address }}" {% if address == p.address %}selected{% endif %}>
+        {{ p.name }} — {{ p.address }}
+      </option>
+      {% endfor %}
+    </select>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Verifier les prerequis</button>
+    </div>
+  </form>
+  {% endif %}
+
+  {% if prereq %}
+  <table class="data-table">
+    <thead><tr><th>Controle</th><th>Etat</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for c in prereq.checks %}
+      <tr>
+        <td>{{ c.label }}</td>
+        <td>
+          {% if c.ok is true %}<span class="badge badge-ok">ok</span>
+          {% elif c.ok is none %}<span class="badge">a verifier</span>
+          {% elif c.blocking %}<span class="badge badge-warn">bloquant</span>
+          {% else %}<span class="badge badge-warn">attention</span>{% endif %}
+        </td>
+        <td class="stat-sub">{{ c.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if prereq.usable %}
+  <div class="result-card">
+    <span class="badge badge-ok">franchi</span>
+    Le lien vers <span class="mono">{{ prereq.address }}</span> est utilisable.
+  </div>
+  {% else %}
+  <div class="danger-banner">
+    Un controle bloquant a echoue. Corrige-le avant de continuer : les etapes
+    suivantes mesureraient et proposeraient des choses sur un lien qui ne
+    tiendra pas.
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Etape 2 — la mesure du lien                                         -->
+<!-- ------------------------------------------------------------------ -->
+{% if prereq and prereq.usable %}
+<div class="card">
+  <h2>2. Ce que le lien encaisse</h2>
+  <p class="stat-sub">
+    Latence et debit mesures pour de vrai, par le meme chemin qu'un envoi ZFS
+    (un flux pousse dans <span class="mono">ssh</span>). Rien n'est ecrit sur
+    le noeud distant : le flux part dans <span class="mono">/dev/null</span>.
+    Une vitesse de carte annoncee ne dit rien du debit reel — le chiffrement,
+    la compression et la MTU comptent autant.
+  </p>
+  <form method="post" action="/cluster/assistant/mesure">
+    <input type="hidden" name="address" value="{{ address }}">
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Mesurer le lien</button>
+    </div>
+    <div class="stat-sub">Prend quelques secondes, et occupe le lien pendant ce temps.</div>
+  </form>
+
+  {% if measure %}
+  {% if measure.ok %}
+  <div class="result-card">
+    <span class="badge badge-ok">mesure</span>
+    Latence <strong>{{ measure.latency_ms }} ms</strong>,
+    debit <strong>{{ measure.throughput_label }}</strong>
+    ({{ format_bytes(measure.sample_bytes) }} en {{ measure.seconds }} s).
+  </div>
+  {% else %}
+  <div class="danger-banner">{{ measure.error }}</div>
+  {% endif %}
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Etapes 3 et 4 — scan et recommandation                              -->
+<!-- ------------------------------------------------------------------ -->
+{% if measure and measure.ok %}
+<div class="card">
+  <h2>3. Ce qu'il y a a repliquer</h2>
+  <form method="post" action="/cluster/assistant/scan">
+    <input type="hidden" name="address" value="{{ address }}">
+    <input type="hidden" name="latency_ms" value="{{ measure.latency_ms }}">
+    <input type="hidden" name="throughput" value="{{ measure.throughput_bytes_per_s }}">
+    <label for="pool">Pool a proteger</label>
+    <select id="pool" name="pool" required>
+      {% for p in pools %}
+      <option value="{{ p }}" {% if pool == p %}selected{% endif %}>{{ p }}</option>
+      {% endfor %}
+    </select>
+    <div class="stat-sub">
+      Les pools systeme ne sont pas proposes : ce sont eux qui font tourner
+      NAS Manager.
+    </div>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Analyser ce pool</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+{% if scan %}
+<div class="card">
+  <h2>Resultat de l'analyse — <span class="mono">{{ scan.pool }}</span></h2>
+
+  {% for b in scan.blockers %}
+  <div class="danger-banner"><strong>Bloque.</strong> {{ b }}</div>
+  {% endfor %}
+  {% for w in scan.warnings %}
+  <div class="warning-banner">{{ w }}</div>
+  {% endfor %}
+
+  {% if scan.datasets %}
+  <table class="data-table">
+    <thead>
+      <tr><th>Dataset</th><th>Contenu</th><th>Taille</th><th>Point d'attention</th></tr>
+    </thead>
+    <tbody>
+      {% for d in scan.datasets %}
+      <tr>
+        <td class="mono">{{ d.dataset }}</td>
+        <td>
+          {% for s in d.shares %}<span class="badge">partage {{ s }}</span> {% endfor %}
+          {% for s in d.stacks %}<span class="badge">stack {{ s }}</span> {% endfor %}
+          {% if d.already_replicated %}<span class="badge badge-ok">deja replique</span>{% endif %}
+        </td>
+        <td>{{ format_bytes(d.used_bytes) }}</td>
+        <td class="stat-sub">
+          {% if d.problem %}<span class="badge badge-warn">{{ d.problem }}</span>{% endif %}
+          {% for c in d.children %}<div class="mono">{{ c }}</div>{% endfor %}
+          {% for a in d.absolute_paths %}<div class="mono">{{ a }}</div>{% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="stat-sub">
+    Total a transmettre : <strong>{{ format_bytes(scan.total_bytes) }}</strong>.
+    Les datasets enfants sont comptes separement — un envoi ZFS ne les
+    transmet pas avec leur parent, il leur faut leur propre replication.
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if reco %}
+<div class="card">
+  <h2>4. Ce que je recommande</h2>
+  {% for r in reco.reasons %}<p>{{ r }}</p>{% endfor %}
+  {% for w in reco.warnings %}<div class="warning-banner">{{ w }}</div>{% endfor %}
+
+  {% if reco.possible %}
+  <div class="result-card">
+    <span class="badge badge-ok">propose</span>
+    Destination <span class="mono">{{ reco.destination_pool }}</span>,
+    cadence <strong>{{ reco.frequency_label|lower }}</strong>,
+    {{ reco.keep_remote }} snapshots conserves a destination.
+  </div>
+  <div class="stat-sub">
+    La cadence tient compte du <strong>pire cas</strong> : une chaine
+    incrementale rompue impose un envoi complet. Une cadence plus rapide que
+    ce qu'un envoi complet demande garantit qu'apres le premier incident, la
+    replication ne rattrapera jamais son retard.
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Etape 5 — l'essai a blanc                                           -->
+<!-- ------------------------------------------------------------------ -->
+{% if reco and reco.possible %}
+<div class="card">
+  <h2>5. L'essai a blanc</h2>
+  <p class="stat-sub">
+    Un dataset jetable est cree ici, rempli d'un temoin unique, replique vers
+    <span class="mono">{{ reco.destination_pool }}</span>, monte la-bas, et son
+    contenu relu pour verifier qu'il est arrive intact. Puis il est supprime
+    des deux cotes. <strong>Aucune vraie donnee n'est en jeu</strong>, et c'est
+    le seul moyen d'eprouver la chaine complete avant de lui confier quoi que
+    ce soit.
+  </p>
+  <form method="post" action="/cluster/assistant/essai">
+    <input type="hidden" name="address" value="{{ address }}">
+    <input type="hidden" name="pool" value="{{ scan.pool }}">
+    <input type="hidden" name="destination_pool" value="{{ reco.destination_pool }}">
+    <input type="hidden" name="latency_ms" value="{{ measure.latency_ms if measure else 0 }}">
+    <input type="hidden" name="throughput"
+           value="{{ measure.throughput_bytes_per_s if measure else 0 }}">
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Lancer l'essai a blanc</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+{% if trial and trial.steps %}
+<div class="card">
+  <h2>Essai du {{ trial.started_at }}</h2>
+  <table class="data-table">
+    <thead><tr><th>Etape</th><th>Etat</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for s in trial.steps %}
+      <tr>
+        <td>{{ s.label }}</td>
+        <td>
+          {% if s.ok is true %}<span class="badge badge-ok">ok</span>
+          {% elif s.ok is none %}<span class="badge">sans objet</span>
+          {% else %}<span class="badge badge-warn">echec</span>{% endif %}
+        </td>
+        <td class="stat-sub mono">{{ s.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if trial.leftovers %}
+  <div class="danger-banner">
+    <strong>Le dataset jetable n'a pas ete entierement supprime.</strong>
+    A faire a la main, sinon il occupera de la place et brouillera la lecture
+    du pool dans six mois :
+    <ul>{% for l in trial.leftovers %}<li class="mono">{{ l }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+  {% if trial.ok %}
+  <div class="result-card">
+    <span class="badge badge-ok">chaine validee</span>
+    Snapshot, envoi, reception, marquage, lecture seule et relecture du
+    contenu : tout a fonctionne entre cette machine et
+    <span class="mono">{{ trial.address }}</span>.
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Etape 6 — la mise en service                                        -->
+<!-- ------------------------------------------------------------------ -->
+{# L'essai doit avoir porte sur CE lien : il valide un lien, pas une
+   intention. Le module le reverifie de son cote — ceci evite seulement
+   d'afficher un formulaire qui serait refuse. #}
+{% if trial and trial.ok and trial.address == address and scan and reco and reco.possible %}
+<div class="card">
+  <h2>6. Mettre ce pool en service</h2>
+  <p class="stat-sub">
+    Cree une replication par dataset, pose la cadence, cree le groupe de
+    bascule et depose le manifeste sur le noeud de secours.
+    <strong>Un pool a la fois</strong> : un premier envoi complet occupe le
+    lien, les lancer tous ensemble les ralentit tous.
+  </p>
+  <form method="post" action="/cluster/assistant/mise-en-service">
+    <input type="hidden" name="address" value="{{ address }}">
+    <input type="hidden" name="pool" value="{{ scan.pool }}">
+
+    <label for="destination_pool">Pool de destination sur {{ address }}</label>
+    <select id="destination_pool" name="destination_pool" required>
+      {% for p in scan.usable_destinations %}
+      <option value="{{ p }}" {% if p == reco.destination_pool %}selected{% endif %}>
+        {{ p }} — {{ format_bytes(scan.remote_pools.get(p, 0)) }} libres
+      </option>
+      {% endfor %}
+    </select>
+
+    <label for="frequency">Cadence</label>
+    <select id="frequency" name="frequency">
+      <option value="">Manuel uniquement</option>
+      {% for code, f in frequencies.items() %}
+      <option value="{{ code }}" {% if code == reco.frequency %}selected{% endif %}>
+        {{ f.label }}
+      </option>
+      {% endfor %}
+    </select>
+
+    <label for="keep_remote">Snapshots conserves a destination</label>
+    <input type="number" id="keep_remote" name="keep_remote" min="2" max="500"
+           value="{{ reco.keep_remote }}">
+
+    <label for="group_name">Nom du groupe de bascule</label>
+    <input type="text" id="group_name" name="group_name" required
+           value="{{ scan.pool }}" pattern="[a-zA-Z][a-zA-Z0-9_-]{0,31}">
+
+    <label for="label">Etiquette (facultatif)</label>
+    <input type="text" id="label" name="label" placeholder="Redondance vers le NAS du garage">
+
+    <label for="confirm_password">Votre mot de passe</label>
+    <input type="password" id="confirm_password" name="confirm_password" required>
+    <div class="stat-sub">
+      Exige parce que la retention distante arme une suppression automatique
+      de snapshots sur l'autre machine.
+    </div>
+
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Mettre en service</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+{% if commission %}
+<div class="card">
+  <h2>Mise en service de <span class="mono">{{ commission.pool }}</span></h2>
+  {% if commission.tasks %}
+  <p>Replications creees :</p>
+  <ul>{% for t in commission.tasks %}<li class="mono">{{ t }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if commission.skipped %}
+  <p class="stat-sub">Deja en place, laissees telles quelles :
+    {{ commission.skipped|join(', ') }}</p>
+  {% endif %}
+  {% if commission.group %}
+  <div class="result-card">
+    <span class="badge badge-ok">groupe cree</span>
+    « {{ commission.group }} »
+    {% if commission.manifest_pushed %}, manifeste depose sur {{ commission.peer }}{% endif %}.
+    Suite sur la page <a href="/cluster/failover">Bascule</a>.
+  </div>
+  {% endif %}
+  {% for p in commission.problems %}
+  <div class="warning-banner">{{ p }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if groups %}
+<div class="card">
+  <h2>Deja en service</h2>
+  <ul>
+    {% for g in groups %}
+    <li>
+      <span class="mono">{{ g.pool }}</span> vers
+      <span class="mono">{{ g.peer }}</span> — groupe « {{ g.name }} »
+    </li>
+    {% endfor %}
+  </ul>
+  <div class="stat-sub">
+    Ces pools sont deja couverts. L'assistant sert a en ajouter un autre, ou a
+    reverifier un lien apres un changement de reseau.
+  </div>
+</div>
+{% endif %}
+{% endblock %}

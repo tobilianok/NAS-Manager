@@ -40,7 +40,12 @@ remonte à trop longtemps — et la v1.16.0 ajoute les **groupes de bascule** :
 un pool, ses partages et ses stacks forment une unité qui dit ce qui ne
 repartirait pas en cas de panne, et qui peut être reprise sur l'autre machine,
 proprement quand elle répond encore, en urgence sinon — jamais les deux à la
-fois.
+fois. La v1.17.0 ferme le chantier par un **assistant de redondance**
+(Cluster → Assistant) : il mesure ce que le lien encaisse vraiment, dit ce que
+la destination peut accueillir, recommande une cadence qui laisse la place à
+un envoi complet — le pire cas, celui qu'une chaîne rompue impose — puis
+**éprouve la chaîne entière sur un dataset jetable** avant qu'une seule vraie
+donnée soit confiée au lien.
 Le tout s'installe par un script unique après une installation fraîche
 d'Ubuntu Server 26.04 LTS.
 

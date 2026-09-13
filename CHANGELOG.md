@@ -13,6 +13,119 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.17.0 — 2026-09-13
+
+**L'assistant de redondance.** Étape 3, et la plus utile de tout le chantier :
+les pièces existaient — snapshots, appairage, réplication, bascule — et
+c'était bien le problème. Il fallait savoir laquelle utiliser, dans quel
+ordre, avec quels réglages, et vérifier une dizaine de choses qui ne se
+voyaient nulle part. Cette version rend l'ensemble utilisable par quelqu'un
+qui n'a pas suivi la construction.
+
+Une nouvelle page, **Cluster → Assistant**, en six étapes dont chacune reste
+fermée tant que la précédente n'a pas été franchie.
+
+### 1. Les prérequis, en premier
+
+Les contrôles du lien existaient déjà, mais au milieu de la page Appairage,
+après coup. Ils viennent maintenant avant tout le reste, parce qu'un seul
+d'entre eux qui échoue rend tout ce qui suit inutile. Les bloquants sont
+séparés des avertissements : une horloge décalée mérite qu'on la signale, un
+ZFS absent en face arrête tout.
+
+### 2. Ce que le lien encaisse — mesuré, pas supposé
+
+**C'est le chiffre qui manquait partout ailleurs.** Latence et débit sont
+mesurés pour de vrai, par le même chemin qu'un envoi ZFS : un flux poussé
+dans `ssh`. Une vitesse de carte annoncée ne dit rien du débit réel — le
+chiffrement, la compression et la MTU comptent autant. Rien n'est écrit sur
+le nœud distant : l'échantillon part dans `/dev/null`.
+
+### 3. Ce qu'il y a à répliquer, et si la destination peut l'accueillir
+
+Le scan rassemble ce qui était éparpillé : les datasets qui portent un
+partage ou une stack, les **enfants** (qu'un `zfs send` sans `-R` ne transmet
+pas), les **chemins absolus** dans les composes (qui ne survivent pas à une
+bascule), et la place libre en face. Le faire **avant** de construire évite
+de découvrir après un premier envoi de six heures que la destination était
+trop petite. Une lecture impossible du nœud distant reste un point bloquant,
+jamais un « rien là-bas » — la leçon de la v1.14.0.
+
+### 4. Une cadence calculée sur le pire cas
+
+La règle centrale : la cadence doit laisser la place à un **envoi complet**,
+pas seulement à un incrémental. C'est le pire cas, et il arrive — une chaîne
+rompue y ramène. Proposer une cadence horaire sur un dataset dont l'envoi
+complet prend six heures, c'est garantir qu'après le premier incident la
+réplication ne rattrapera jamais son retard, en saturant le lien en
+permanence. L'assistant descend donc dans l'ordre des cadences jusqu'à
+trouver celle où un envoi complet tient largement, et le dit avec les
+chiffres qui l'y ont mené.
+
+### 5. L'essai à blanc — le cœur de cette version
+
+Un dataset **jetable** est créé ici, marqué d'une propriété ZFS qui
+n'appartient qu'à l'assistant, rempli d'un témoin unique, envoyé, reçu,
+marqué, passé en lecture seule, **monté** à l'arrivée, et son contenu relu
+pour vérifier qu'il est arrivé intact. Puis il est détruit des deux côtés.
+
+C'est le seul endroit du projet où la chaîne entière s'exécute pour de vrai
+**sans qu'une seule donnée réelle soit en jeu**. L'étape de montage y est
+délibérée : c'est le défaut qui rendait toute la bascule inopérante en
+v1.16.0, et l'essai doit le mettre en évidence s'il se reproduit.
+
+Les garde-fous du nettoyage exigent **deux** conditions pour détruire quoi que
+ce soit — le nom exactement au format des essais **et** la propriété locale
+(non héritée) posée par l'assistant. Ni `zfs destroy -r`, ni destruction sur
+la foi d'un nom. Le nettoyage tourne quoi qu'il arrive, y compris après un
+essai raté : c'est là qu'il compte le plus.
+
+### 6. La mise en service, un pool à la fois
+
+Réplications, cadence, groupe de bascule et dépôt du manifeste, dans cet
+ordre, avec les valeurs recommandées pré-remplies. Un pool à la fois parce
+qu'un premier envoi complet occupe le lien : les lancer tous ensemble les
+ralentit tous. L'assistant **n'invente aucun garde-fou** — il enchaîne les
+fonctions déjà livrées et déjà relues, avec les leurs intacts.
+
+### Ce que la revue adverse a trouvé avant la livraison
+
+Six défauts, dont trois rendaient la version inutilisable :
+
+- **`zfs send` ne transmet aucune propriété.** La marque posée sur le dataset
+  d'essai n'arrivait donc pas sur la réplique, le garde-fou de nettoyage
+  refusait d'agir, et l'assistant laissait un dataset derrière lui à **chaque
+  essai** tout en annonçant l'avoir supprimé. La réplique est désormais
+  marquée à distance immédiatement après la réception, avant tout le reste :
+  si une étape intermédiaire échoue, le nettoyage doit quand même pouvoir
+  faire son travail.
+- **Les étapes de nettoyage comptaient dans le verdict de l'essai.** Une
+  chaîne parfaitement fonctionnelle passait pour un échec dès que le ménage
+  était imparfait — et fermait la mise en service sans raison. Chaîne et
+  nettoyage sont maintenant jugés séparément.
+- **L'étape 6 ne s'ouvrait jamais.** Après un essai réussi, la page repartait
+  sans scan ni recommandation : l'assistant était un cul-de-sac. Le scan est
+  refait à ce moment-là, ce qui revalide au passage la place disponible à
+  destination juste avant de construire.
+- **Le message de fin annonçait « supprimé des deux côtés » sans condition.**
+  Il nomme désormais ce qui reste à supprimer à la main, quand il en reste.
+- **Deux stacks sur un même dataset** : la seconde effaçait les chemins
+  absolus de la première, faisant disparaître de l'écran exactement ceux qui
+  ne survivent pas à une bascule.
+- **La mise en service ne vérifiait pas qu'un essai avait réussi.** C'est
+  pourtant la promesse de l'assistant. Elle exige maintenant un essai réussi
+  **vers ce nœud** — l'essai valide un lien, pas une intention — et l'essai
+  lui-même refuse d'écrire dans le pool de démarrage du voisin, même par une
+  requête forgée.
+
+### Tests
+
+**1719 tests automatisés** (contre 1633 en v1.16.0), dont 54 sur le module de
+l'assistant et 31 sur ses routes. Les plus durs portent sur les garde-fous de
+destruction : un nom seul ne suffit pas, une marque héritée non plus.
+
+---
+
 ## v1.16.0 — 2026-09-06
 
 **Les groupes de bascule.** Étape 2d, la dernière de la redondance de stockage

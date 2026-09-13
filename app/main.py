@@ -27,7 +27,7 @@ from app import (
     sysupdate, appupdate, liverun, gitauth, diskwipe, smarttests, diskjobs,
     power, servicerestart, sensors, diskage, timezone, notifications,
     systemsettings, fancontrol, cluster, snapshots as snapshots_module,
-    replication, zfsreplicate, failover,
+    replication, zfsreplicate, failover, setupwizard,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -3609,3 +3609,199 @@ def failover_forget(request: Request, key: str, confirm_password: str = Form(...
     except failover.FailoverError as exc:
         return _failover_response(request, username, error=str(exc), status_code=400)
     return _failover_response(request, username, notice=message)
+
+
+# ---------------------------------------------------------------------------
+# Assistant de configuration de la redondance (v1.17.0)
+# ---------------------------------------------------------------------------
+
+def _wizard_context(request: Request, username: str, error: str | None = None,
+                    notice: str | None = None, **extra) -> dict:
+    protected = snapshots_module.system_pool_names()
+    contexte = {
+        "request": request,
+        "username": username,
+        "peers": replication.list_peers(),
+        "pools": [p.name for p in zfs.list_pools() if p.name not in protected],
+        "frequencies": zfsreplicate.FREQUENCIES,
+        "trial": setupwizard.last_trial(),
+        "groups": failover.list_groups(),
+        "format_bytes": sysstats.format_bytes,
+        "prereq": None, "measure": None, "scan": None, "reco": None,
+        "commission": None, "address": "", "pool": "",
+        "error": error, "notice": notice,
+    }
+    contexte.update(extra)
+    return contexte
+
+
+def _wizard_response(request: Request, username: str, error: str | None = None,
+                     notice: str | None = None, status_code: int = 200, **extra):
+    return templates.TemplateResponse(
+        "wizard.html",
+        _wizard_context(request, username, error=error, notice=notice, **extra),
+        status_code=status_code,
+    )
+
+
+@app.get("/cluster/assistant", response_class=HTMLResponse)
+def wizard_page(request: Request, username: str = Depends(require_login)):
+    return _wizard_response(request, username)
+
+
+@app.post("/cluster/assistant/prerequis")
+def wizard_prerequisites(request: Request, address: str = Form(...),
+                         username: str = Depends(require_login)):
+    """Etape 1. Ces controles existaient au milieu de la page Appairage ;
+    ici ils viennent en premier, parce qu'un seul qui echoue rend tout le
+    reste inutile."""
+    try:
+        prereq = setupwizard.check_prerequisites(address)
+    except replication.ReplicationError as exc:
+        return _wizard_response(request, username, error=str(exc), status_code=400)
+    return _wizard_response(request, username, prereq=prereq, address=prereq.address)
+
+
+@app.post("/cluster/assistant/mesure")
+def wizard_measure(request: Request, address: str = Form(...),
+                   username: str = Depends(require_login)):
+    """Etape 2. Le debit est mesure pour de vrai, par le meme chemin qu'un
+    envoi ZFS. Rien n'est ecrit en face : le flux part dans /dev/null."""
+    try:
+        prereq = setupwizard.check_prerequisites(address)
+        if not prereq.usable:
+            return _wizard_response(
+                request, username, prereq=prereq, address=address, status_code=400,
+                error="Les prerequis ne sont pas remplis : mesurer un debit sur "
+                      "un lien qui ne tiendra pas n'apprendrait rien.")
+        measure = setupwizard.measure_link(address)
+    except replication.ReplicationError as exc:
+        return _wizard_response(request, username, error=str(exc), status_code=400)
+    return _wizard_response(request, username, prereq=prereq, measure=measure,
+                            address=address)
+
+
+@app.post("/cluster/assistant/scan")
+def wizard_scan(request: Request, address: str = Form(...), pool: str = Form(...),
+                latency_ms: str = Form("0"), throughput: str = Form("0"),
+                username: str = Depends(require_login)):
+    """Etapes 3 et 4. Le scan et la recommandation vont ensemble : une
+    cadence proposee sans connaitre le volume ne serait qu'une supposition."""
+    try:
+        scan = setupwizard.scan_storage(pool, address)
+    except (setupwizard.WizardError, replication.ReplicationError) as exc:
+        return _wizard_response(request, username, error=str(exc), status_code=400)
+
+    # Le debit mesure a l'etape precedente revient par le formulaire plutot
+    # que d'etre remesure : la mesure prend plusieurs secondes et occupe le
+    # lien, il n'y a aucune raison de la refaire a chaque scan.
+    measure = setupwizard.LinkMeasure(address=address)
+    try:
+        measure.latency_ms = float(latency_ms or 0)
+        measure.throughput_bytes_per_s = float(throughput or 0)
+    except ValueError:
+        measure.error = "Mesure de lien illisible : relance l'etape 2."
+    reco = setupwizard.recommend(scan, measure)
+    return _wizard_response(request, username, scan=scan, reco=reco,
+                            measure=measure, address=address, pool=pool)
+
+
+def _wizard_replay(address: str, pool: str, latency_ms: str, throughput: str):
+    """Reconstruit le scan, la mesure et la recommandation a partir de ce que
+    le formulaire rapporte.
+
+    Sans ca, chaque etape repartirait d'une page vide : l'essai a blanc
+    reussirait et l'ecran de mise en service ne s'ouvrirait jamais, faute de
+    savoir quoi y mettre. Le scan est refait pour de vrai plutot que
+    transporte dans des champs caches - c'est quelques secondes, et ca
+    revalide la place disponible a destination juste avant de construire."""
+    measure = setupwizard.LinkMeasure(address=address)
+    try:
+        measure.latency_ms = float(latency_ms or 0)
+        measure.throughput_bytes_per_s = float(throughput or 0)
+    except ValueError:
+        measure.error = "Mesure de lien illisible : relance l'etape 2."
+    try:
+        scan = setupwizard.scan_storage(pool, address)
+    except (setupwizard.WizardError, replication.ReplicationError):
+        return measure, None, None
+    return measure, scan, setupwizard.recommend(scan, measure)
+
+
+@app.post("/cluster/assistant/essai")
+def wizard_trial(request: Request, address: str = Form(...), pool: str = Form(...),
+                 destination_pool: str = Form(...), latency_ms: str = Form("0"),
+                 throughput: str = Form("0"),
+                 username: str = Depends(require_login)):
+    """Etape 5, l'essai a blanc. Un dataset jetable, cree ici, replique,
+    verifie a l'arrivee, puis detruit des deux cotes."""
+    try:
+        essai = setupwizard.run_trial(pool, address, destination_pool)
+    except (setupwizard.WizardError, replication.ReplicationError) as exc:
+        return _wizard_response(request, username, error=str(exc), status_code=400,
+                                address=address, pool=pool)
+    if not essai.ok:
+        rate = essai.failed
+        # Volontairement sans scan ni recommandation : un essai rate ne doit
+        # rouvrir aucune des etapes suivantes.
+        return _wizard_response(
+            request, username, trial=essai, address=address, pool=pool,
+            status_code=400,
+            error=("L'essai a echoue a l'etape « "
+                   + (rate.label if rate else "inconnue") + " » : "
+                   + (rate.detail if rate else "")
+                   + " Rien n'a ete mis en service."))
+    measure, scan, reco = _wizard_replay(address, pool, latency_ms, throughput)
+    if scan is None:
+        return _wizard_response(
+            request, username, trial=essai, address=address, pool=pool,
+            measure=measure, status_code=400,
+            error="L'essai a reussi, mais le pool n'a pas pu etre relu pour "
+                  "preparer la mise en service. Relance l'analyse (etape 3).")
+    notice = ("Essai reussi : la chaine complete fonctionne entre ces deux "
+              "machines.")
+    if essai.leftovers:
+        # Jamais « supprime des deux cotes » quand ce n'est pas le cas : un
+        # dataset d'essai oublie occupe de la place et brouille la lecture du
+        # pool des mois plus tard.
+        return _wizard_response(
+            request, username, trial=essai, address=address, pool=pool,
+            measure=measure, scan=scan, reco=reco, notice=notice,
+            error="Le dataset jetable n'a PAS pu etre entierement supprime — "
+                  "a faire a la main : " + " | ".join(essai.leftovers))
+    return _wizard_response(
+        request, username, trial=essai, address=address, pool=pool,
+        measure=measure, scan=scan, reco=reco,
+        notice=notice + " Le dataset jetable a ete supprime des deux cotes.")
+
+
+@app.post("/cluster/assistant/mise-en-service")
+def wizard_commission(request: Request, address: str = Form(...), pool: str = Form(...),
+                      destination_pool: str = Form(...), frequency: str = Form(""),
+                      keep_remote: str = Form("0"), group_name: str = Form(...),
+                      label: str = Form(""), confirm_password: str = Form(...),
+                      username: str = Depends(require_login)):
+    """Etape 6. Un pool a la fois : un premier envoi complet occupe le lien,
+    les lancer tous ensemble les ralentit tous."""
+    try:
+        keep = int(keep_remote or 0)
+    except ValueError:
+        keep = 0
+    try:
+        rapport = setupwizard.commission_pool(
+            pool, address, destination_pool, frequency, keep, group_name,
+            username=username, password=confirm_password, label=label)
+    except (setupwizard.WizardError, failover.FailoverError,
+            zfsreplicate.ReplicationError, replication.ReplicationError) as exc:
+        return _wizard_response(request, username, error=str(exc), status_code=400,
+                                address=address, pool=pool)
+    detail = (f"Pool « {pool} » mis en service vers {address} : "
+              f"{len(rapport.tasks)} replication(s) creee(s), groupe de bascule "
+              f"« {rapport.group or '—'} »"
+              + (", manifeste depose." if rapport.manifest_pushed else "."))
+    if rapport.problems:
+        return _wizard_response(request, username, commission=rapport,
+                                address=address, pool=pool, notice=detail,
+                                error=" | ".join(rapport.problems))
+    return _wizard_response(request, username, commission=rapport,
+                            address=address, pool=pool, notice=detail)

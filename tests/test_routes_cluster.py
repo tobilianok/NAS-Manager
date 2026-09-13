@@ -279,3 +279,11 @@ def test_cluster_page_requires_login():
     with TestClient(main.app) as c:
         resp = c.get("/cluster", follow_redirects=False)
         assert resp.status_code in (302, 303, 307, 401)
+
+
+def test_the_cluster_page_leads_to_the_wizard(client):
+    """L'assistant est le point d'entree de la redondance : une page que
+    personne ne peut atteindre ne sert a rien."""
+    body = client.get("/cluster").text
+    assert '/cluster/assistant' in body
+    assert "Assistant de redondance" in body
