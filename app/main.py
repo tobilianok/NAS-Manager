@@ -27,7 +27,7 @@ from app import (
     sysupdate, appupdate, liverun, gitauth, diskwipe, smarttests, diskjobs,
     power, servicerestart, sensors, diskage, timezone, notifications,
     systemsettings, fancontrol, cluster, snapshots as snapshots_module,
-    replication, zfsreplicate, failover, setupwizard,
+    replication, zfsreplicate, failover, setupwizard, quorum,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -102,6 +102,16 @@ def _start_replication_scheduler() -> None:
     lui-meme reste detache via systemd-run pour survivre au redemarrage du
     service."""
     zfsreplicate.start_scheduler()
+
+
+@app.on_event("startup")
+def _start_quorum_watchdog() -> None:
+    """Le chien de garde du quorum : il renouvelle le bail du proprietaire,
+    l'efface s'il se decouvre isole, et reprend un groupe abandonne quand
+    toutes les conditions sont reunies. Fil interne, comme les deux
+    planificateurs ci-dessus, et pour la meme raison. Sans temoin enregistre
+    il ne fait rien du tout - le comportement reste celui de la v1.16.0."""
+    quorum.start_watchdog()
 
 
 @app.on_event("startup")
@@ -3567,6 +3577,8 @@ def failover_promote(request: Request, key: str, confirm_password: str = Form(..
              "key": key, "error": str(exc)},
             status_code=400,
         )
+    manifeste_promu = failover.get_manifest(key) or {}
+    _claim_lease_after(report.group, str(manifeste_promu.get("pool", "")))
     detail = (f"Bascule {report.mode} du groupe « {report.group} » : "
               f"{len(report.promoted_datasets)} dataset(s) promus, "
               f"{len(report.adopted_shares)} partage(s) republies, "
@@ -3592,6 +3604,8 @@ def failover_readopt(request: Request, name: str, confirm_password: str = Form(.
         report = failover.readopt_group(name, username, confirm_password)
     except failover.FailoverError as exc:
         return _failover_response(request, username, error=str(exc), status_code=400)
+    groupe_repris = failover.get_group(name)
+    _claim_lease_after(name, groupe_repris.pool if groupe_repris else "")
     detail = (f"Groupe repris ici : {len(report.readonly_datasets)} dataset(s) "
               f"rendus inscriptibles, {len(report.removed_shares)} partage(s) "
               f"republies, {len(report.stopped_stacks)} stack(s) redemarrees.")
@@ -3599,6 +3613,26 @@ def failover_readopt(request: Request, name: str, confirm_password: str = Form(.
         return _failover_response(request, username, notice=detail,
                                   error=" | ".join(report.problems))
     return _failover_response(request, username, notice=detail)
+
+
+def _claim_lease_after(group: str, pool: str) -> None:
+    """Apres une reprise decidee par un humain, ce noeud devient le detenteur
+    legitime du groupe : il prend le bail, meme si l'ancien proprietaire en
+    detient encore un expire.
+
+    Sans ce geste, le chien de garde verrait au tour suivant un bail au nom
+    de quelqu'un d'autre et conclurait a une eviction — il arreterait aussitot
+    ce qu'un humain vient de remettre en service. Ne leve jamais : le quorum
+    est un supplement de surete, il ne doit pas faire echouer une bascule qui
+    a abouti."""
+    try:
+        if quorum.get_witness() is None:
+            return
+        verdict, _ = quorum.claim_lease(group, pool=pool)
+        logger.info("Bail du groupe « %s » apres reprise manuelle : %s",
+                    group, verdict)
+    except Exception:  # noqa: BLE001
+        logger.exception("Bail du groupe « %s » non pris apres reprise", group)
 
 
 @app.post("/cluster/failover/incoming/{key}/forget")
@@ -3805,3 +3839,144 @@ def wizard_commission(request: Request, address: str = Form(...), pool: str = Fo
                                 error=" | ".join(rapport.problems))
     return _wizard_response(request, username, commission=rapport,
                             address=address, pool=pool, notice=detail)
+
+
+# ---------------------------------------------------------------------------
+# Quorum, temoin et bascule automatique (v1.18.0)
+# ---------------------------------------------------------------------------
+
+def _quorum_context(request: Request, username: str, error: str | None = None,
+                    notice: str | None = None, **extra) -> dict:
+    temoin = quorum.get_witness()
+    contexte = {
+        "request": request,
+        "username": username,
+        "witness": temoin,
+        "groups": quorum.overview(witness=temoin) if temoin else [],
+        "orphan_groups": [] if temoin else _quorum_orphans(),
+        "identity": quorum._local_identity(),
+        "defaults": {
+            "lease_expiry": quorum.LEASE_EXPIRY_DEFAULT,
+            "max_replica_age": quorum.MAX_REPLICA_AGE_DEFAULT,
+            "cooldown_hours": quorum.PROMOTION_COOLDOWN // 3600,
+            "ports": quorum.SERVICE_PORTS,
+        },
+        "report": None, "decisions": {},
+        "error": error, "notice": notice,
+    }
+    contexte.update(extra)
+    return contexte
+
+
+def _quorum_orphans() -> list[str]:
+    """Groupes suivis par la bascule alors qu'aucun temoin n'arbitre."""
+    noms = {g.name for g in failover.list_groups()}
+    noms |= {str(m.get("group", "")) for m in failover.list_manifests()}
+    return sorted(n for n in noms if n)
+
+
+def _quorum_response(request: Request, username: str, error: str | None = None,
+                     notice: str | None = None, status_code: int = 200, **extra):
+    return templates.TemplateResponse(
+        "quorum.html",
+        _quorum_context(request, username, error=error, notice=notice, **extra),
+        status_code=status_code,
+    )
+
+
+@app.get("/cluster/quorum", response_class=HTMLResponse)
+def quorum_page(request: Request, username: str = Depends(require_login)):
+    return _quorum_response(request, username)
+
+
+@app.post("/cluster/quorum/temoin")
+def quorum_set_witness(request: Request, address: str = Form(...),
+                       directory: str = Form(...), user: str = Form("root"),
+                       lease_expiry: str = Form(""), label: str = Form(""),
+                       confirm_password: str = Form(...),
+                       username: str = Depends(require_login)):
+    try:
+        temoin = quorum.set_witness(address, directory, user, lease_expiry,
+                                    label, username, confirm_password)
+    except (quorum.QuorumError, replication.ReplicationError) as exc:
+        return _quorum_response(request, username, error=str(exc), status_code=400)
+    return _quorum_response(
+        request, username,
+        notice=f"Temoin enregistre : {temoin.target}, dossier "
+               f"{temoin.directory}. Teste-le, puis enregistre EXACTEMENT le "
+               "meme temoin sur le noeud de secours — un temoin que lui seul "
+               "ne voit pas l'empecherait de reprendre.")
+
+
+@app.post("/cluster/quorum/temoin/test")
+def quorum_test_witness(request: Request, username: str = Depends(require_login)):
+    try:
+        rapport = quorum.test_witness()
+    except quorum.QuorumError as exc:
+        return _quorum_response(request, username, error=str(exc), status_code=400)
+    return _quorum_response(request, username, report=rapport)
+
+
+@app.post("/cluster/quorum/temoin/retirer")
+def quorum_clear_witness(request: Request, confirm_password: str = Form(...),
+                         username: str = Depends(require_login)):
+    try:
+        message = quorum.clear_witness(username, confirm_password)
+    except quorum.QuorumError as exc:
+        return _quorum_response(request, username, error=str(exc), status_code=400)
+    return _quorum_response(request, username, notice=message)
+
+
+@app.post("/cluster/quorum/{group}/armer")
+def quorum_arm(request: Request, group: str,
+               max_replica_age: str = Form(""), acknowledge: str = Form(""),
+               confirm_password: str = Form(...),
+               username: str = Depends(require_login)):
+    try:
+        message = quorum.arm_group(group, max_replica_age, _checked(acknowledge),
+                                   username, confirm_password)
+    except quorum.QuorumError as exc:
+        return _quorum_response(request, username, error=str(exc), status_code=400)
+    return _quorum_response(request, username, notice=message)
+
+
+@app.post("/cluster/quorum/{group}/desarmer")
+def quorum_disarm(request: Request, group: str,
+                  confirm_password: str = Form(...),
+                  username: str = Depends(require_login)):
+    try:
+        message = quorum.disarm_group(group, username, confirm_password)
+    except quorum.QuorumError as exc:
+        return _quorum_response(request, username, error=str(exc), status_code=400)
+    return _quorum_response(request, username, notice=message)
+
+
+@app.post("/cluster/quorum/{group}/eviction")
+def quorum_clear_eviction(request: Request, group: str,
+                          confirm_password: str = Form(...),
+                          username: str = Depends(require_login)):
+    """Lever une eviction. Ne remet rien en service : c'est une autorisation,
+    pas une reprise. La reprise se fait depuis la page Bascule, en regardant
+    les deux copies."""
+    try:
+        message = quorum.clear_eviction(group, username, confirm_password)
+    except quorum.QuorumError as exc:
+        return _quorum_response(request, username, error=str(exc), status_code=400)
+    return _quorum_response(request, username, notice=message)
+
+
+@app.post("/cluster/quorum/{group}/pourquoi")
+def quorum_explain(request: Request, group: str,
+                   username: str = Depends(require_login)):
+    """« Pourquoi ce groupe n'a-t-il pas bascule ? » — la question qu'on se
+    pose apres coup, et a laquelle un journal systeme repond mal."""
+    temoin = quorum.get_witness()
+    if temoin is None:
+        return _quorum_response(request, username, status_code=400,
+                                error="Aucun temoin enregistre.")
+    try:
+        vue = quorum.assess(group, witness=temoin)
+        decision = quorum.evaluate_auto(vue, temoin)
+    except quorum.QuorumError as exc:
+        return _quorum_response(request, username, error=str(exc), status_code=400)
+    return _quorum_response(request, username, decisions={group: decision})

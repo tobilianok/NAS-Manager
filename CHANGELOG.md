@@ -13,6 +13,135 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.18.0 — 2026-09-13
+
+**Le quorum, le témoin et la bascule automatique.** Étape 4, et la version la
+plus dangereuse du projet : c'est la première où une machine décide seule de
+servir des données qu'une autre servait, au milieu de la nuit, sans personne
+devant l'écran.
+
+### Le problème, et pourquoi il n'a pas de solution à deux machines
+
+Quand le nœud B ne joint plus le nœud A, il ne peut **pas** savoir laquelle
+des deux situations il vit : A est tombé, ou le lien est coupé et A sert
+toujours ses clients. **Les deux produisent exactement le même silence.**
+Aucune finesse de sondage ne les distingue — c'est un résultat connu de toute
+l'industrie de la haute disponibilité, pas une lacune de ce projet. C'est
+pourquoi la v1.16.0 refusait toute reprise d'urgence tant que le propriétaire
+répondait, et exigeait un humain sinon.
+
+### Ce que le témoin change
+
+Un **troisième point de vue** brise la symétrie. Le témoin n'est pas un NAS :
+c'est n'importe quelle machine joignable en SSH par les deux nœuds, avec un
+dossier inscriptible — un Raspberry Pi, un serveur déjà en place, une VM
+ailleurs. Il n'exécute rien, il ne décide rien. Il n'a même pas besoin d'un
+compte root : un compte ordinaire suffit, et c'est délibéré — il n'y a aucune
+raison d'offrir un accès total à une machine tierce dont le seul rôle est de
+tenir un fichier.
+
+### Deux mécanismes, indissociables
+
+**Le bail.** Un groupe est servi par le seul nœud qui détient son bail. Il se
+prend de façon atomique — un `mkdir`, seule primitive vraiment atomique dont
+on dispose à travers un shell distant — et se renouvelle en permanence. Deux
+nœuds ne peuvent pas le détenir en même temps, même s'ils se croient tous les
+deux seuls survivants. **Prendre et renouveler ne sont pas le même geste** :
+un renouvellement ne vole jamais le bail d'un autre, même abandonné.
+
+**L'auto-effacement.** Le nœud qui ne peut plus renouveler son bail **et** ne
+joint plus son pair est, par élimination, celui qui est isolé. Il cesse alors
+de servir tout seul — stacks arrêtées, partages retirés, datasets en lecture
+seule — **avant** que l'autre ne songe à reprendre. C'est lui qui rend la
+promotion automatique acceptable : sans lui, le bail empêcherait deux
+*promotions*, pas deux *machines qui servent*.
+
+Un nœud qui perd son bail au profit d'un autre passe en **éviction** : il
+cesse de servir et ne reprendra jamais la main tout seul. Les deux copies ont
+divergé à cet instant, et seul un humain sait laquelle garder.
+
+### L'horloge qui fait foi est celle du témoin
+
+L'expiration d'un bail n'est jamais calculée sur le nœud. Il envoie un délai,
+le témoin y ajoute **sa** date. Un nœud dont l'horloge part en avant
+déclarerait expiré un bail parfaitement vivant — et la v1.15.0 avait déjà
+montré qu'une horloge qui recule fige tout un dispositif. L'arbitre tient le
+chronomètre.
+
+### Ce que la promotion automatique exige, une condition à la fois
+
+Elle s'arme par groupe, avec le mot de passe et l'acceptation explicite de ce
+qui sera perdu. Ensuite elle ne part que si **tout** est réuni : témoin
+joignable, bail expiré selon l'horloge du témoin, bail au nom du propriétaire
+attendu et portant le bon pool, battement du propriétaire périmé, **aucun port
+de service ouvert chez lui** (22, 445, 2049, 8443), plan de reprise d'urgence
+possible, répliques plus fraîches que le seuil accepté, et bail acquis
+atomiquement — en dernier, parce que c'est lui qui rend la reprise exclusive.
+Une bascule *planifiée* n'est jamais automatique : elle arrêterait les
+services d'une machine qui répond parfaitement, et ce geste reste humain.
+
+L'autorisation interne d'une promotion automatique est un **type**, pas un
+drapeau : aucune valeur venue d'un formulaire HTTP ne peut être une instance
+de cette classe, là où une chaîne « automatic=1 » aurait pu remonter un jour
+d'un champ jusqu'à l'opération la plus lourde du projet.
+
+### Ce que ce dispositif ne prétend pas faire
+
+**Il ne coupe le courant de personne.** Si NAS Manager meurt sur le
+propriétaire pendant que `smbd` continue de servir, rien ici ne peut arrêter
+ce `smbd`. C'est pourquoi la reprise sonde ses ports de service et renonce dès
+que l'un répond. Ce résidu de risque est écrit dans l'interface, à l'endroit
+où l'on arme — pas en note de bas de page.
+
+Et une coupure réseau qui isole une machine du témoin *et* de son pair la fera
+cesser de servir. C'est voulu : c'est la seule façon de garantir qu'à aucun
+instant les deux ne servent le même groupe. Sans témoin enregistré, **rien de
+tout cela ne s'applique** — le comportement reste exactement celui de la
+v1.16.0, entièrement manuel.
+
+### Ce que la revue adverse a trouvé avant la livraison
+
+Dix défauts, dont trois pouvaient arrêter des partages sans aucune raison :
+
+- **Un nœud pouvait s'évincer lui-même.** L'identité servait la première
+  adresse par ordre alphabétique ; ajouter une carte réseau, un VLAN ou un
+  bond en changeait le résultat, et le nœud voyait son **propre** bail au nom
+  d'un inconnu. Toutes les adresses locales comptent désormais.
+- **Deux paires de machines partageant un dossier de témoin se seraient
+  évincées mutuellement** — un chemin recopié suffisait. Un bail qui parle
+  d'un autre pool n'est plus une éviction mais une erreur de configuration,
+  nommée comme telle.
+- **Une éviction dont la libération échouait** laissait le nœud dans le seul
+  état vraiment dangereux : il se savait évincé, donc il ne renouvelait plus
+  rien, et il servait encore. Le ménage est repris au passage suivant.
+- **L'auto-effacement pouvait partir juste après un redémarrage du service**,
+  sur un compteur d'échecs qui avait survécu et valait les heures d'arrêt.
+- **Le passage du chien de garde sondait avant de renouveler.** Sonder quatre
+  ports sur une machine muette coûte des secondes ; le passage débordait son
+  propre intervalle, retardait les renouvellements, et aurait fini par
+  déclencher l'auto-effacement qu'il était censé éviter. Les renouvellements
+  passent maintenant en premier, le travail lent après.
+- **Après une promotion, plus personne ne renouvelait le bail** : la promotion
+  ne crée aucun groupe local. Le bail expirait sous les pieds du nœud qui
+  servait.
+- **La marge d'auto-effacement n'était pas qu'un ordre de déclenchement** :
+  c'est le temps dont il dispose pour *aboutir*, arrêt des stacks Docker
+  compris. Le minimum a été relevé, et une marge courte est signalée.
+- S'y ajoutent : un manifeste sans adresse exploitable faisait sonder *cette*
+  machine à la place du propriétaire, un bail au nom d'un tiers pouvait être
+  repris, un groupe sans secours joignable était effacé pour rien, et
+  l'affichage coûtait deux sessions SSH par groupe quand le témoin était mort.
+
+### Tests
+
+**1814 tests** (contre 1719 en v1.17.0), dont 68 sur le module de quorum et 27
+sur ses routes. Le script de bail est éprouvé **contre un vrai `/bin/sh`** :
+c'est du shell POSIX qui tournera sur une machine qu'on ne contrôle pas, et le
+relire ne prouve rien. Une douzième vérification, `check_quorum()`, rejoint la
+carte « Santé & sécurité ».
+
+---
+
 ## v1.17.0 — 2026-09-13
 
 **L'assistant de redondance.** Étape 3, et la plus utile de tout le chantier :

@@ -1,0 +1,356 @@
+{% extends "base.html" %}
+{% block title %}Quorum et bascule automatique - NAS Manager{% endblock %}
+{% block breadcrumb %}<a href="/cluster">Cluster</a> / <strong>Quorum</strong>{% endblock %}
+
+{% block content %}
+<h1>Quorum et bascule automatique</h1>
+<p class="page-intro">
+  Quand le noeud de secours ne joint plus le proprietaire, il ne peut pas
+  savoir s'il est tombe ou si c'est le lien qui est coupe : <strong>les deux
+  situations produisent exactement le meme silence</strong>. C'est pour ca que
+  toutes les versions precedentes exigeaient un humain. Un <strong>temoin</strong> —
+  une troisieme machine, qui ne fait rien d'autre que tenir un fichier — brise
+  cette symetrie.
+</p>
+
+{% if error %}<div class="danger-banner">{{ error }}</div>{% endif %}
+{% if notice %}<div class="success-banner">{{ notice }}</div>{% endif %}
+
+<div class="info-panel">
+  <strong>Deux mecanismes, indissociables.</strong>
+  Le <strong>bail</strong> : un groupe est servi par le seul noeud qui le
+  detient, et il se prend de facon exclusive sur le temoin. L'<strong>auto-effacement</strong> :
+  le noeud qui ne peut plus renouveler son bail <em>et</em> ne joint plus son
+  pair est, par elimination, celui qui est isole — il cesse de servir tout
+  seul, avant que l'autre ne songe a reprendre. Sans le second, le premier
+  empecherait deux <em>promotions</em>, pas deux <em>machines qui servent</em>.
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Le temoin                                                           -->
+<!-- ------------------------------------------------------------------ -->
+<div class="card">
+  <h2>Le temoin</h2>
+  <p class="stat-sub">
+    N'importe quelle machine joignable en SSH par <strong>les deux</strong> noeuds,
+    avec un dossier inscriptible : un Raspberry Pi, un serveur deja en place,
+    une VM ailleurs. Elle n'execute rien et ne decide rien. Elle n'a pas besoin
+    d'etre root — donne-lui un compte ordinaire : c'est une machine tierce, il
+    n'y a aucune raison de lui offrir un acces total.
+  </p>
+
+  {% if witness %}
+  <table class="data-table">
+    <tbody>
+      <tr><th>Acces</th><td class="mono">{{ witness.target }}</td></tr>
+      <tr><th>Dossier</th><td class="mono">{{ witness.directory }}</td></tr>
+      <tr><th>Expiration d'un bail</th><td>{{ witness.lease_expiry }} s</td></tr>
+      <tr>
+        <th>Auto-effacement</th>
+        <td>
+          {{ witness.fence_grace }} s
+          <div class="stat-sub">
+            Toujours la moitie du delai d'expiration, jamais reglable a part :
+            le proprietaire doit cesser de servir <strong>avant</strong> que son
+            bail n'expire, sans quoi il existerait un instant ou les deux
+            machines servent le meme groupe. Ce n'est pas qu'un ordre de
+            declenchement : c'est le temps dont l'auto-effacement dispose pour
+            <strong>aboutir</strong>, arret des stacks Docker compris.
+          </div>
+          {% if witness.fence_grace < 120 %}
+          <div class="warning-banner">
+            Cette marge est courte. Un noeud qui porte plusieurs stacks Docker
+            peut mettre plus de {{ witness.fence_grace }} s a les arreter — le
+            secours reprendrait alors pendant que celui-ci n'a pas fini de
+            lacher. Allonge le delai d'expiration si ce groupe porte des
+            stacks.
+          </div>
+          {% endif %}
+        </td>
+      </tr>
+      <tr><th>Cette machine se designe par</th><td class="mono">{{ identity }}</td></tr>
+      {% if witness.label %}<tr><th>Note</th><td>{{ witness.label }}</td></tr>{% endif %}
+    </tbody>
+  </table>
+
+  <div class="btn-row">
+    <form method="post" action="/cluster/quorum/temoin/test">
+      <button type="submit" class="btn">Tester le temoin</button>
+    </form>
+  </div>
+
+  <form method="post" action="/cluster/quorum/temoin/retirer">
+    <label for="retirer_password">Retirer le temoin — votre mot de passe</label>
+    <input type="password" id="retirer_password" name="confirm_password" required>
+    <div class="stat-sub">
+      Retirer le temoin desarme toute promotion automatique : sans lui, plus
+      rien ne peut arbitrer.
+    </div>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-danger">Retirer</button>
+    </div>
+  </form>
+  {% endif %}
+
+  {% if report %}
+  <table class="data-table">
+    <thead><tr><th>Controle</th><th>Etat</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for c in report.checks %}
+      <tr>
+        <td>{{ c.label }}</td>
+        <td>
+          {% if c.ok is true %}<span class="badge badge-ok">ok</span>
+          {% elif c.ok is none %}<span class="badge">a verifier</span>
+          {% elif c.blocking %}<span class="badge badge-warn">bloquant</span>
+          {% else %}<span class="badge badge-warn">attention</span>{% endif %}
+        </td>
+        <td class="stat-sub">{{ c.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if report.usable %}
+  <div class="result-card">
+    <span class="badge badge-ok">utilisable</span>
+    Le temoin tient son role. Enregistre maintenant le <strong>meme</strong>
+    temoin, avec le <strong>meme dossier</strong>, sur le noeud de secours.
+  </div>
+  {% endif %}
+  {% endif %}
+
+  <form method="post" action="/cluster/quorum/temoin">
+    <h3>{{ "Remplacer le temoin" if witness else "Enregistrer un temoin" }}</h3>
+    <label for="address">Adresse IP du temoin</label>
+    <input type="text" id="address" name="address" required
+           value="{{ witness.address if witness else '' }}"
+           placeholder="192.168.1.30">
+    <div class="stat-sub">
+      Ni cette machine, ni le noeud de secours : un temoin qui tombe en meme
+      temps que l'un des deux n'arbitre plus rien.
+    </div>
+
+    <label for="user">Compte SSH sur le temoin</label>
+    <input type="text" id="user" name="user"
+           value="{{ witness.user if witness else 'root' }}">
+    <div class="stat-sub">
+      La cle publique de reprise de cette machine doit etre autorisee pour ce
+      compte, dans son <span class="mono">~/.ssh/authorized_keys</span> — celle
+      de la page <a href="/cluster/replication">Appairage</a>.
+    </div>
+
+    <label for="directory">Dossier sur le temoin</label>
+    <input type="text" id="directory" name="directory" required
+           value="{{ witness.directory if witness else '/var/lib/nas-temoin' }}">
+
+    <label for="lease_expiry">Expiration d'un bail (secondes)</label>
+    <input type="number" id="lease_expiry" name="lease_expiry" min="60" max="3600"
+           value="{{ witness.lease_expiry if witness else defaults.lease_expiry }}">
+    <div class="stat-sub">
+      C'est aussi le temps maximal pendant lequel un groupe reste sans etre
+      servi apres une panne franche. Trop court, un simple pic de charge reseau
+      declencherait une bascule ; trop long, une vraie panne laisse les
+      partages indisponibles d'autant.
+    </div>
+
+    <label for="label">Note (facultatif)</label>
+    <input type="text" id="label" name="label"
+           value="{{ witness.label if witness else '' }}"
+           placeholder="Le Pi du salon">
+
+    <label for="confirm_password">Votre mot de passe</label>
+    <input type="password" id="confirm_password" name="confirm_password" required>
+
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Enregistrer</button>
+    </div>
+  </form>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Les groupes                                                         -->
+<!-- ------------------------------------------------------------------ -->
+{% if not witness %}
+<div class="card">
+  <h2>Sans temoin</h2>
+  <div class="info-panel">
+    Aucun temoin n'est enregistre : <strong>rien de ce qui suit ne
+    s'applique</strong>. La bascule reste entierement manuelle, exactement
+    comme avant — c'est un choix legitime, pas une panne. Aucun groupe ne sera
+    efface ni repris tout seul.
+  </div>
+  {% if orphan_groups %}
+  <p class="stat-sub">
+    Groupes suivis par la page <a href="/cluster/failover">Bascule</a> :
+    {{ orphan_groups|join(', ') }}.
+  </p>
+  {% endif %}
+</div>
+{% endif %}
+
+{% for g in groups %}
+<div class="card">
+  <h2>
+    <span class="mono">{{ g.group }}</span>
+    {% if g.role == "proprietaire" %}<span class="badge">servi ici</span>
+    {% elif g.role == "secours" %}<span class="badge">secours</span>{% endif %}
+    {% if g.policy.armed %}<span class="badge badge-ok">automatique arme</span>{% endif %}
+    {% if g.policy.evicted %}<span class="badge badge-warn">evince</span>{% endif %}
+  </h2>
+
+  {% if g.policy.evicted %}
+  <div class="danger-banner">
+    <strong>Ce groupe est en eviction.</strong>
+    Son bail est passe a <span class="mono">{{ g.policy.evicted_by }}</span>
+    le {{ g.policy.evicted_at }}, pendant que ce noeud etait isole. Il a donc
+    cesse de le servir, et <strong>il ne reprendra jamais la main tout
+    seul</strong> : les deux copies des donnees ont diverge a cet instant, et
+    seul un humain sait laquelle garder. Compare-les avant de lever
+    l'eviction.
+  </div>
+  <form method="post" action="/cluster/quorum/{{ g.group }}/eviction">
+    <label for="lever_{{ g.group }}">Lever l'eviction — votre mot de passe</label>
+    <input type="password" id="lever_{{ g.group }}" name="confirm_password" required>
+    <div class="stat-sub">
+      Lever l'eviction ne remet rien en service : c'est une autorisation, pas
+      une reprise.
+    </div>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-danger">Lever l'eviction</button>
+    </div>
+  </form>
+  {% else %}
+  <p>{{ g.summary }}</p>
+  {% endif %}
+
+  <table class="data-table">
+    <tbody>
+      <tr>
+        <th>Bail</th>
+        <td>
+          {% if g.lease.exists %}
+          detenu par <span class="mono">{{ g.lease.owner }}</span>,
+          generation {{ g.lease.generation }}, renouvele il y a
+          {{ g.lease.age }} s
+          {% else %}aucun bail pose{% endif %}
+        </td>
+      </tr>
+      <tr>
+        <th>Temoin</th>
+        <td>
+          {% if g.witness_reachable %}<span class="badge badge-ok">joignable</span>
+          {% else %}<span class="badge badge-warn">ne repond pas</span>{% endif %}
+          <span class="stat-sub">verdict : {{ g.lease_verdict or "-" }}</span>
+        </td>
+      </tr>
+      {% if g.peer %}
+      <tr>
+        <th>{{ "Noeud de secours" if g.role == "proprietaire" else "Proprietaire" }}</th>
+        <td>
+          <span class="mono">{{ g.peer }}</span>
+          {% if g.peer_reachable %}<span class="badge badge-ok">repond</span>
+          {% elif g.peer_reachable is false %}<span class="badge badge-warn">muet</span>
+          {% endif %}
+          <div class="stat-sub">
+            {% if g.peer_heartbeat_age is none %}
+            aucun battement lisible sur le temoin
+            {% else %}
+            dernier battement depose il y a {{ g.peer_heartbeat_age }} s
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endif %}
+      {% if g.policy.last_auto_at %}
+      <tr><th>Derniere reprise automatique</th><td>{{ g.policy.last_auto_at }}</td></tr>
+      {% endif %}
+      {% if g.policy.last_fence_at %}
+      <tr><th>Dernier auto-effacement</th><td>{{ g.policy.last_fence_at }}</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+
+  {% if g.role == "secours" and not g.policy.evicted %}
+  <form method="post" action="/cluster/quorum/{{ g.group }}/pourquoi">
+    <div class="btn-row">
+      <button type="submit" class="btn">Pourquoi ce groupe ne bascule pas ?</button>
+    </div>
+  </form>
+
+  {% if decisions.get(g.group) %}
+  {% set d = decisions[g.group] %}
+  {% if d.go %}
+  <div class="warning-banner">
+    <strong>Toutes les conditions sont reunies.</strong> La reprise partira au
+    prochain passage du chien de garde.
+  </div>
+  {% else %}
+  <div class="info-panel">
+    <strong>Ce qui manque :</strong>
+    <ul>{% for r in d.reasons %}<li>{{ r }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+  {% endif %}
+
+  {% if g.policy.armed %}
+  <form method="post" action="/cluster/quorum/{{ g.group }}/desarmer">
+    <label for="desarmer_{{ g.group }}">Desarmer — votre mot de passe</label>
+    <input type="password" id="desarmer_{{ g.group }}" name="confirm_password" required>
+    <div class="btn-row">
+      <button type="submit" class="btn">Desarmer</button>
+    </div>
+  </form>
+  {% else %}
+  <form method="post" action="/cluster/quorum/{{ g.group }}/armer">
+    <h3>Armer la promotion automatique</h3>
+    <div class="danger-banner">
+      <strong>Ce que ca perd, et ce que ca ne peut pas garantir.</strong>
+      <ul>
+        <li>Une reprise automatique est une reprise <strong>d'urgence</strong> :
+          tout ce qui a ete ecrit sur le proprietaire depuis la derniere
+          replication reussie est perdu.</li>
+        <li>Elle ne coupe le courant de personne. Si NAS Manager meurt sur le
+          proprietaire pendant que <span class="mono">smbd</span> continue de
+          servir, rien ici ne peut arreter ce <span class="mono">smbd</span>.
+          C'est pourquoi la reprise sonde aussi ses ports
+          ({{ defaults.ports|join(', ') }}) et renonce des que l'un repond —
+          mais une machine a moitie vivante peut ne repondre sur aucun.</li>
+        <li>Une coupure reseau qui isole cette machine du temoin <em>et</em> du
+          proprietaire la fera cesser de servir. C'est voulu : c'est la seule
+          facon de garantir qu'a aucun instant les deux ne servent le meme
+          groupe.</li>
+      </ul>
+    </div>
+
+    <label for="age_{{ g.group }}">Age maximal accepte des repliques (secondes)</label>
+    <input type="number" id="age_{{ g.group }}" name="max_replica_age"
+           min="300" max="604800" value="{{ defaults.max_replica_age }}">
+    <div class="stat-sub">
+      Au-dela, la reprise ne part pas toute seule : la perte serait trop grande
+      pour etre decidee par une machine. Regle-le sur ce que tu acceptes de
+      perdre, pas sur ta cadence de replication.
+    </div>
+
+    <label class="checkbox-line" for="ack_{{ g.group }}">
+      <input type="checkbox" id="ack_{{ g.group }}" name="acknowledge" value="1" required>
+      J'accepte de perdre ce qui a ete ecrit depuis la derniere replication
+      reussie, et je comprends que la reprise sera decidee sans moi.
+    </label>
+
+    <label for="armer_{{ g.group }}">Votre mot de passe</label>
+    <input type="password" id="armer_{{ g.group }}" name="confirm_password" required>
+
+    <div class="stat-sub">
+      Apres une reprise automatique, plus rien d'automatique sur ce groupe
+      pendant {{ defaults.cooldown_hours }} h : un dispositif qui bascule en
+      boucle fait plus de degats que la panne qu'il repare.
+    </div>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-danger">Armer</button>
+    </div>
+  </form>
+  {% endif %}
+  {% endif %}
+</div>
+{% endfor %}
+{% endblock %}

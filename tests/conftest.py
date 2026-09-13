@@ -18,3 +18,8 @@ os.environ.setdefault("NAS_MANAGER_SNAPSHOT_SCHEDULER", "0")
 # celui-la ouvre des sessions SSH vers de vraies adresses et peut lancer un
 # `zfs send`. Rien de tel ne doit partir d'une suite de tests.
 os.environ.setdefault("NAS_MANAGER_REPLICATION_SCHEDULER", "0")
+
+# Et encore plus grave pour le chien de garde du quorum (v1.18.0) : il peut
+# arreter des stacks, retirer des partages et PROMOUVOIR un groupe, sans que
+# personne ait rien demande. Une suite de tests ne lance pas ca.
+os.environ.setdefault("NAS_MANAGER_QUORUM_WATCHDOG", "0")

@@ -1666,9 +1666,28 @@ def _clear_inflight() -> None:
         pass
 
 
+class AutomaticPromotion:
+    """Autorisation interne d'une promotion automatique (v1.18.0).
+
+    Un chien de garde n'a pas de mot de passe a presenter, et il ne peut pas
+    retaper un nom de groupe. Il faut donc un autre moyen de distinguer un
+    appel legitime du module de quorum d'un appel venu d'ailleurs.
+
+    **C'est le type lui-meme qui sert de garantie.** Aucune valeur issue d'un
+    formulaire HTTP ne peut etre une instance de cette classe : une chaine
+    « automatic=1 » ne passerait pas le `isinstance`. Un drapeau booleen ou
+    une chaine convenue, eux, auraient pu remonter un jour d'un champ de
+    formulaire jusqu'ici — c'est exactement le genre de chemin qu'on ne veut
+    pas laisser ouvert sur l'operation la plus lourde du projet."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+
+
 def promote(key: str, username: str, password: str, typed_name: str,
             acknowledge: bool = False, start_stacks: bool = True,
-            expected_mode: str = "") -> PromotionReport:
+            expected_mode: str = "",
+            automatic: "AutomaticPromotion | None" = None) -> PromotionReport:
     """Reprend le groupe sur CETTE machine.
 
     C'est, avec le retour arriere d'un snapshot et la suppression d'un
@@ -1684,17 +1703,24 @@ def promote(key: str, username: str, password: str, typed_name: str,
     if manifeste is None:
         raise FailoverError("Ce manifeste n'existe pas sur cette machine.")
 
-    _require_password(username, password)
     nom = str(manifeste.get("group", ""))
-    if (typed_name or "").strip() != nom:
-        raise FailoverError(
-            f"Le nom du groupe doit etre retape exactement : « {nom} »."
-        )
-    if not acknowledge:
-        raise FailoverError(
-            "La case de confirmation doit etre cochee : cette machine va se "
-            "mettre a servir des donnees qu'une autre servait."
-        )
+    auto = automatic if isinstance(automatic, AutomaticPromotion) else None
+    if auto is None:
+        _require_password(username, password)
+        if (typed_name or "").strip() != nom:
+            raise FailoverError(
+                f"Le nom du groupe doit etre retape exactement : « {nom} »."
+            )
+        if not acknowledge:
+            raise FailoverError(
+                "La case de confirmation doit etre cochee : cette machine va se "
+                "mettre a servir des donnees qu'une autre servait."
+            )
+    else:
+        # Le rituel humain est remplace par les conditions de quorum, que
+        # l'appelant a deja verifiees une a une. Une seule chose n'est pas
+        # negociable et se re-verifie ici : le mode.
+        expected_mode = "urgence"
 
     en_cours = inflight()
     if en_cours:
@@ -1730,6 +1756,17 @@ def promote(key: str, username: str, password: str, typed_name: str,
         # Ne devrait pas arriver (plan_promotion vient de le calculer), mais
         # la condition est trop importante pour reposer sur un seul chemin.
         raise GuardrailError(_SPLIT_BRAIN_REFUSAL)
+
+    if auto is not None and plan.mode != "urgence":
+        # Une bascule PLANIFIEE fait lacher le groupe au proprietaire : elle
+        # arrete ses stacks et retire ses partages. Aucun chien de garde n'a
+        # a decider ca tout seul sur une machine qui repond parfaitement.
+        raise GuardrailError(
+            "Une promotion automatique ne peut etre qu'une reprise d'urgence. "
+            f"Ici le proprietaire repond, la bascule serait « {plan.mode} » — "
+            "c'est-a-dire qu'elle lui ferait arreter ses services. Ce geste "
+            "reste humain."
+        )
 
     report = PromotionReport(group=nom, mode=plan.mode)
 
@@ -1777,9 +1814,10 @@ def promote(key: str, username: str, password: str, typed_name: str,
             _clear_inflight()
 
     logger.warning(
-        "BASCULE %s du groupe « %s » : %s dataset(s) promus, %s partage(s), "
+        "BASCULE %s%s du groupe « %s » : %s dataset(s) promus, %s partage(s), "
         "%s stack(s), %s probleme(s)",
-        report.mode, nom, len(report.promoted_datasets), len(report.adopted_shares),
+        report.mode, f" AUTOMATIQUE ({auto.reason})" if auto else "", nom,
+        len(report.promoted_datasets), len(report.adopted_shares),
         len(report.adopted_stacks), len(report.problems),
     )
     return report

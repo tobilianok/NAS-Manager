@@ -16,6 +16,17 @@
 {% if error %}<div class="danger-banner">{{ error }}</div>{% endif %}
 {% if notice %}<div class="success-banner">{{ notice }}</div>{% endif %}
 
+<div class="link-card">
+  <h2><a href="/cluster/quorum">Quorum et bascule automatique</a></h2>
+  <p class="stat-sub">
+    Toutes les bascules de cette page sont declenchees par un humain, et
+    c'est un choix : a deux machines, on ne distingue pas « l'autre est tombe »
+    de « le lien est coupe ». Un <strong>temoin</strong> — une troisieme machine
+    qui tient un simple fichier — leve cette ambiguite et permet qu'une reprise
+    parte sans personne devant l'ecran.
+  </p>
+</div>
+
 {% if inflight %}
 <div class="danger-banner">
   <strong>Une bascule n'a jamais abouti.</strong> Groupe

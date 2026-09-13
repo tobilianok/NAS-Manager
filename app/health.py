@@ -439,6 +439,69 @@ def check_failover() -> HealthCheck:
                         f"({total} dataset(s)).")
 
 
+def check_quorum() -> HealthCheck:
+    """Le dispositif d'arbitrage tient-il encore ?
+
+    Un temoin injoignable ne casse rien tout de suite — les partages
+    continuent d'etre servis — mais il enleve silencieusement la seule chose
+    qui rend une reprise automatique possible. C'est exactement le genre de
+    panne qu'on ne decouvre que le jour ou l'on en avait besoin, donc elle a
+    sa place ici.
+
+    Aucun temoin = INCONNU : ne pas en vouloir est un choix legitime, et la
+    bascule manuelle de la v1.16.0 fonctionne sans."""
+    from app import quorum
+
+    temoin = quorum.get_witness()
+    if temoin is None:
+        return HealthCheck("quorum", "Quorum", LEVEL_INCONNU,
+                            "Aucun temoin : la bascule reste entierement manuelle.")
+
+    vues = quorum.overview(witness=temoin)
+    evinces = [v for v in vues if v.policy.evicted]
+    if evinces:
+        return HealthCheck(
+            "quorum", "Quorum", LEVEL_CRITIQUE,
+            "Groupe(s) en eviction, arretes ici et servis ailleurs : "
+            + ", ".join(v.group for v in evinces)
+            + ". Un humain doit dire quelle copie garder.")
+
+    if vues and not any(v.witness_reachable for v in vues):
+        return HealthCheck(
+            "quorum", "Quorum", LEVEL_ATTENTION,
+            f"Le temoin {temoin.address} ne repond pas : plus aucune reprise "
+            "automatique n'est possible, et un isolement de cette machine la "
+            "ferait cesser de servir.")
+
+    # Un groupe efface par le chien de garde n'est servi NULLE PART tant que
+    # personne n'agit : ni ici (on a lache), ni forcement en face (le secours
+    # n'a peut-etre pas pu reprendre). C'est le genre d'etat qui ne se
+    # remarque autrement que par un partage qui a disparu.
+    efface = [v for v in vues
+              if v.role == "proprietaire" and v.released and v.policy.last_fence_at]
+    if efface:
+        return HealthCheck(
+            "quorum", "Quorum", LEVEL_CRITIQUE,
+            "Groupe(s) que ce noeud a cesse de servir tout seul apres s'etre "
+            "decouvert isole : " + ", ".join(v.group for v in efface)
+            + ". Verifie s'ils ont bien ete repris en face ; sinon, reprends-les "
+            "ici depuis la page Bascule.")
+
+    sans_bail = [v for v in vues
+                 if v.role == "proprietaire" and not v.released
+                 and not v.holds_lease]
+    if sans_bail:
+        return HealthCheck(
+            "quorum", "Quorum", LEVEL_ATTENTION,
+            "Groupe(s) servis ici sans detenir leur bail : "
+            + ", ".join(v.group for v in sans_bail) + ".")
+
+    armes = sum(1 for v in vues if v.policy.armed)
+    return HealthCheck("quorum", "Quorum", LEVEL_OK,
+                        f"Temoin {temoin.address} joignable, {len(vues)} "
+                        f"groupe(s) suivis, {armes} arme(s) en automatique.")
+
+
 def get_report() -> HealthReport:
     """Execute toutes les verifications. Peut prendre quelques secondes
     (smartctl par disque, sensors, docker compose ps par stack) - a
@@ -455,6 +518,7 @@ def get_report() -> HealthReport:
         check_snapshots(),
         check_replication(),
         check_failover(),
+        check_quorum(),
         check_updates(),
     ]
     return HealthReport(checks=checks)
