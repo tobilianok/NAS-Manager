@@ -10,6 +10,7 @@
     <div class="meta" style="margin-bottom:1.5rem;">{{ share.mountpoint }} · dataset {{ share.dataset }} · pool "{{ share.pool }}"</div>
 
     {% if error %}<div class="msg msg-error">{{ error }}</div>{% endif %}
+    {% if notice %}<div class="msg msg-ok">{{ notice }}</div>{% endif %}
     {% for w in warnings %}<div class="msg msg-warning">⚠ {{ w }}</div>{% endfor %}
 
     <h2 class="section-title">Utilisateurs autorises</h2>
@@ -110,15 +111,118 @@
     {% if 'nfs' in share.protocols %}
     <h2 class="section-title">Reseaux autorises (NFS)</h2>
     <div class="card">
-      <form class="field-row" method="post" action="/shares/{{ share.name }}/nfs-networks">
-        <input type="text" name="networks" style="flex:1;" value="{{ share.nfs_networks | join(', ') }}" placeholder="192.168.1.0/24">
-        <button type="submit" class="btn-primary">Mettre a jour</button>
+      {# Mot de passe de l'admin connecte : elargir cette plage decide a qui
+         les donnees sont offertes - l'action la plus exposante de la page.
+         Regle constante depuis la Phase 8b. #}
+      <form method="post" action="/shares/{{ share.name }}/nfs-networks">
+        <div class="field-row">
+          <input type="text" name="networks" style="flex:1;" value="{{ share.nfs_networks | join(', ') }}" placeholder="192.168.1.0/24">
+        </div>
+        <label for="nfs-networks-password" style="margin-top:.6rem;">Ton mot de passe administrateur</label>
+        <input type="password" id="nfs-networks-password" name="confirm_password"
+               autocomplete="current-password" required>
+        <div class="actions">
+          <button type="submit" class="btn-primary">Mettre a jour</button>
+        </div>
       </form>
       <div class="info-box">
         Plages IP (au format CIDR, separees par des virgules) autorisees a monter ce partage NFS.
         Rappel : NFS ne verifie pas d'identifiant/mot de passe par utilisateur, seulement l'adresse IP du client -
         ne l'ouvre jamais au-dela de ton reseau local sans comprendre les implications.
+        Formes acceptees : une adresse (192.168.1.20), un reseau
+        (192.168.1.0/24 ou 192.168.1.0/255.255.255.0), un nom d'hote, un
+        netgroup (@bureau).
       </div>
+    </div>
+
+    <h2 class="section-title">Identites NFS</h2>
+    <div class="card">
+      <div class="info-box">
+        NFS n'authentifie personne : il transmet les <strong>numeros</strong>
+        d'utilisateur de la machine cliente et fait confiance a ce qu'elle
+        annonce. L'UID 1000 d'un portable ne designe personne de particulier
+        ici, et le dossier de ce partage
+        (<span class="mono">root:nasshares</span>, mode
+        <span class="mono">2770</span>) n'est ouvert a aucun des deux. C'est
+        pour cette raison qu'un client fraichement monte obtient
+        « Permission denied » au premier dossier cree, alors que le montage
+        lui-meme a reussi. Ce reglage decide de la traduction.
+      </div>
+
+      <div class="facts-grid">
+        <div>
+          <div class="stat-label">MODE ACTUEL</div>
+          <div>{{ nfs_mode_labels.get(share.nfs_mode, share.nfs_mode) }}</div>
+        </div>
+        <div>
+          <div class="stat-label">ECRIT SOUS</div>
+          <div class="mono">
+            {% if share.nfs_mode == nfs_mode_squash %}{{ nfs_effective_identity }}
+            {% elif share.nfs_mode == nfs_mode_uid %}l'UID annonce par le client
+            {% else %}root du client{% endif %}
+          </div>
+        </div>
+        <div>
+          <div class="stat-label">OPTIONS D'EXPORT</div>
+          <div class="mono">{{ nfs_export_options }}</div>
+        </div>
+      </div>
+
+      <form method="post" action="/shares/{{ share.name }}/nfs-options">
+        <label for="nfs-mode">Traduction des identites</label>
+        <select id="nfs-mode" name="mode">
+          <option value="{{ nfs_mode_squash }}" {% if share.nfs_mode == nfs_mode_squash %}selected{% endif %}>
+            Tous les clients sous une identite unique (recommande)
+          </option>
+          <option value="{{ nfs_mode_uid }}" {% if share.nfs_mode == nfs_mode_uid %}selected{% endif %}>
+            Correspondance des UID (parc Unix aligne)
+          </option>
+          <option value="{{ nfs_mode_root }}" {% if share.nfs_mode == nfs_mode_root %}selected{% endif %}>
+            Root du client autorise (dangereux)
+          </option>
+        </select>
+
+        <label for="nfs-anon">Compte sous lequel ecrire (mode « identite unique »)</label>
+        <select id="nfs-anon" name="anon_user">
+          <option value="">Compte generique (nobody, groupe nasshares)</option>
+          {% for u in nfs_share_users %}
+          <option value="{{ u.username }}" {% if share.nfs_anon_user == u.username %}selected{% endif %}>
+            {{ u.username }}
+          </option>
+          {% endfor %}
+        </select>
+
+        <label for="nfs-access">Acces</label>
+        <select id="nfs-access" name="access">
+          <option value="rw" {% if share.nfs_access != 'ro' %}selected{% endif %}>Lecture et ecriture</option>
+          <option value="ro" {% if share.nfs_access == 'ro' %}selected{% endif %}>Lecture seule</option>
+        </select>
+
+        <div class="info-box">
+          <strong>Identite unique</strong> — tout ce qui arrive par NFS ecrit
+          sous un seul compte, quels que soient les UID de la machine cliente.
+          C'est ce que font Unraid et OpenMediaVault, et ca fonctionne sans
+          rien configurer cote client. Le compte generique suffit dans la
+          plupart des cas ; designer un compte de partage precis rend les
+          fichiers crees par NFS visibles sous ce compte cote SMB.<br><br>
+          <strong>Correspondance des UID</strong> — les identifiants du client
+          sont pris tels quels. Propre dans un parc Unix ou les comptes sont
+          alignes des deux cotes, inutilisable sinon.<br><br>
+          <strong>Root du client autorise</strong> — le root de n'importe
+          quelle machine autorisee a monter ce partage devient root sur ces
+          donnees. A ne choisir que pour un usage precis (restauration d'une
+          sauvegarde qui doit conserver ses proprietaires), et a remettre
+          ensuite.
+        </div>
+
+        <label for="nfs-options-password">Ton mot de passe administrateur</label>
+        <input type="password" id="nfs-options-password" name="confirm_password"
+               autocomplete="current-password" required>
+
+        <div class="actions">
+          <button type="submit" class="btn-primary">Appliquer</button>
+        </div>
+      </form>
     </div>
     {% endif %}
 

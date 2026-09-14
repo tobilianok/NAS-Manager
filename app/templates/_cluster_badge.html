@@ -1,0 +1,29 @@
+{# Mention « ce noeud appartient a un cluster » (v1.19.0).
+
+   Fragment volontairement VIDE quand il n'y a pas de cluster - le cas le
+   plus courant. Une carte permanente qui repete « aucun cluster » prendrait
+   la place d'une information utile, et une ligne qu'on lit tous les jours
+   sans jamais qu'elle change est une ligne qu'on cesse de voir.
+
+   Rafraichi par HTMX au meme rythme que la carte de sante : l'etat d'un
+   cluster change sans qu'on recharge la page. #}
+{% if status.active %}
+{% set level = check.level if check else 'INCONNU' %}
+<a class="cluster-badge cluster-badge-{{ level | lower }}" href="/cluster">
+  <span class="cluster-badge-dot" aria-hidden="true"></span>
+  <span class="cluster-badge-text">
+    <strong>Ce serveur appartient a un cluster</strong>
+    <span class="cluster-badge-role">
+      {{ 'manager' if status.is_manager else 'worker' }}
+      {%- if status.advertise_addr %} &middot; annonce sur {{ status.advertise_addr }}{% endif %}
+      {%- if status.is_manager and status.nodes %} &middot; {{ status.nodes | length }} noeud(s){% endif %}
+    </span>
+  </span>
+  {% if check %}
+  <span class="cluster-badge-detail">{{ check.detail }}</span>
+  {% endif %}
+  <span class="cluster-badge-go" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+  </span>
+</a>
+{% endif %}

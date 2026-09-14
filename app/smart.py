@@ -116,6 +116,15 @@ class SmartReport:
                 and self.healthy is not False)
 
 
+# Un disque agonisant peut ne plus repondre du tout aux commandes SMART, et
+# `smartctl -a` attend alors indefiniment. Sans delai, la carte de sante du
+# tableau de bord - rafraichie toutes les 30 s, donc relancee sans fin -
+# immobilisait un fil de travail a chaque passage, jusqu'a ce que
+# l'interface entiere cesse de repondre. Au moment precis ou il faut y
+# entrer pour remplacer le disque.
+SMARTCTL_TIMEOUT_SECONDS = 30
+
+
 def _run_smartctl(path: str) -> dict | None:
     """Interroge smartctl en JSON. Le code retour de smartctl encode des
     bits d'etat SMART (pas seulement succes/echec Unix classique) : on se
@@ -125,9 +134,14 @@ def _run_smartctl(path: str) -> dict | None:
         result = subprocess.run(
             ["smartctl", "-a", "-j", path],
             capture_output=True, text=True, check=False,
+            timeout=SMARTCTL_TIMEOUT_SECONDS,
         )
     except FileNotFoundError:
         logger.warning("smartctl introuvable - le paquet smartmontools est-il installe ?")
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning("smartctl n'a pas repondu en %s s pour %s - disque muet ?",
+                       SMARTCTL_TIMEOUT_SECONDS, path)
         return None
 
     if not result.stdout:
@@ -288,3 +302,145 @@ def get_smart_report(path: str) -> SmartReport:
         report.status_label = "INCONNU"
 
     return report
+
+
+# ---------------------------------------------------------------------------
+# Temperatures des disques, pour le detail « Temperatures » (v1.19.0)
+# ---------------------------------------------------------------------------
+#
+# POURQUOI C'EST ICI ET PAS DANS app.sensors
+# ------------------------------------------
+# `sensors` ne voit un disque que si le pilote `drivetemp` est charge, ce
+# qui n'est le cas ni par defaut sur Ubuntu Server, ni du tout derriere un
+# controleur SAS ou un boitier USB. La temperature d'un disque se lit par
+# SMART - donc ici. Les releves sont simplement mis au format d'affichage de
+# app.sensors pour rejoindre le meme tableau.
+#
+# L'ECHELLE RESTE CELLE DE SMART, ET C'EST DELIBERE
+# --------------------------------------------------
+# Le projet tient trois echelles de temperature distinctes depuis la v1.10.0
+# (seuils globaux reglables, limite constructeur par capteur, seuils SMART
+# par disque) et les melanger rendrait n'importe lequel des trois reglages
+# imprevisible sur les deux autres. Ces releves gardent donc les seuils
+# SMART fixes - 50 degC / 60 degC - et **ne pesent pas** sur le verdict de
+# la ligne « Temperatures ». Ils pesent deja sur la meteo par la ligne
+# « Disques (SMART) », qui lit exactement les memes valeurs.
+
+# Un passage complet interroge smartctl une fois par disque. La carte de
+# sante est rafraichie toutes les 30 s : sans memoire courte, une machine a
+# douze disques passerait son temps a les interroger. La valeur ne bouge de
+# toute facon pas a la seconde.
+#
+# La duree est volontairement INFERIEURE au rythme de rafraichissement de la
+# carte (30 s) : le cache sert a ne pas interroger deux fois les memes
+# disques dans le MEME rendu - la ligne « Disques (SMART) » et le tableau des
+# temperatures lisent exactement la meme mesure -, pas a garder une valeur
+# d'un passage sur l'autre. Une version precedente la fixait a 45 s : le
+# verdict etait relu frais pendant que la temperature restait figee, et le
+# meme disque pouvait apparaitre CRITIQUE a 62 degC sur une ligne et vert a
+# 30 degC deux lignes plus bas.
+REPORTS_CACHE_SECONDS = 20.0
+
+# Ancien nom, garde pour ne pas casser un appelant : meme memoire courte.
+TEMPERATURE_CACHE_SECONDS = REPORTS_CACHE_SECONDS
+
+_reports_cache: "tuple[float, list] | None" = None
+
+
+def reset_reports_cache() -> None:
+    """Vide la memoire courte. Utile aux tests, et a tout appelant qui veut
+    une mesure fraiche apres avoir agi sur les disques."""
+    global _reports_cache
+    _reports_cache = None
+
+
+# Ancien nom.
+reset_temperature_cache = reset_reports_cache
+
+
+def list_reports(max_age: float | None = None) -> list:
+    """(disque, rapport SMART) pour chaque disque physique, en UN seul
+    passage mis en memoire courte.
+
+    C'est la porte d'entree des lectures repetees (carte de sante, tableau
+    des temperatures). Les pages qui regardent un disque precis - page
+    Disques, detail d'un pool - appellent `get_smart_report` directement :
+    on y veut la mesure de l'instant, et il n'y a qu'un disque a lire.
+
+    Ne leve jamais : un disque muet rend un rapport `available=False`,
+    jamais une exception."""
+    global _reports_cache
+    import time as _time
+
+    ttl = REPORTS_CACHE_SECONDS if max_age is None else max_age
+    if _reports_cache is not None:
+        taken_at, cached = _reports_cache
+        if ttl > 0 and (_time.monotonic() - taken_at) < ttl:
+            return list(cached)
+
+    from app import disks as disks_module
+
+    try:
+        inventory = disks_module.list_disks()
+    except Exception:  # noqa: BLE001 - jamais faire tomber le tableau de bord
+        logger.exception("Inventaire des disques impossible pour la lecture SMART")
+        inventory = []
+
+    pairs = []
+    for disk in inventory:
+        try:
+            report = get_smart_report(disk.path)
+        except Exception:  # noqa: BLE001
+            logger.exception("Lecture SMART impossible pour %s", disk.path)
+            continue
+        pairs.append((disk, report))
+
+    _reports_cache = (_time.monotonic(), list(pairs))
+    return pairs
+
+
+def _disk_temperature_reading(disk, report: SmartReport):
+    """Un releve de disque au format d'affichage de app.sensors, ou None si
+    ce disque ne rapporte pas de temperature (disque virtuel, boitier USB
+    qui ne relaie pas SMART)."""
+    from app import sensors
+
+    if report.temperature_c is None:
+        return None
+    celsius = float(report.temperature_c)
+    if celsius >= _TEMP_CRITICAL_C:
+        level = sensors.LEVEL_CRIT
+    elif celsius >= _TEMP_WARNING_C:
+        level = sensors.LEVEL_WARN
+    else:
+        level = sensors.LEVEL_OK
+
+    model = (getattr(disk, "model", None) or "").strip()
+    name = f"{model} ({disk.name})" if model else disk.path
+    return sensors.Reading(
+        name=name,
+        group=sensors.DISK_GROUP,
+        celsius=celsius,
+        level=level,
+        limit=float(_TEMP_CRITICAL_C),
+        chip="smartctl",
+        raw_label=(report.serial or getattr(disk, "serial", "") or disk.path),
+    )
+
+
+def list_disk_temperatures(max_age: float | None = None) -> list:
+    """Temperature de chaque disque physique, prete a afficher.
+
+    Derive du MEME passage que la ligne « Disques (SMART) » de la carte de
+    sante : les deux lisent donc toujours la meme mesure, et un rendu ne
+    peut plus se contredire lui-meme.
+
+    Ne leve jamais : un disque muet est simplement absent de la liste, comme
+    partout ailleurs dans ce module."""
+    readings = []
+    for disk, report in list_reports(max_age):
+        reading = _disk_temperature_reading(disk, report)
+        if reading is not None:
+            readings.append(reading)
+    readings.sort(key=lambda r: r.celsius, reverse=True)
+    return readings

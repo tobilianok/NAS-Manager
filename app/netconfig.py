@@ -97,6 +97,13 @@ class InterfaceConfig:
     dhcp4: bool = True
     address: str | None = None
     gateway4: str | None = None
+    # Ne pas appliquer les serveurs DNS globaux a CETTE carte (v1.19.0).
+    # netplan n'a pas de section DNS globale : les resolveurs sont recopies
+    # sur chaque interface. Sur un lien dedie au cluster - un cable entre
+    # deux machines, sans passerelle - des resolveurs joignables uniquement
+    # par l'autre carte n'ont rien a faire ; systemd-resolved les enregistre
+    # par lien et certaines resolutions partent alors en delai d'attente.
+    no_dns: bool = False
 
 
 @dataclass
@@ -182,8 +189,16 @@ def read_managed_config() -> ManagedNetworkConfig:
                 dns_seen.append(ns)
         return dhcp4, address, gateway4
 
+    # Une carte a laquelle on a deliberement retire les resolveurs (lien de
+    # cluster, v1.19.0) doit le rester : sans cette relecture, la premiere
+    # reecriture du fichier - pour une modification portant sur une autre
+    # carte - les lui rendrait en silence.
+    without_dns: list[str] = []
     for name, block in (network.get("ethernets") or {}).items():
-        dhcp4, address, gateway4 = _parse_ip_block(block or {})
+        block = block or {}
+        if not (block.get("nameservers") or {}).get("addresses"):
+            without_dns.append(name)
+        dhcp4, address, gateway4 = _parse_ip_block(block)
         config.interfaces[name] = InterfaceConfig(dhcp4=dhcp4, address=address, gateway4=gateway4)
 
     for name, block in (network.get("bonds") or {}).items():
@@ -204,6 +219,9 @@ def read_managed_config() -> ManagedNetworkConfig:
         config.wifis[name] = WifiConfig(ssid=ssid, psk=psk, dhcp4=dhcp4, address=address, gateway4=gateway4)
 
     config.dns_servers = dns_seen
+    if dns_seen:
+        for name in without_dns:
+            config.interfaces[name].no_dns = True
     return config
 
 
@@ -242,6 +260,137 @@ def _live_mac(name: str) -> str | None:
             return f.read().strip()
     except OSError:
         return None
+
+
+PROC_NET_ROUTE = "/proc/net/route"
+PROC_NET_IPV6_ROUTE = "/proc/net/ipv6_route"
+
+
+def _ipv4_default_routes() -> set[str] | None:
+    """Format fixe depuis toujours : une ligne d'en-tete, puis des colonnes
+    separees par des tabulations dont les deux premieres sont l'interface et
+    la destination en hexadecimal. Destination 00000000 = route par defaut.
+    None si le fichier est illisible."""
+    names: set[str] = set()
+    try:
+        with open(PROC_NET_ROUTE) as f:
+            next(f, None)  # en-tete
+            for line in f:
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                if parts[1].strip().upper() == "00000000":
+                    names.add(parts[0].strip())
+    except OSError:
+        return None
+    return names
+
+
+def _ipv6_default_routes() -> set[str] | None:
+    """Une machine dont l'acces passe en IPv6 n'a AUCUNE ligne de route par
+    defaut dans /proc/net/route. Ne lire que l'IPv4 revenait a croire qu'une
+    telle machine n'a pas de carte principale - et a autoriser le cluster
+    sur la carte d'administration. Destination = 32 zeros et prefixe 00 ;
+    le nom de la carte est la derniere colonne."""
+    names: set[str] = set()
+    try:
+        with open(PROC_NET_IPV6_ROUTE) as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 10:
+                    continue
+                if parts[0] == "0" * 32 and parts[1] == "00":
+                    names.add(parts[-1].strip())
+    except OSError:
+        return None
+    return names
+
+
+def _enslaved_members(name: str) -> set[str]:
+    """Cartes physiques enrolees dans un pont ou un agregat.
+
+    Quand l'administration arrive par `br0` ou `bond0`, la carte principale
+    au sens ou l'entend ce module n'est pas `br0` : ce sont les ports
+    physiques qui la portent. Sans ca, `enp1s0`, port du pont
+    d'administration, passerait pour une carte libre - reconfigurable depuis
+    la page Cluster, avec l'acces a l'interface au bout."""
+    members: set[str] = set()
+    brif = os.path.join(SYS_CLASS_NET, name, "brif")
+    try:
+        members.update(os.listdir(brif))
+    except OSError:
+        pass
+    slaves = os.path.join(SYS_CLASS_NET, name, "bonding", "slaves")
+    try:
+        with open(slaves) as f:
+            members.update(f.read().split())
+    except OSError:
+        pass
+    return members
+
+
+def default_route_interfaces() -> set[str] | None:
+    """Cartes qui portent une route par defaut (v1.19.0).
+
+    C'est la definition operationnelle de « la carte principale » : celle
+    par laquelle cette machine parle au reste du monde, et donc celle par
+    laquelle arrive l'interface d'administration. Elle est deduite du
+    systeme, jamais d'un reglage a tenir a jour - une carte qui cesse d'etre
+    la route par defaut cesse d'etre principale, sans que personne ait a le
+    dire.
+
+    Lecture directe de /proc/net/route et /proc/net/ipv6_route, comme le
+    debit reseau lit /proc/net/dev : aucune dependance, et la reponse est
+    celle du noyau.
+
+    Rend un ensemble et non un nom unique : plusieurs routes par defaut
+    coexistent parfaitement (metriques differentes, deux acces), et se
+    tromper de cote serait plus couteux qu'en exclure une de trop.
+
+    **Rend None quand on ne sait pas**, et c'est le point qui compte : ni
+    « aucune », ni un ensemble vide. Un ensemble vide signifierait « aucune
+    carte n'est principale », donc **toutes sont libres pour le cluster** -
+    exactement l'inverse de ce qu'il faut conclure d'une ignorance. Deux
+    situations ordinaires y menent : les fichiers illisibles, et une machine
+    qui n'a aucune route par defaut au moment du rendu (bail DHCP perdu,
+    lien coupe). Une inconnue ferme la porte."""
+    ipv4 = _ipv4_default_routes()
+    ipv6 = _ipv6_default_routes()
+    if ipv4 is None and ipv6 is None:
+        return None
+    names = (ipv4 or set()) | (ipv6 or set())
+    if not names:
+        return None
+    for name in list(names):
+        names |= _enslaved_members(name)
+    return names
+
+
+def all_ipv4_networks() -> list[str]:
+    """Toutes les adresses IPv4 portees par cette machine, cartes physiques
+    OU NON (ponts, agregats, VLAN, interfaces de machines virtuelles).
+
+    `list_physical_interfaces` ne voit que ce qui a un `device` dans sysfs :
+    un pont `br0` n'en a pas. Quand l'administration arrive par un pont -
+    cas courant des qu'il y a libvirt, un reseau Docker macvlan ou un pont
+    netplan - son reseau etait donc invisible a tout controle de
+    recouvrement, et une plage « libre » proposee par l'assistant du cluster
+    pouvait tomber exactement dessus."""
+    code, out, _ = _run(["ip", "-j", "addr", "show"])
+    if code != 0 or not out:
+        return []
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return []
+    addrs: list[str] = []
+    for entry in data:
+        if entry.get("ifname") == "lo":
+            continue
+        for addr_info in entry.get("addr_info", []):
+            if addr_info.get("family") == "inet":
+                addrs.append(f"{addr_info.get('local')}/{addr_info.get('prefixlen')}")
+    return addrs
 
 
 @dataclass
@@ -419,7 +568,8 @@ def validate_network_plan(config: ManagedNetworkConfig) -> NetworkPlanCheck:
 # Generation YAML netplan (fonction pure, testable independamment)
 # ---------------------------------------------------------------------------
 
-def _build_ip_block(dhcp4: bool, address: str | None, gateway4: str | None, dns_servers: list[str]) -> dict:
+def _build_ip_block(dhcp4: bool, address: str | None, gateway4: str | None,
+                    dns_servers: list[str], no_dns: bool = False) -> dict:
     block: dict = {"dhcp4": bool(dhcp4)}
     if not dhcp4:
         if address:
@@ -429,7 +579,7 @@ def _build_ip_block(dhcp4: bool, address: str | None, gateway4: str | None, dns_
             # par netplan pour le rendu networkd, meme si encore acceptee) -
             # evite un avertissement inutile a chaque application.
             block["routes"] = [{"to": "default", "via": gateway4}]
-    if dns_servers:
+    if dns_servers and not no_dns:
         block["nameservers"] = {"addresses": list(dns_servers)}
     return block
 
@@ -439,7 +589,8 @@ def build_managed_yaml(config: ManagedNetworkConfig) -> str:
 
     if config.interfaces:
         network["ethernets"] = {
-            name: _build_ip_block(ic.dhcp4, ic.address, ic.gateway4, config.dns_servers)
+            name: _build_ip_block(ic.dhcp4, ic.address, ic.gateway4,
+                                  config.dns_servers, ic.no_dns)
             for name, ic in config.interfaces.items()
         }
 

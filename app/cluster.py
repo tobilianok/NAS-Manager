@@ -18,7 +18,9 @@ ailleurs dans le projet :
    Elle doit correspondre a une adresse IP REELLEMENT portee par une carte
    reseau physique de cette machine (`app.netconfig.list_physical_interfaces`,
    revalide EN DIRECT) - meme logique de defense en profondeur que la
-   validation des disques avant creation d'un pool ZFS.
+   validation des disques avant creation d'un pool ZFS. **Et depuis la
+   v1.19.0, jamais la carte principale** : voir la section « La carte
+   principale ne peut pas porter le cluster » plus bas.
 
 2. **Quitter le cluster ou retirer/retrograder un manager exige le mot de
    passe de l'ADMIN CONNECTE**, jamais celui d'un compte cible - regle
@@ -40,6 +42,7 @@ quitter).
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import shutil
@@ -224,36 +227,448 @@ def get_status() -> ClusterStatus:
 # Choix de l'adresse d'annonce
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# La carte principale ne peut pas porter le cluster (v1.19.0)
+# ---------------------------------------------------------------------------
+#
+# POURQUOI CETTE INTERDICTION
+# ---------------------------
+# Le trafic d'un cluster n'est pas du trafic comme un autre. Swarm echange
+# des battements de coeur a cadence fixe, et la replication ZFS de la
+# v1.14.0 sature un lien pendant des heures. Les faire passer par la carte
+# qui porte aussi l'administration, les partages SMB/NFS et les stacks
+# Docker, c'est accepter qu'un envoi de sauvegarde fasse declarer un noeud
+# mort - et, avec le quorum de la v1.18.0, qu'une machine parfaitement
+# vivante se fasse evincer parce que son lien etait occupe.
+#
+# L'inverse est vrai aussi : une panne du cluster ne doit jamais emporter
+# l'acces a l'interface, qui est le seul moyen de la reparer.
+#
+# La regle est donc simple et sans exception : **le cluster passe par une
+# carte dediee**. Une machine a une seule carte ne peut pas en former un.
+# Ce n'est pas une preference d'ecran - l'interdiction vit dans le module,
+# parce qu'une page est atteignable par une requete forgee (lecon v1.17.0).
+
+
+@dataclass
+class InterfaceChoice:
+    """Une carte reseau vue par la page Cluster."""
+    name: str
+    addresses: list[str] = field(default_factory=list)
+    is_primary: bool = False          # porte une route par defaut
+    is_wifi: bool = False
+    bond_member_of: str | None = None
+    # Vrai quand le systeme n'a pas su dire quelle carte est la principale.
+    # Aucune carte n'est alors utilisable : une inconnue ferme la porte.
+    route_unknown: bool = False
+
+    @property
+    def usable(self) -> bool:
+        return (bool(self.addresses) and not self.is_primary
+                and not self.bond_member_of and not self.route_unknown)
+
+    @property
+    def reason(self) -> str:
+        """Pourquoi cette carte n'est pas proposee. Affichee a cote de
+        l'entree grisee : une option barree sans explication passe pour un
+        bug."""
+        if self.route_unknown:
+            return "carte principale indeterminee"
+        if self.is_primary:
+            return ("carte principale (route par defaut) - reservee a "
+                    "l'administration et aux partages")
+        if self.bond_member_of:
+            return f"membre de l'agregat {self.bond_member_of}"
+        if not self.addresses:
+            return "aucune adresse IP configuree"
+        return ""
+
+
+@dataclass
+class ClusterNetworking:
+    """Ce que la page Cluster doit savoir des cartes reseau."""
+    interfaces: list[InterfaceChoice] = field(default_factory=list)
+    # Le systeme n'a pas su dire quelle carte porte la route par defaut.
+    route_unknown: bool = False
+
+    @property
+    def candidates(self) -> list[InterfaceChoice]:
+        return [i for i in self.interfaces if i.usable]
+
+    @property
+    def primaries(self) -> list[InterfaceChoice]:
+        return [i for i in self.interfaces if i.is_primary]
+
+    @property
+    def spares(self) -> list[InterfaceChoice]:
+        """Cartes dediables mais pas encore adressees : c'est a elles que
+        s'adresse l'assistant de configuration reseau."""
+        if self.route_unknown:
+            return []
+        return [i for i in self.interfaces
+                if not i.is_primary and not i.bond_member_of and not i.addresses]
+
+    @property
+    def possible(self) -> bool:
+        return bool(self.candidates)
+
+    @property
+    def blocking_reason(self) -> str:
+        if self.candidates:
+            return ""
+        if self.route_unknown:
+            return (
+                "Impossible de determiner quelle carte reseau est la carte "
+                "principale de cette machine : aucune route par defaut n'a ete "
+                "trouvee (lien coupe, bail DHCP perdu, ou table de routage "
+                "illisible). Tant que cette question n'a pas de reponse, aucune "
+                "carte n'est proposee pour le cluster - se tromper de carte "
+                "ferait passer le trafic du cluster par le lien "
+                "d'administration. Verifie la connexion reseau, puis recharge "
+                "cette page."
+            )
+        if len(self.interfaces) <= 1:
+            return (
+                "Cette machine n'a qu'une seule carte reseau. Un cluster exige "
+                "une carte DEDIEE : faire passer les battements de coeur du "
+                "cluster et la replication par la carte qui porte deja "
+                "l'administration et les partages fait declarer morte une "
+                "machine simplement occupee - et depuis le quorum (v1.18.0), "
+                "une machine declaree morte cesse de servir ses partages."
+            )
+        if self.spares:
+            noms = ", ".join(i.name for i in self.spares)
+            return (
+                f"Aucune carte dediee n'a d'adresse IP. {noms} "
+                f"{'est disponible' if len(self.spares) == 1 else 'sont disponibles'} "
+                "mais sans configuration reseau : l'assistant ci-dessous propose "
+                "une adresse fixe conforme aux bonnes pratiques."
+            )
+        return (
+            "Aucune carte reseau utilisable pour un cluster : les seules cartes "
+            "adressees portent la route par defaut, donc l'administration et les "
+            "partages."
+        )
+
+
+def networking() -> ClusterNetworking:
+    """Etat reseau relu EN DIRECT, comme tout le reste de ce module."""
+    primary = netconfig.default_route_interfaces()
+    unknown = primary is None
+    primary = primary or set()
+    choices = [
+        InterfaceChoice(
+            name=iface.name,
+            addresses=list(iface.addresses),
+            is_primary=iface.name in primary,
+            is_wifi=iface.is_wifi,
+            bond_member_of=iface.bond_member_of,
+            route_unknown=unknown,
+        )
+        for iface in netconfig.list_physical_interfaces()
+    ]
+    return ClusterNetworking(interfaces=choices, route_unknown=unknown)
+
+
 def list_candidate_interfaces() -> list[netconfig.InterfaceSummary]:
-    """Cartes reseau physiques portant au moins une adresse IPv4 - les seules
-    utilisables comme `--advertise-addr`. Revalide EN DIRECT (jamais une
-    liste memorisee) : c'est ce que app.netconfig sait deja faire pour la
-    page Reseau."""
-    return [i for i in netconfig.list_physical_interfaces() if i.addresses]
+    """Cartes reseau physiques utilisables comme `--advertise-addr` : elles
+    portent une adresse IPv4, ne portent PAS la route par defaut, et ne sont
+    pas membres d'un agregat. Revalide EN DIRECT (jamais une liste
+    memorisee). Aucune quand la carte principale est indeterminee."""
+    primary = netconfig.default_route_interfaces()
+    if primary is None:
+        return []
+    return [i for i in netconfig.list_physical_interfaces()
+            if i.addresses and i.name not in primary and not i.bond_member_of]
 
 
 def _resolve_advertise_ip(candidate: str) -> str:
     """Confronte l'adresse choisie aux adresses REELLEMENT portees par une
-    carte de cette machine, relues a l'instant - jamais une chaine de
+    carte DEDIEE de cette machine, relues a l'instant - jamais une chaine de
     formulaire passee telle quelle a `docker swarm init/join`. Accepte soit
-    l'IP nue, soit une IP/prefixe (comme la publie app.netconfig)."""
+    l'IP nue, soit une IP/prefixe (comme la publie app.netconfig).
+
+    Le refus de la carte principale est ici, et pas seulement dans le
+    gabarit : une liste deroulante ne protege de rien, la requete se forge."""
     candidate = (candidate or "").strip()
     if not candidate:
         raise ClusterError("Aucune adresse d'annonce selectionnee.")
 
-    live_ips: set[str] = set()
-    for iface in netconfig.list_physical_interfaces():
-        for addr in iface.addresses:
-            live_ips.add(addr)
-            live_ips.add(addr.split("/", 1)[0])
-
     bare = candidate.split("/", 1)[0]
-    if candidate in live_ips or bare in live_ips:
+
+    dedicated: set[str] = set()
+    primary_ips: set[str] = set()
+    bonded_ips: set[str] = set()
+    primary_names = netconfig.default_route_interfaces()
+    if primary_names is None:
+        raise ClusterError(
+            "Impossible de determiner quelle carte est la carte principale de "
+            "cette machine (aucune route par defaut trouvee). Aucune adresse "
+            "n'est acceptee tant que cette question n'a pas de reponse : "
+            "annoncer le cluster sur le lien d'administration est precisement "
+            "ce que ce controle existe pour empecher."
+        )
+    for iface in netconfig.list_physical_interfaces():
+        if iface.name in primary_names:
+            target = primary_ips
+        elif iface.bond_member_of:
+            target = bonded_ips
+        else:
+            target = dedicated
+        for addr in iface.addresses:
+            target.add(addr)
+            target.add(addr.split("/", 1)[0])
+
+    if candidate in dedicated or bare in dedicated:
         return bare
+    if candidate in primary_ips or bare in primary_ips:
+        raise ClusterError(
+            f"L'adresse {bare} est celle de la carte principale de cette machine "
+            "(celle qui porte la route par defaut). Elle ne peut pas porter le "
+            "cluster : le trafic du cluster et celui de l'administration ne "
+            "doivent jamais partager la meme carte - une replication qui sature "
+            "le lien ferait declarer ce noeud mort. Configure une carte dediee."
+        )
+    if candidate in bonded_ips or bare in bonded_ips:
+        raise ClusterError(
+            f"L'adresse {bare} est portee par une carte membre d'un agregat : "
+            "annonce l'agregat lui-meme, pas l'une de ses cartes."
+        )
     raise ClusterError(
         f"L'adresse {candidate} n'est portee par aucune carte reseau physique de cette "
         "machine actuellement - impossible de l'utiliser pour annoncer ce noeud."
     )
+
+
+# ---------------------------------------------------------------------------
+# Assistant : configurer la carte dediee au cluster (v1.19.0)
+# ---------------------------------------------------------------------------
+#
+# LE PROBLEME QUE CA REGLE
+# ------------------------
+# Une carte dediee au cluster est, par construction, branchee sur un cable
+# direct ou un switch a part. Il n'y a donc **aucun serveur DHCP** dessus :
+# elle reste sans adresse indefiniment, et le cluster reste impossible sans
+# que rien n'explique pourquoi. Exiger une carte dediee sans dire comment
+# l'adresser reviendrait a interdire la fonctionnalite.
+#
+# LES BONNES PRATIQUES, ET POURQUOI CHACUNE
+# -----------------------------------------
+# - **Adresse fixe, jamais DHCP.** Il n'y a personne pour repondre, et meme
+#   s'il y avait un serveur, une adresse de cluster qui change au bail
+#   suivant casserait `--advertise-addr`, les baux de quorum et les
+#   replications enregistrees.
+# - **AUCUNE passerelle sur cette carte.** C'est le point le plus important
+#   et le plus facile a rater : une machine n'a qu'une seule route par
+#   defaut utile. En declarer une seconde sur le lien de cluster fait sortir
+#   une partie du trafic par un cable qui ne mene nulle part - la machine
+#   perd son acces reseau, et l'interface d'administration avec.
+# - **Aucun serveur DNS non plus** : rien a resoudre sur un lien point a
+#   point entre deux machines qu'on adresse par leur IP.
+# - **Un reseau prive a part, hors du reseau de la maison**, pour qu'aucune
+#   route ne puisse hesiter entre les deux. /24 : large, lisible, et
+#   suffisant pour bien plus de noeuds que ce projet n'en verra.
+# - **La meme plage des deux cotes**, avec des adresses voisines (.1 et .2) :
+#   ce qu'on retient de tete quand il faut depanner a 2 h du matin.
+# - **Un cable direct suffit** entre deux machines : les cartes Gigabit et
+#   au-dela negocient le croisement toutes seules (auto-MDIX).
+
+CLUSTER_PREFIX = 24
+
+# Plages proposees, dans l'ordre. Toutes privees (RFC 1918) et choisies
+# volontairement loin des plages que distribuent les box grand public
+# (192.168.0.0/24 et 192.168.1.0/24), pour qu'une collision soit rare meme
+# sur une machine dont on ne connait pas le reseau.
+CLUSTER_SUBNET_CANDIDATES = (
+    "10.10.10.0/24",
+    "10.10.20.0/24",
+    "10.20.30.0/24",
+    "172.30.30.0/24",
+    "192.168.240.0/24",
+)
+
+CLUSTER_NETWORK_NOTES = (
+    "Adresse fixe : il n'y a aucun serveur DHCP sur un lien dedie, et une "
+    "adresse qui change casserait l'annonce du noeud, les baux de quorum et "
+    "les replications enregistrees.",
+    "Aucune passerelle sur cette carte : une machine n'a qu'une seule route "
+    "par defaut utile. En declarer une seconde ici ferait sortir du trafic "
+    "par un cable qui ne mene nulle part - et ferait perdre l'acces a cette "
+    "interface.",
+    "Aucun serveur DNS : il n'y a rien a resoudre sur un lien entre deux "
+    "machines qu'on adresse par leur IP.",
+    "Meme plage des deux cotes, adresses voisines : .1 ici, .2 sur l'autre "
+    "noeud. Un cable reseau direct entre les deux machines suffit.",
+)
+
+
+@dataclass
+class DedicatedPlan:
+    """Proposition d'adressage pour une carte dediee au cluster."""
+    interface: str
+    address: str = ""        # "10.10.10.1/24", tel qu'attendu par netplan
+    peer_address: str = ""   # ce qu'il faudra poser sur l'autre noeud
+    subnet: str = ""
+    notes: tuple[str, ...] = CLUSTER_NETWORK_NOTES
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.address) and not self.error
+
+
+def _live_networks() -> list["ipaddress.IPv4Network"]:
+    """Tous les reseaux IPv4 deja portes par cette machine. Sert a ne jamais
+    proposer une plage qui recouvrirait le reseau existant : deux routes vers
+    le meme reseau, c'est un acces perdu au hasard du depart.
+
+    Toutes les interfaces, pas seulement les cartes physiques : quand
+    l'administration arrive par un pont (`br0`, libvirt, macvlan) ou un
+    agregat, son reseau n'apparait sur AUCUNE carte physique - et
+    l'assistant proposait alors gaiement la plage de l'administrateur comme
+    « libre »."""
+    networks: list[ipaddress.IPv4Network] = []
+    for addr in netconfig.all_ipv4_networks():
+        try:
+            networks.append(ipaddress.ip_interface(addr).network)
+        except ValueError:
+            continue
+    return networks
+
+
+def suggest_dedicated_plan(interface: str, host_index: int = 1) -> DedicatedPlan:
+    """Propose une adresse pour la carte dediee au cluster.
+
+    `host_index` vaut 1 sur le premier noeud et 2 sur le second : la page le
+    laisse changer, parce que deux machines ne peuvent evidemment pas porter
+    la meme adresse."""
+    plan = DedicatedPlan(interface=interface)
+    if host_index < 1 or host_index > 250:
+        plan.error = "Le numero du noeud doit etre compris entre 1 et 250."
+        return plan
+
+    taken = _live_networks()
+    for candidate in CLUSTER_SUBNET_CANDIDATES:
+        network = ipaddress.ip_network(candidate)
+        if any(network.overlaps(existing) for existing in taken):
+            continue
+        plan.subnet = str(network)
+        plan.address = f"{network.network_address + host_index}/{CLUSTER_PREFIX}"
+        peer = 2 if host_index == 1 else 1
+        plan.peer_address = f"{network.network_address + peer}/{CLUSTER_PREFIX}"
+        return plan
+
+    plan.error = (
+        "Toutes les plages proposees recouvrent un reseau deja utilise par "
+        "cette machine. Choisis une plage privee libre a la main sur "
+        "Parametres → Reseau."
+    )
+    return plan
+
+
+def validate_dedicated_address(interface: str, address: str) -> str:
+    """Verifie qu'une adresse peut etre posee sur une carte dediee.
+
+    Trois refus, tous fondes sur ce qui casse pour de vrai :
+    1. la carte n'existe pas, porte la route par defaut, ou appartient a un
+       agregat - on ne reconfigure jamais le lien par lequel arrive
+       l'administration depuis la page Cluster ;
+    2. l'adresse n'est pas une IPv4/prefixe valide ;
+    3. elle recouvre un reseau deja porte par cette machine - deux chemins
+       vers le meme reseau, c'est un acces perdu au hasard.
+
+    Rend l'adresse normalisee."""
+    name = (interface or "").strip()
+    interfaces = {i.name: i for i in netconfig.list_physical_interfaces()}
+    iface = interfaces.get(name)
+    if iface is None:
+        raise ClusterError(f"Carte reseau '{name}' introuvable sur cette machine.")
+
+    primary_names = netconfig.default_route_interfaces()
+    if primary_names is None:
+        raise ClusterError(
+            "Impossible de determiner quelle carte est la carte principale de "
+            "cette machine (aucune route par defaut trouvee). Aucune carte n'est "
+            "reconfigurable depuis cette page tant que cette question n'a pas de "
+            "reponse : se tromper de carte coupe l'acces a cette interface."
+        )
+    if name in primary_names:
+        raise ClusterError(
+            f"{name} porte la route par defaut : c'est la carte principale, celle "
+            "par laquelle arrive cette interface. Elle ne se reconfigure pas "
+            "depuis la page Cluster."
+        )
+    if iface.bond_member_of:
+        raise ClusterError(
+            f"{name} est membre de l'agregat {iface.bond_member_of} - configure "
+            "l'agregat lui-meme depuis Parametres → Reseau."
+        )
+
+    try:
+        chosen = ipaddress.ip_interface((address or "").strip())
+    except ValueError:
+        raise ClusterError(
+            "Adresse invalide : attendu une adresse IPv4 avec son prefixe, "
+            "par exemple 10.10.10.1/24."
+        )
+    if chosen.version != 4:
+        raise ClusterError("Seul l'IPv4 est gere pour le lien de cluster.")
+    if chosen.network.prefixlen >= 31:
+        raise ClusterError(
+            "Prefixe trop etroit : utilise au moins un /30, et de preference "
+            "un /24."
+        )
+
+    # Les adresses deja portees par CETTE carte ne sont pas une collision :
+    # c'est l'etat qu'on est en train de refaire, pas un second chemin.
+    own: set[ipaddress.IPv4Network] = set()
+    for addr in iface.addresses:
+        try:
+            own.add(ipaddress.ip_interface(addr).network)
+        except ValueError:
+            continue
+
+    for existing in _live_networks():
+        if existing in own or not existing.overlaps(chosen.network):
+            continue
+        raise ClusterError(
+            f"Le reseau {chosen.network} recouvre {existing}, deja utilise par "
+            "cette machine. Deux chemins vers le meme reseau font perdre "
+            "l'acces au hasard du depart - choisis une autre plage."
+        )
+    return str(chosen)
+
+
+def configure_dedicated(interface: str, address: str, session_username: str,
+                        confirm_password: str) -> str:
+    """Seule porte d'entree pour adresser une carte dediee depuis la page
+    Cluster. Rend l'adresse normalisee, prete pour netplan.
+
+    Trois garde-fous, tous dans le module et pas dans le gabarit - une page
+    est atteignable par une requete forgee (lecon v1.17.0) :
+
+    1. **Refus categorique si ce noeud fait deja partie d'un cluster.** La
+       carte dediee porte alors l'adresse d'annonce du noeud ; en changer
+       rend le noeud injoignable pour Swarm, qui le declare mort - et depuis
+       le quorum de la v1.18.0, un noeud declare mort **cesse de servir ses
+       partages**. L'assistant sert a preparer le lien AVANT de former le
+       cluster ; apres, il faut quitter le cluster d'abord.
+    2. **Mot de passe de l'admin connecte** (regle constante depuis la
+       Phase 8b) : reconfigurer une carte reseau peut couper l'acces.
+    3. Tout ce que verifie `validate_dedicated_address` : carte existante,
+       jamais la principale, jamais un membre d'agregat, adresse valide, pas
+       de recouvrement avec un reseau deja porte par la machine."""
+    status = get_status()
+    if status.active:
+        raise ClusterError(
+            "Ce noeud fait deja partie d'un cluster : sa carte dediee porte "
+            f"l'adresse d'annonce{' ' + status.advertise_addr if status.advertise_addr else ''}, "
+            "et en changer le rendrait injoignable pour Swarm, qui le declarerait "
+            "mort - avec, depuis la v1.18.0, l'arret de ses partages a la cle. "
+            "Quitte le cluster d'abord si le plan d'adressage doit changer."
+        )
+    _require_password_confirmation(session_username, confirm_password)
+    return validate_dedicated_address(interface, address)
 
 
 # ---------------------------------------------------------------------------

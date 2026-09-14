@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -131,8 +132,16 @@ def read() -> Snapshot:
 
 
 def _write(snapshot: Snapshot) -> None:
+    """Ecriture ATOMIQUE (v1.19.0). Depuis que la verification part aussi
+    d'un fil de fond horaire, elle peut tomber pendant qu'une requete lit le
+    fichier ; une ecriture directe le laisse tronque le temps d'un instant,
+    et la lecture rend alors un instantane vide - « jamais verifie », avec
+    les correctifs de securite en attente disparus de l'ecran. Tous les
+    autres etats du projet passent deja par os.replace."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(asdict(snapshot), indent=2))
+    tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
+    tmp.write_text(json.dumps(asdict(snapshot), indent=2))
+    os.replace(tmp, STATE_FILE)
 
 
 def _check_system(snapshot: Snapshot) -> None:
@@ -173,8 +182,24 @@ def _check_docker(snapshot: Snapshot) -> None:
         except Exception as exc:                  # noqa: BLE001
             snapshot.errors.append(f"Docker ({name}) : {exc}")
             continue
-        if any(state == "outdated" for state in results.values()):
+        # « maj_disponible », et non « outdated » : c'est le vocabulaire que
+        # rend `dockerstacks.check_image_update`, qui ne sort que de trois
+        # valeurs - a_jour, maj_disponible, inconnu. La comparaison avec
+        # « outdated » ne pouvait donc JAMAIS etre vraie : la notice
+        # « Images Docker » ne s'est jamais affichee depuis la v1.7.0, et
+        # depuis la v1.19.0 le fil horaire payait un `docker manifest
+        # inspect` par image pour un resultat impossible.
+        if any(state == "maj_disponible" for state in results.values()):
             snapshot.docker_stacks.append(name)
+
+
+# Deux verifications ne doivent jamais tourner en meme temps : elles
+# lancent `apt-get -s`, un `git fetch` et un `docker manifest inspect` par
+# stack, et la derniere a finir ecraserait le resultat de l'autre. Le verrou
+# n'est pas un detail de confort depuis la v1.19.0 : ouvrir le panneau
+# declenche une verification, et rien n'empeche de l'ouvrir deux fois de
+# suite ou depuis deux navigateurs.
+_refresh_lock = threading.Lock()
 
 
 def refresh() -> Snapshot:
@@ -183,13 +208,154 @@ def refresh() -> Snapshot:
     depuis le rendu d'une page.
 
     Chaque source est isolee : une panne de GitHub ne doit pas empecher de
-    savoir qu'Ubuntu a des correctifs de securite en attente."""
-    snapshot = Snapshot(checked_epoch=time.time())
-    _check_system(snapshot)
-    _check_nasmanager(snapshot)
-    _check_docker(snapshot)
+    savoir qu'Ubuntu a des correctifs de securite en attente.
+
+    Si une verification est deja en cours, on attend qu'elle finisse et on
+    rend SON resultat plutot que d'en lancer une seconde : c'est la meme
+    information, et deux passages simultanes se marcheraient dessus.
+
+    L'acquisition est d'abord tentee SANS attendre. C'est ce qui distingue
+    « dedupliquer » de « mettre en file d'attente » : avec une simple
+    acquisition bloquante, trois clics simultanes faisaient trois passages
+    complets a la suite - trois `apt-get -s`, trois `git fetch`, et un
+    `docker manifest inspect` par image a chaque fois."""
+    if not _refresh_lock.acquire(blocking=False):
+        logger.info("Verification deja en cours - on attend son resultat")
+        if _refresh_lock.acquire(timeout=REFRESH_WAIT_SECONDS):
+            _refresh_lock.release()
+        return read()
     try:
-        _write(snapshot)
-    except OSError as exc:
-        logger.warning("Impossible d'enregistrer les notifications : %s", exc)
-    return snapshot
+        snapshot = Snapshot(checked_epoch=time.time())
+        _check_system(snapshot)
+        _check_nasmanager(snapshot)
+        _check_docker(snapshot)
+        try:
+            _write(snapshot)
+        except OSError as exc:
+            logger.warning("Impossible d'enregistrer les notifications : %s", exc)
+        return snapshot
+    finally:
+        _refresh_lock.release()
+
+
+def refresh_if_older_than(seconds: float) -> Snapshot:
+    """Verifie, sauf si le dernier resultat a moins de `seconds`.
+
+    C'est ce qu'appelle le fil horaire. Le garde-fou n'est pas la pour
+    economiser : il est la pour qu'un double-clic, un rafraichissement de
+    page ou deux onglets ouverts ne lancent pas trois `apt-get -s` et trois
+    `git fetch` a la seconde.
+
+    Un instantane illisible (fichier tronque, disque plein) compte comme
+    jamais verifie et declenche donc une verification - c'est le bon sens de
+    l'erreur, mais ca vaut d'etre su."""
+    snapshot = read()
+    if not snapshot.never_checked and snapshot.age_seconds < seconds:
+        return snapshot
+    return refresh()
+
+
+def refresh_in_background(seconds: float) -> bool:
+    """Lance une verification dans un fil, sans attendre son resultat.
+
+    POURQUOI CE DETOUR
+    ------------------
+    Ouvrir le panneau meteo declenche une verification (v1.19.0). Mais cette
+    verification interroge apt (jusqu'a 120 s), GitHub (jusqu'a 120 s) et un
+    registre Docker par image : la faire dans la requete qui rend la page,
+    c'est transformer « je regarde le detail » en plusieurs minutes d'attente
+    sur un NAS coupe d'Internet ou derriere un proxy qui laisse pendre la
+    connexion. Et le module pose depuis la v1.7.0 la regle inverse : aucun
+    acces reseau dans le rendu d'une page.
+
+    Le panneau affiche donc immediatement ce qu'on sait, et le resultat frais
+    arrive tout seul au rafraichissement suivant du fragment - trente
+    secondes plus tard, fenetre ouverte, sous les yeux. Le bouton
+    « Verifier maintenant », lui, reste synchrone : il ne demande rien
+    d'autre que ca, et l'utilisateur a choisi d'attendre.
+
+    Rend True si un fil est parti, False si le resultat etait deja frais ou
+    si une verification tourne deja."""
+    snapshot = read()
+    if not snapshot.never_checked and snapshot.age_seconds < seconds:
+        return False
+    if _refresh_lock.locked():
+        return False
+
+    def _run() -> None:
+        try:
+            refresh()
+        except Exception:  # noqa: BLE001 - un fil qui meurt ne doit rien casser
+            logger.exception("Verification des mises a jour en tache de fond en echec")
+
+    threading.Thread(target=_run, name="update-check", daemon=True).start()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Verification horaire, en tache de fond (v1.19.0)
+# ---------------------------------------------------------------------------
+#
+# Jusqu'ici, la verification ne partait QUE sur un clic. Une machine que
+# personne ne regarde pendant une semaine affichait donc, une semaine
+# durant, un resultat vieux d'une semaine - et c'est exactement la machine
+# pour laquelle un correctif de securite en attente compte le plus.
+#
+# Un fil interne plutot qu'un timer systemd, pour la raison posee en
+# v1.12.0 : un timer imposerait un `sudo ./install.sh` a l'installation de
+# cette version, alors qu'une version doit pouvoir s'installer depuis
+# l'interface.
+#
+# Sans etat propre, comme le planificateur de snapshots : l'echeance se
+# deduit de l'horodatage range dans le fichier de resultat. Un service
+# redemarre ne rejoue donc pas une verification qui vient d'avoir lieu, et
+# n'en saute pas une qui etait due.
+
+AUTO_INTERVAL_SECONDS = 3600.0
+
+# Pause entre deux reveils du fil. Plus court que l'intervalle lui-meme :
+# le fil se contente de regarder l'age du resultat, ce qui ne coute rien, et
+# un service redemarre rattrape ainsi en cinq minutes au lieu d'une heure.
+_SCHEDULER_TICK_SECONDS = 300.0
+
+# Le premier passage attend, comme celui des snapshots : au demarrage du
+# service, le reseau n'est pas forcement la, et ca laisse la suite de tests
+# tourner sans qu'un fil de fond parte interroger GitHub derriere elle.
+SCHEDULER_FIRST_DELAY_SECONDS = 120.0
+
+# Temps maximal d'attente d'une verification deja en cours avant de rendre
+# le resultat precedent. Une verification complete depasse rarement dix
+# secondes ; au-dela, mieux vaut une page qui repond avec une donnee datee
+# qu'une page qui ne repond pas.
+REFRESH_WAIT_SECONDS = 30.0
+
+_scheduler_thread: "threading.Thread | None" = None
+
+
+def _scheduler_loop() -> None:
+    time.sleep(SCHEDULER_FIRST_DELAY_SECONDS)
+    while True:
+        try:
+            refresh_if_older_than(AUTO_INTERVAL_SECONDS)
+        except Exception:  # noqa: BLE001 - la boucle ne doit jamais mourir
+            logger.exception("Verification automatique des mises a jour en echec")
+        time.sleep(_SCHEDULER_TICK_SECONDS)
+
+
+def start_scheduler() -> bool:
+    """Demarre la verification horaire en tache de fond, une seule fois."""
+    global _scheduler_thread
+
+    if os.environ.get("NAS_MANAGER_UPDATE_SCHEDULER", "1") == "0":
+        logger.info("Verification automatique des mises a jour desactivee par l'environnement")
+        return False
+    if _scheduler_thread is not None and _scheduler_thread.is_alive():
+        return False
+
+    _scheduler_thread = threading.Thread(
+        target=_scheduler_loop, name="update-notifications", daemon=True,
+    )
+    _scheduler_thread.start()
+    logger.info("Verification automatique des mises a jour demarree (toutes les %s s)",
+                AUTO_INTERVAL_SECONDS)
+    return True

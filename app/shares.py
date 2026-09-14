@@ -27,15 +27,17 @@ mais SEUL le filtrage par reseau protege qui peut monter un partage NFS.
 
 from __future__ import annotations
 
+import grp
 import json
 import logging
 import os
+import pwd
 import re
 import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from app import nasusers, zfs
+from app import auth, nasusers, zfs
 
 logger = logging.getLogger("nas_manager.shares")
 
@@ -52,6 +54,81 @@ SHARE_NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,31}$")
 RESERVED_SHARE_NAMES = {"global", "homes", "printers", "print$"}
 
 DATASET_PARENT = "partages"
+
+# ---------------------------------------------------------------------------
+# Identites NFS (v1.19.0)
+# ---------------------------------------------------------------------------
+#
+# LE BUG CORRIGE ICI. Un client qui montait un partage NFS obtenait
+# « Permission denied » au premier `mkdir`, alors que le montage lui-meme
+# reussissait. Deux faits se combinaient :
+#
+#   - le dataset d'un partage est cree `root:nasshares` en mode 2770 :
+#     personne d'autre que root et les comptes de partage n'y touche ;
+#   - l'export etait ecrit avec `root_squash`, qui ramene le root du client
+#     a `nobody`.
+#
+# `nobody` n'appartient pas a `nasshares` : il n'a donc aucun droit sur le
+# dossier. Et un utilisateur non-root du client ne s'en sort pas mieux - NFS
+# v3 transmet des NUMEROS d'utilisateur, et l'UID 1000 d'un portable Ubuntu
+# ne designe personne de particulier sur le NAS.
+#
+# C'est la difficulte de fond de NFS, pas un defaut de ce projet : NFS
+# n'authentifie personne, il fait confiance aux UID que le client annonce.
+# Trois facons d'en sortir, toutes offertes ici, avec leurs consequences
+# ecrites dans l'interface plutot qu'en note de bas de page.
+
+# Tous les clients ecrivent sous UNE identite choisie ici. Ce que font
+# Unraid et OpenMediaVault, et ce qui marche sans rien configurer cote
+# client. C'est le mode par defaut.
+NFS_MODE_SQUASH_ALL = "squash_all"
+# Les UID du client sont pris tels quels : a reserver aux parcs Unix ou les
+# comptes sont alignes des deux cotes.
+NFS_MODE_UID_MATCH = "uid_match"
+# Le root du client devient root sur le partage. Debloque tout, et donne a
+# quiconque obtient root sur une machine du reseau un pouvoir total sur ces
+# donnees.
+NFS_MODE_ROOT_ALLOWED = "root_allowed"
+
+NFS_MODES = (NFS_MODE_SQUASH_ALL, NFS_MODE_UID_MATCH, NFS_MODE_ROOT_ALLOWED)
+DEFAULT_NFS_MODE = NFS_MODE_SQUASH_ALL
+
+NFS_MODE_LABELS = {
+    NFS_MODE_SQUASH_ALL: "Tous les clients sous une identite unique",
+    NFS_MODE_UID_MATCH: "Correspondance des UID",
+    NFS_MODE_ROOT_ALLOWED: "Root du client autorise",
+}
+
+# Compte de repli quand aucun compte de partage n'est designe : l'UID est
+# celui de `nobody` (aucun pouvoir propre), le GID celui de `nasshares`
+# (celui du dossier, en 2770). C'est le GID qui donne les droits, l'UID ne
+# sert qu'a marquer le proprietaire des fichiers crees - d'ou un partage qui
+# fonctionne des sa creation, sans qu'un compte ait a exister.
+FALLBACK_ANON_UID = 65534
+
+# Un nom d'hote, une IP, un reseau CIDR ou un caractere generique. Tout le
+# reste est refuse : cette chaine finit entre parentheses dans
+# /etc/exports, ou une parenthese de plus suffirait a injecter des options
+# que personne n'a demandees (`no_root_squash`, par exemple).
+# Trois formes, toutes legales dans exports(5) :
+#   - un nom d'hote, une IP, un joker : `nas-2`, `192.168.1.20`, `*.lan`
+#   - un reseau CIDR : `192.168.1.0/24`
+#   - un reseau en masque pointe : `192.168.1.0/255.255.255.0`
+#   - un netgroup : `@bureau`
+# Les deux dernieres formes manquaient et etaient donc refusees, alors
+# qu'elles ont pu etre saisies avant la v1.19.0 : un partage parfaitement
+# valide disparaissait de /etc/exports a la premiere modification, et la
+# correction proposee - retaper la valeur - se faisait refuser.
+NFS_NETWORK_RE = re.compile(
+    r"^@?[A-Za-z0-9.:*?_-]{1,64}"
+    r"(?:/(?:\d{1,3}|\d{1,3}(?:\.\d{1,3}){3}))?$"
+)
+
+# Autoriser le monde entier n'est pas une plage comme une autre. Ces deux
+# formes sont acceptees - il existe des cas legitimes derriere un pare-feu
+# perimetrique - mais elles ne se combinent JAMAIS avec no_root_squash (voir
+# update_nfs_options).
+NFS_WORLD_NETWORKS = {"*", "0.0.0.0/0", "::/0"}
 
 
 class ShareError(RuntimeError):
@@ -94,6 +171,9 @@ class Share:
     users: list[ShareAccess] = field(default_factory=list)
     groups: list[GroupAccess] = field(default_factory=list)
     nfs_networks: list[str] = field(default_factory=list)
+    nfs_mode: str = DEFAULT_NFS_MODE
+    nfs_anon_user: str = ""
+    nfs_access: str = "rw"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -102,10 +182,18 @@ class Share:
     def from_dict(d: dict) -> "Share":
         users = [ShareAccess(**u) for u in d.get("users", [])]
         groups = [GroupAccess(**g) for g in d.get("groups", [])]
+        # Un partage enregistre avant la v1.19.0 n'a pas ces trois champs.
+        # Il reprend le mode par defaut - c'est-a-dire celui qui fonctionne :
+        # jusqu'ici, le comportement effectif etait « personne ne peut
+        # ecrire », ce qu'aucun utilisateur n'a choisi.
+        mode = d.get("nfs_mode", DEFAULT_NFS_MODE)
         return Share(
             name=d["name"], pool=d["pool"], dataset=d["dataset"],
             mountpoint=d["mountpoint"], protocols=d.get("protocols", []),
             users=users, groups=groups, nfs_networks=d.get("nfs_networks", []),
+            nfs_mode=mode if mode in NFS_MODES else DEFAULT_NFS_MODE,
+            nfs_anon_user=d.get("nfs_anon_user", ""),
+            nfs_access="ro" if d.get("nfs_access") == "ro" else "rw",
         )
 
 
@@ -151,6 +239,32 @@ def guess_local_network() -> str:
         if len(parts) == 4:
             return f"{parts[0]}.{parts[1]}.{parts[2]}.0/24"
     return "192.168.1.0/24"
+
+
+def _valid_nfs_network(value: str) -> bool:
+    return bool(NFS_NETWORK_RE.match((value or "").strip()))
+
+
+def validate_nfs_network(value: str) -> str:
+    """Une plage NFS saisie a la main finit telle quelle dans /etc/exports,
+    juste avant la parenthese qui porte les options. Sans ce filtre, une
+    saisie contenant une parenthese pouvait ajouter ses propres options a
+    l'export - `no_root_squash` par exemple. Le champ n'a jamais ete
+    verifie avant la v1.19.0."""
+    cleaned = (value or "").strip()
+    if not _valid_nfs_network(cleaned):
+        # Le message ne PROPOSE plus « '*' pour tout autoriser » : suggerer
+        # la valeur la plus large du champ dans le texte qui explique
+        # comment le remplir, pendant que l'encadre juste au-dessus dit de
+        # ne jamais depasser le reseau local, revient a pousser vers le
+        # reglage le plus dangereux.
+        raise ShareError(
+            f"Plage reseau invalide : « {cleaned} ». Attendu une adresse "
+            "(192.168.1.20), un reseau (192.168.1.0/24 ou "
+            "192.168.1.0/255.255.255.0), un nom d'hote, ou un netgroup "
+            "(@bureau)."
+        )
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -199,12 +313,81 @@ def _smb_block_for_share(share: Share) -> list[str]:
     return lines
 
 
+def _share_group_gid() -> int:
+    try:
+        return grp.getgrnam(nasusers.SHARE_GROUP).gr_gid
+    except KeyError:
+        logger.error("Groupe '%s' introuvable - repli sur %s pour l'export NFS",
+                     nasusers.SHARE_GROUP, FALLBACK_ANON_UID)
+        return FALLBACK_ANON_UID
+
+
+def resolve_anon_identity(share: Share) -> tuple[int, int, str]:
+    """(uid, gid, description) sous lesquels ecriront les clients NFS en mode
+    « identite unique ».
+
+    Un compte designe donne son propre UID/GID. Sinon on retombe sur
+    `nobody` + le groupe `nasshares` : le GID est ce qui ouvre le dossier
+    (2770), l'UID ne sert qu'a signer les fichiers crees. C'est ce repli qui
+    fait qu'un partage NFS fonctionne des sa creation, avant meme qu'un
+    compte de partage existe."""
+    gid = _share_group_gid()
+    if share.nfs_anon_user:
+        try:
+            entry = pwd.getpwnam(share.nfs_anon_user)
+        except KeyError:
+            logger.error(
+                "Compte NFS '%s' du partage '%s' introuvable - repli sur le "
+                "compte generique", share.nfs_anon_user, share.name)
+        else:
+            return entry.pw_uid, entry.pw_gid, share.nfs_anon_user
+    try:
+        anon_uid = pwd.getpwnam("nobody").pw_uid
+    except KeyError:
+        anon_uid = FALLBACK_ANON_UID
+    return anon_uid, gid, f"compte generique (nobody:{nasusers.SHARE_GROUP})"
+
+
+def nfs_export_options(share: Share) -> str:
+    """Les options d'export d'un partage, telles qu'elles atterrissent dans
+    /etc/exports. Exposee pour que l'interface affiche exactement ce qui
+    sera ecrit - un reglage de securite qu'on ne peut pas relire est un
+    reglage qu'on ne verifie jamais."""
+    access = "ro" if share.nfs_access == "ro" else "rw"
+    base = [access, "sync", "no_subtree_check"]
+
+    if share.nfs_mode == NFS_MODE_ROOT_ALLOWED:
+        return ",".join([*base, "no_root_squash"])
+    if share.nfs_mode == NFS_MODE_UID_MATCH:
+        return ",".join([*base, "root_squash"])
+
+    uid, gid, _ = resolve_anon_identity(share)
+    return ",".join([*base, "all_squash", f"anonuid={uid}", f"anongid={gid}"])
+
+
 def _exports_line_for_share(share: Share) -> str | None:
     if "nfs" not in share.protocols:
         return None
-    networks = share.nfs_networks or [guess_local_network()]
-    opts = " ".join(f"{net}(rw,sync,no_subtree_check,root_squash)" for net in networks)
-    return f"{share.mountpoint} {opts}"
+    configured = list(share.nfs_networks or [])
+    networks = [n for n in configured if _valid_nfs_network(n)]
+    if configured and len(networks) != len(configured):
+        # Un registre ecrit avant la v1.19.0 n'a jamais ete valide. Plutot
+        # que de deviner ce qu'une valeur aberrante voulait dire - ou de
+        # retomber sur « tout le reseau local », ce qui elargirait l'acces
+        # sans que personne l'ait demande - on n'exporte pas ce partage. Il
+        # cesse de repondre, ce qui se voit, au lieu de repondre a plus
+        # large que prevu, ce qui ne se voit pas.
+        logger.error(
+            "Partage '%s' NON exporte : plage(s) reseau invalide(s) dans le "
+            "registre (%s). Corrige-les depuis la page du partage.",
+            share.name, ", ".join(n for n in configured if n not in networks),
+        )
+        return None
+    if not networks:
+        networks = [guess_local_network()]
+    opts = nfs_export_options(share)
+    clients = " ".join(f"{net}({opts})" for net in networks)
+    return f"{share.mountpoint} {clients}"
 
 
 def _regenerate_smb_conf(shares: list[Share]) -> None:
@@ -499,8 +682,18 @@ def remove_group_from_share(share_name: str, groupname: str) -> list[str]:
     return _apply_config(shares)
 
 
-def update_nfs_networks(share_name: str, networks: list[str]) -> list[str]:
-    cleaned = [n.strip() for n in networks if n.strip()]
+def update_nfs_networks(share_name: str, networks: list[str],
+                        session_username: str = "", confirm_password: str = "") -> list[str]:
+    """Qui a le droit de monter ce partage.
+
+    Mot de passe de l'admin connecte exige (regle constante depuis la
+    Phase 8b) : elargir une plage reseau est l'action la plus exposante de
+    tout le module - elle decide a qui les donnees sont offertes. Les
+    actions du pare-feu et du stockage Docker, moins lourdes, le demandent
+    deja."""
+    _require_password(session_username, confirm_password)
+
+    cleaned = [validate_nfs_network(n) for n in networks if n.strip()]
     if not cleaned:
         raise ShareError("Au moins une plage reseau est necessaire pour l'export NFS.")
 
@@ -509,6 +702,101 @@ def update_nfs_networks(share_name: str, networks: list[str]) -> list[str]:
     if share is None:
         raise ShareError(f"Le partage '{share_name}' n'existe pas.")
 
+    if share.nfs_mode == NFS_MODE_ROOT_ALLOWED and _opens_to_the_world(cleaned):
+        raise ShareError(
+            "Refus : « Root du client autorise » et une plage ouverte au monde "
+            "entier ne se combinent pas. N'importe quelle machine capable "
+            "d'atteindre ce NAS deviendrait root sur ces donnees - elle pourrait "
+            "les lire, les modifier et les effacer entierement. Restreins la "
+            "plage, ou repasse le partage dans un autre mode d'identite."
+        )
+
     share.nfs_networks = cleaned
     _save_registry(shares)
     return _apply_config(shares)
+
+
+def _require_password(session_username: str, confirm_password: str) -> None:
+    if not confirm_password or not auth.authenticate(session_username, confirm_password):
+        raise ShareError("Mot de passe incorrect - action annulee par securite.")
+
+
+def _opens_to_the_world(networks: list[str]) -> bool:
+    return any(n.strip() in NFS_WORLD_NETWORKS for n in networks)
+
+
+def update_nfs_options(share_name: str, mode: str, anon_user: str = "",
+                       access: str = "rw", session_username: str = "",
+                       confirm_password: str = "") -> tuple[str, list[str]]:
+    """Regle la facon dont NFS traduit les identites du client (v1.19.0).
+
+    Mot de passe de l'admin connecte exige : l'un des trois modes donne le
+    root des machines clientes sur ces donnees, et c'est une modification de
+    /etc/exports.
+
+    Renvoie (resume lisible de ce qui s'applique desormais, avertissements
+    du rechargement des services)."""
+    _require_password(session_username, confirm_password)
+
+    if mode not in NFS_MODES:
+        raise ShareError("Mode NFS inconnu.")
+    if access not in ("rw", "ro"):
+        raise ShareError("Type d'acces invalide (lecture/ecriture ou lecture seule).")
+
+    anon_user = (anon_user or "").strip()
+    if mode == NFS_MODE_SQUASH_ALL and anon_user:
+        if not nasusers.is_share_user(anon_user):
+            raise ShareError(
+                f"'{anon_user}' n'est pas un compte de partage existant. "
+                "Laisse le champ sur le compte generique, ou cree d'abord le "
+                "compte dans Comptes de partage."
+            )
+    if mode != NFS_MODE_SQUASH_ALL:
+        # Le compte n'a de sens que dans ce mode : le garder en memoire
+        # laisserait croire, a la relecture, qu'il s'applique encore.
+        anon_user = ""
+
+    shares = _load_registry()
+    share = next((s for s in shares if s.name == share_name), None)
+    if share is None:
+        raise ShareError(f"Le partage '{share_name}' n'existe pas.")
+    if "nfs" not in share.protocols:
+        raise ShareError(f"Le partage '{share_name}' n'est pas publie en NFS.")
+
+    # Le seul refus categorique du module. `no_root_squash` sur une plage
+    # ouverte au monde entier donne un pouvoir total sur ces donnees a
+    # n'importe quelle machine capable de monter le partage. Aucune
+    # confirmation ne rattrape ca : les deux reglages ne se combinent pas.
+    if mode == NFS_MODE_ROOT_ALLOWED and _opens_to_the_world(share.nfs_networks or []):
+        raise ShareError(
+            "Refus : ce partage est ouvert au monde entier "
+            f"({', '.join(share.nfs_networks)}). Y autoriser le root des "
+            "machines clientes donnerait un pouvoir total sur ces donnees a "
+            "n'importe qui peut atteindre ce NAS. Restreins d'abord la plage "
+            "reseau a ton reseau local."
+        )
+
+    share.nfs_mode = mode
+    share.nfs_anon_user = anon_user
+    share.nfs_access = access
+    _save_registry(shares)
+    warnings = _apply_config(shares)
+
+    if mode == NFS_MODE_SQUASH_ALL:
+        _, _, who = resolve_anon_identity(share)
+        summary = (f"Tous les clients NFS de « {share.name} » ecrivent desormais "
+                   f"sous {who}.")
+    elif mode == NFS_MODE_UID_MATCH:
+        summary = (f"« {share.name} » utilise desormais la correspondance des UID : "
+                   "un utilisateur du client doit avoir le meme identifiant "
+                   "numerique sur le NAS pour y ecrire.")
+    else:
+        summary = (f"« {share.name} » autorise desormais le root des machines "
+                   "clientes a agir en root sur ces donnees.")
+        logger.warning(
+            "no_root_squash active sur le partage '%s' - tout root du reseau "
+            "autorise a le monter a un pouvoir total sur ces donnees", share.name)
+
+    if access == "ro":
+        summary += " L'export est en lecture seule."
+    return summary, warnings

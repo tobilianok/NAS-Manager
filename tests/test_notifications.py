@@ -167,12 +167,31 @@ def test_one_broken_stack_does_not_stop_the_others(monkeypatch):
     def check(name):
         if name == "casse":
             raise RuntimeError("compose illisible")
-        return {"jellyfin/jellyfin:latest": "outdated"}
+        # Le vocabulaire de dockerstacks.check_image_update : a_jour,
+        # maj_disponible, inconnu. Ce test comparait a « outdated », qui
+        # n'existe nulle part - il passait donc en verifiant une liste vide,
+        # pendant que la notice « Images Docker » ne s'affichait jamais.
+        return {"jellyfin/jellyfin:latest": "maj_disponible"}
 
     monkeypatch.setattr(dockerstacks, "check_stack_updates", check)
     snapshot = notifications.refresh()
     assert snapshot.docker_stacks == ["jellyfin"]
     assert any("casse" in e for e in snapshot.errors)
+
+
+def test_an_up_to_date_stack_is_not_reported(monkeypatch):
+    monkeypatch.setattr(sysupdate, "get_status", lambda: _apt_status())
+    monkeypatch.setattr(appupdate, "get_status",
+                        lambda fetch=True: appupdate.AppUpdateStatus())
+
+    class Stack:
+        def __init__(self, name):
+            self.name = name
+
+    monkeypatch.setattr(dockerstacks, "list_stacks", lambda: [Stack("jellyfin")])
+    monkeypatch.setattr(dockerstacks, "check_stack_updates",
+                        lambda name: {"jellyfin/jellyfin:latest": "a_jour"})
+    assert notifications.refresh().docker_stacks == []
 
 
 def test_the_result_survives_a_restart(monkeypatch):
@@ -264,3 +283,180 @@ def test_the_dashboard_embeds_the_fragment(client):
     text = client.get("/").text
     assert "/partials/health" in text
     assert "/partials/notifications" not in text
+
+
+# ---------------------------------------------------------------------------
+# Verification a l'ouverture du panneau et toutes les heures (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def _stub_sources(monkeypatch, calls):
+    monkeypatch.setattr(notifications, "_check_system", lambda s: calls.append("system"))
+    monkeypatch.setattr(notifications, "_check_nasmanager", lambda s: None)
+    monkeypatch.setattr(notifications, "_check_docker", lambda s: None)
+
+
+def test_refresh_if_older_than_skips_a_fresh_result(monkeypatch):
+    calls = []
+    _stub_sources(monkeypatch, calls)
+    notifications.refresh()
+    assert len(calls) == 1
+    notifications.refresh_if_older_than(3600)
+    assert len(calls) == 1, "un resultat frais ne doit pas relancer apt et git"
+
+
+def test_refresh_if_older_than_runs_on_a_stale_result(monkeypatch):
+    calls = []
+    _stub_sources(monkeypatch, calls)
+    notifications.refresh()
+    # On vieillit le resultat range sur disque.
+    raw = json.loads(notifications.STATE_FILE.read_text())
+    raw["checked_epoch"] = time.time() - 7200
+    notifications.STATE_FILE.write_text(json.dumps(raw))
+    notifications.refresh_if_older_than(3600)
+    assert len(calls) == 2
+
+
+def test_refresh_if_older_than_runs_when_nothing_was_ever_checked(monkeypatch):
+    calls = []
+    _stub_sources(monkeypatch, calls)
+    notifications.refresh_if_older_than(3600)
+    assert len(calls) == 1
+
+
+def test_two_refreshes_never_run_at_the_same_time(monkeypatch):
+    """Elles lancent `apt-get -s`, un `git fetch` et un `docker manifest
+    inspect` par stack : la derniere a finir ecraserait le resultat de
+    l'autre."""
+    calls = []
+    _stub_sources(monkeypatch, calls)
+    notifications._refresh_lock.acquire()
+    try:
+        monkeypatch.setattr(notifications, "REFRESH_WAIT_SECONDS", 0.01)
+        snapshot = notifications.refresh()
+    finally:
+        notifications._refresh_lock.release()
+    assert calls == [], "aucune seconde verification ne doit partir"
+    assert snapshot.never_checked is True   # le resultat precedent, ici vide
+
+
+def test_opening_the_panel_triggers_a_check(client, monkeypatch):
+    calls = []
+    _stub_sources(monkeypatch, calls)
+    resp = client.post("/notifications/refresh?on_open=1")
+    assert resp.status_code == 200
+    assert calls == ["system"]
+
+
+def test_reopening_the_panel_immediately_does_not_check_again(client, monkeypatch):
+    calls = []
+    _stub_sources(monkeypatch, calls)
+    client.post("/notifications/refresh?on_open=1")
+    client.post("/notifications/refresh?on_open=1")
+    assert len(calls) == 1
+
+
+def test_the_explicit_button_always_checks(client, monkeypatch):
+    """« Verifier maintenant » n'a qu'un sens : verifier maintenant."""
+    calls = []
+    _stub_sources(monkeypatch, calls)
+    client.post("/notifications/refresh?on_open=1")
+    client.post("/notifications/refresh")
+    assert len(calls) == 2
+
+
+def test_the_health_card_carries_the_opening_trigger(client, monkeypatch):
+    resp = client.get("/partials/health")
+    assert resp.status_code == 200
+    assert 'hx-post="/notifications/refresh?on_open=1"' in resp.text
+
+
+def test_scheduler_can_be_disabled_by_the_environment(monkeypatch):
+    monkeypatch.setenv("NAS_MANAGER_UPDATE_SCHEDULER", "0")
+    assert notifications.start_scheduler() is False
+
+
+def test_scheduler_starts_once(monkeypatch):
+    monkeypatch.setenv("NAS_MANAGER_UPDATE_SCHEDULER", "1")
+    monkeypatch.setattr(notifications, "_scheduler_thread", None)
+    started = []
+
+    class _FakeThread:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+        def start(self):
+            started.append(self.kwargs["name"])
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr(notifications.threading, "Thread", _FakeThread)
+    assert notifications.start_scheduler() is True
+    assert notifications.start_scheduler() is False
+    assert started == ["update-notifications"]
+    monkeypatch.setattr(notifications, "_scheduler_thread", None)
+
+
+def test_the_hourly_interval_is_one_hour():
+    assert notifications.AUTO_INTERVAL_SECONDS == 3600.0
+
+
+def test_three_simultaneous_refreshes_run_only_one_check(monkeypatch):
+    """Trois onglets, trois clics : une acquisition bloquante les mettait en
+    file d'attente et executait TROIS passages complets a la suite - trois
+    `apt-get -s`, trois `git fetch`."""
+    import threading
+    calls = []
+    started = threading.Event()
+
+    def slow(snapshot):
+        calls.append("system")
+        started.set()
+        time.sleep(0.3)
+
+    monkeypatch.setattr(notifications, "_check_system", slow)
+    monkeypatch.setattr(notifications, "_check_nasmanager", lambda s: None)
+    monkeypatch.setattr(notifications, "_check_docker", lambda s: None)
+
+    threads = [threading.Thread(target=notifications.refresh) for _ in range(3)]
+    threads[0].start()
+    started.wait(2)
+    for t in threads[1:]:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert len(calls) == 1
+
+
+def test_opening_the_panel_does_not_block_the_request(client, monkeypatch):
+    """Le panneau doit s'ouvrir tout de suite : la verification interroge
+    apt (120 s), GitHub (120 s) et un registre Docker par image. Elle part
+    en tache de fond, et le fragment se rafraichit de lui-meme."""
+    import threading
+    running = threading.Event()
+    release = threading.Event()
+
+    def blocking(snapshot):
+        running.set()
+        release.wait(5)
+
+    monkeypatch.setattr(notifications, "_check_system", blocking)
+    monkeypatch.setattr(notifications, "_check_nasmanager", lambda s: None)
+    monkeypatch.setattr(notifications, "_check_docker", lambda s: None)
+
+    resp = client.post("/notifications/refresh?on_open=1")
+    assert resp.status_code == 200      # rendu sans attendre le reseau
+    assert running.wait(2), "la verification doit bien avoir demarre"
+    release.set()
+
+
+def test_the_state_file_is_written_atomically(monkeypatch):
+    """Le fil horaire ecrit a n'importe quel instant, y compris pendant
+    qu'une requete lit : une ecriture directe laisse le fichier tronque, et
+    la lecture rend alors « jamais verifie »."""
+    calls = []
+    real_replace = notifications.os.replace
+    monkeypatch.setattr(notifications.os, "replace",
+                        lambda src, dst: calls.append((str(src), str(dst))) or real_replace(src, dst))
+    _stub_sources(monkeypatch, [])
+    notifications.refresh()
+    assert calls and calls[0][1] == str(notifications.STATE_FILE)
+    assert notifications.read().never_checked is False

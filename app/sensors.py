@@ -21,7 +21,7 @@ import json
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # Seuils de repli, utilises uniquement quand le capteur ne declare ni _max
 # ni _crit exploitable.
@@ -246,9 +246,14 @@ def parse(payload: str) -> list[Reading]:
     return readings
 
 
+# Groupe des releves qui ne viennent pas de `sensors` mais de SMART
+# (v1.19.0). Il est nomme ici pour que app.smart et l'ordre d'affichage
+# ci-dessous parlent de la meme chose.
+DISK_GROUP = "Disques (SMART)"
+
 # Ordre d'affichage : ce qu'on regarde en premier sur un NAS, puis le reste.
-_GROUP_ORDER = ["Processeur", "Stockage", "Carte mere", "Carte graphique",
-                "Reseau", "Autres capteurs"]
+_GROUP_ORDER = ["Processeur", DISK_GROUP, "Stockage", "Carte mere",
+                "Carte graphique", "Reseau", "Autres capteurs"]
 
 
 def group_readings(readings: list[Reading]) -> list[tuple[str, list[Reading]]]:
@@ -277,3 +282,95 @@ def _run_sensors() -> str:
 
 def list_readings() -> list[Reading]:
     return parse(_run_sensors())
+
+
+# La carte CPU du tableau de bord affiche desormais les temperatures, et ce
+# fragment est rafraichi toutes les 5 secondes (contre 30 pour la carte de
+# sante). Lancer `sensors` deux fois dans la meme seconde pour deux
+# fragments de la meme page n'apprend rien de plus : les puces elles-memes
+# ne rafraichissent leurs registres qu'au mieux a la seconde.
+CACHE_SECONDS = 4.0
+
+_cache: "tuple[float, list[Reading]] | None" = None
+
+
+def reset_cache() -> None:
+    """Vide la memoire courte (tests, ou apres une action materielle)."""
+    global _cache
+    _cache = None
+
+
+def cached_readings(max_age: float | None = None) -> list[Reading]:
+    """Comme `list_readings`, mais sans relancer `sensors` a chaque appel."""
+    global _cache
+    import time
+
+    ttl = CACHE_SECONDS if max_age is None else max_age
+    if _cache is not None:
+        taken_at, readings = _cache
+        if ttl > 0 and (time.monotonic() - taken_at) < ttl:
+            return list(readings)
+    readings = list_readings()
+    _cache = (time.monotonic(), list(readings))
+    return readings
+
+
+# ---------------------------------------------------------------------------
+# Ce que le processeur raconte de lui-meme (v1.19.0)
+# ---------------------------------------------------------------------------
+
+_CORE_NAME_RE = re.compile(r"^Coeur\s+(\d+)$")
+
+
+@dataclass
+class CpuThermals:
+    """Les temperatures du processeur, rangees pour la carte CPU du tableau
+    de bord.
+
+    Pourquoi separer le « paquet » des coeurs : le paquet est la mesure qui
+    resume la puce entiere (c'est elle qu'on regarde quand on se demande si
+    le ventirad fait son travail), les coeurs disent si UN seul chauffe -
+    typique d'une tache mono-thread, exactement ce que montrent deja les
+    barres de charge juste a cote."""
+    package: Reading | None = None
+    # Indexe par numero de coeur PHYSIQUE, tel que le publie la puce.
+    # Traduire un processeur logique en coeur physique est le travail de
+    # app.sysstats.CpuInfo.core_id() : deux threads d'un meme coeur
+    # partagent une seule sonde.
+    cores: dict[int, Reading] = field(default_factory=dict)
+
+    @property
+    def has_any(self) -> bool:
+        return self.package is not None or bool(self.cores)
+
+    @property
+    def hottest(self) -> Reading | None:
+        candidates = list(self.cores.values())
+        if self.package is not None:
+            candidates.append(self.package)
+        return max(candidates, key=lambda r: r.celsius) if candidates else None
+
+
+def cpu_thermals(readings: list[Reading]) -> CpuThermals:
+    """Extrait du lot de releves ce qui concerne le processeur.
+
+    On ne devine rien : seuls les releves deja ranges dans le groupe
+    « Processeur » par `_chip_family` sont consideres. Une sonde de carte
+    mere appelee « CPU Temperature » y est justement rangee dans « Carte
+    mere », et c'est voulu - elle mesure le socket, pas la puce."""
+    result = CpuThermals()
+    for reading in readings:
+        if reading.group != "Processeur":
+            continue
+        core = _CORE_NAME_RE.match(reading.name)
+        if core:
+            index = int(core.group(1))
+            # Une puce peut publier deux fois le meme coeur (deux sockets
+            # identiques). On garde le plus chaud : c'est celui qui compte.
+            known = result.cores.get(index)
+            if known is None or reading.celsius > known.celsius:
+                result.cores[index] = reading
+            continue
+        if result.package is None or reading.celsius > result.package.celsius:
+            result.package = reading
+    return result

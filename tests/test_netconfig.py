@@ -491,3 +491,67 @@ def test_list_physical_interfaces_real_system_smoke():
 
 def test_get_dns_servers_real_system_smoke():
     assert isinstance(netconfig.get_dns_servers(), list)
+
+
+# ---------------------------------------------------------------------------
+# La carte principale (v1.19.0)
+# ---------------------------------------------------------------------------
+
+_ROUTE_TABLE = """Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask
+enp1s0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0
+enp1s0\t0001A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0
+enp2s0\t000A0A0A\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0
+"""
+
+
+def test_default_route_interface_is_detected(tmp_path, monkeypatch):
+    route = tmp_path / "route"
+    route.write_text(_ROUTE_TABLE)
+    monkeypatch.setattr(netconfig, "PROC_NET_ROUTE", str(route))
+    monkeypatch.setattr(netconfig, "PROC_NET_IPV6_ROUTE", str(tmp_path / "absent6"))
+    assert netconfig.default_route_interfaces() == {"enp1s0"}
+
+
+def test_several_default_routes_are_all_reported(tmp_path, monkeypatch):
+    """Deux acces, deux metriques : se tromper de cote coute plus cher que
+    d'ecarter une carte de trop."""
+    route = tmp_path / "route"
+    route.write_text(_ROUTE_TABLE + "wlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n")
+    monkeypatch.setattr(netconfig, "PROC_NET_ROUTE", str(route))
+    monkeypatch.setattr(netconfig, "PROC_NET_IPV6_ROUTE", str(tmp_path / "absent6"))
+    assert netconfig.default_route_interfaces() == {"enp1s0", "wlan0"}
+
+
+def test_an_unreadable_route_table_says_it_does_not_know(monkeypatch, tmp_path):
+    """None, jamais un ensemble vide : « aucune carte n'est principale »
+    voudrait dire « toutes sont libres pour le cluster », c'est-a-dire
+    exactement l'inverse de ce qu'il faut conclure d'une ignorance."""
+    monkeypatch.setattr(netconfig, "PROC_NET_ROUTE", str(tmp_path / "absent"))
+    monkeypatch.setattr(netconfig, "PROC_NET_IPV6_ROUTE", str(tmp_path / "absent6"))
+    assert netconfig.default_route_interfaces() is None
+
+
+def test_a_table_without_any_default_route_is_also_unknown(monkeypatch, tmp_path):
+    """Bail DHCP perdu, lien coupe : la question n'a pas de reponse a cet
+    instant, et une inconnue ferme la porte."""
+    route = tmp_path / "route"
+    route.write_text("Iface\tDestination\n" + "enp1s0\t0001A8C0\t00000000\n")
+    monkeypatch.setattr(netconfig, "PROC_NET_ROUTE", str(route))
+    monkeypatch.setattr(netconfig, "PROC_NET_IPV6_ROUTE", str(tmp_path / "absent6"))
+    assert netconfig.default_route_interfaces() is None
+
+
+def test_an_ipv6_only_default_route_is_seen(monkeypatch, tmp_path):
+    """Une machine dont l'acces passe en IPv6 n'a aucune ligne de route par
+    defaut en IPv4 : ne lire que /proc/net/route revenait a croire qu'elle
+    n'a pas de carte principale."""
+    route = tmp_path / "route"
+    route.write_text("Iface\tDestination\n")
+    v6 = tmp_path / "ipv6_route"
+    v6.write_text(
+        "0" * 32 + " 00 " + "0" * 32 + " 00 " + "0" * 32
+        + " 00000400 00000001 00000000 00000003 enp1s0\n"
+    )
+    monkeypatch.setattr(netconfig, "PROC_NET_ROUTE", str(route))
+    monkeypatch.setattr(netconfig, "PROC_NET_IPV6_ROUTE", str(v6))
+    assert netconfig.default_route_interfaces() == {"enp1s0"}

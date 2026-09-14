@@ -22,19 +22,89 @@
       {% if group_disks %}
       <h2 class="section-title">{{ group_name }}</h2>
       <table>
-        <thead><tr><th>Disque</th><th>Etat</th><th></th></tr></thead>
+        <thead>
+          <tr>
+            <th>Disque</th><th>Modele</th><th>Numero de serie</th>
+            <th>Etat ZFS</th><th>SMART</th><th></th>
+          </tr>
+        </thead>
         <tbody>
           {% for d in group_disks %}
           {% set state = pool.disk_states.get(d, 'ONLINE' if group_name == 'L2ARC (cache)' else 'INCONNU') %}
+          {% set member = members.get(d) %}
+          {% set disk = member.disk if member else none %}
+          {% set report = member.smart if member else none %}
           <tr>
-            <td>{{ d }}</td>
+            <td class="mono">{{ d }}</td>
+            <td>{{ disk.model if disk and disk.model else '—' }}</td>
+            {# Le numero de serie est la SEULE identite stable d'un disque :
+               c'est lui qu'on lit sur l'etiquette avant de debrancher, la ou
+               « sda » designera un autre disque au prochain demarrage. #}
+            <td class="mono">{{ (report.serial if report and report.serial else (disk.serial if disk and disk.serial else '—')) }}</td>
             <td><span class="badge {{ 'badge-ok' if state == 'ONLINE' else 'badge-danger' }}">{{ state }}</span></td>
             <td>
+              {% if report is none %}
+              <span class="badge badge-neutral">inconnu</span>
+              {% else %}
+              <span class="badge {{ 'badge-ok' if report.status_label == 'OK' else ('badge-warn' if report.status_label == 'ATTENTION' else ('badge-danger' if report.status_label == 'CRITIQUE' else 'badge-neutral')) }}">{{ report.status_label }}</span>
+              {% if report.temperature_c is not none %}
+              <span class="dim">{{ report.temperature_c }} °C</span>
+              {% endif %}
+              {% endif %}
+            </td>
+            <td>
+              {% if disk %}
+              <a class="btn-link" href="/disks/{{ disk.name }}/smart">Detail SMART</a>
+              {% endif %}
               {% if group_name != 'L2ARC (cache)' %}
-              <a class="btn-link" style="color:#fca5a5;" href="/pools/{{ pool.name }}/disks/{{ d.split('/')[-1] }}/replace">Remplacer ce disque</a>
+              <a class="btn-link" style="color:#fca5a5;" href="/pools/{{ pool.name }}/disks/{{ d.split('/')[-1] }}/replace">Remplacer</a>
               {% endif %}
             </td>
           </tr>
+          {# Les erreurs SMART sont affichees ICI, sous la ligne du disque
+             (v1.19.0). Elles vivaient uniquement sur la page Disques : un
+             pool degrade envoie pourtant sur cette page-ci, et c'est
+             exactement le moment ou l'on veut savoir si le disque annoncait
+             deja quelque chose. #}
+          {% if report and report.warnings %}
+          <tr class="pool-disk-warnings">
+            <td colspan="6">
+              {% for warning in report.warnings %}
+              <div class="pool-disk-warning">⚠ {{ warning }}</div>
+              {% endfor %}
+            </td>
+          </tr>
+          {% elif report and not report.available %}
+          <tr class="pool-disk-warnings">
+            <td colspan="6">
+              <div class="dim">Lecture SMART impossible pour ce disque (frequent en machine virtuelle, sans gravite).</div>
+            </td>
+          </tr>
+          {% elif member and member.uncertain %}
+          {# Le garde-fou le plus important de ce tableau. Un disque mort
+             disparait au redemarrage suivant et un AUTRE disque peut
+             reprendre son nom : afficher ici « /dev/sdb1 → WD Red,
+             SERIAL-XYZ » ferait debrancher le disque sain. #}
+          <tr class="pool-disk-warnings">
+            <td colspan="6">
+              <div class="pool-disk-warning">
+                ⚠ Identite incertaine : ce membre n'est pas ONLINE et il est
+                designe par un nom de peripherique ({{ d }}), qui n'est pas une
+                identite stable — un autre disque a pu reprendre ce nom depuis.
+                Le modele et le numero de serie ne sont pas affiches pour ne pas
+                risquer de te faire debrancher le mauvais disque. Passe par
+                <a class="btn-link" href="/disks">la page Disques</a> pour
+                identifier les disques reellement presents.
+              </div>
+            </td>
+          </tr>
+          {% elif member and disk is none %}
+          <tr class="pool-disk-warnings">
+            <td colspan="6">
+              <div class="pool-disk-warning">⚠ Ce peripherique ne correspond a aucun disque physique present : le disque a-t-il ete retire ?</div>
+            </td>
+          </tr>
+          {% endif %}
           {% endfor %}
         </tbody>
       </table>

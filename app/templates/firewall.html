@@ -1,0 +1,405 @@
+{% extends "base.html" %}
+{% block title %}Pare-feu - NAS Manager{% endblock %}
+{% block breadcrumb %}Tableau de bord / Parametres / <strong>Pare-feu</strong>{% endblock %}
+
+{% block content %}
+<h1>Pare-feu et decouverte reseau</h1>
+<p class="page-intro">
+  Ce qui est joignable depuis le reseau, et ce que les autres machines voient
+  de ce NAS. Les deux vont ensemble : une annonce de decouverte dont le port
+  est ferme n'atteint personne, et c'est la cause la plus frequente d'un
+  partage qui fonctionne sans apparaitre nulle part.
+</p>
+
+{% if error %}<div class="danger-banner">{{ error }}</div>{% endif %}
+{% if notice %}<div class="success-banner">{{ notice }}</div>{% endif %}
+{% if warnings %}
+<div class="warning-banner">
+  <ul>{% for w in warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+{# ------------------------------------------------------------------ #}
+{# Etat general                                                        #}
+{# ------------------------------------------------------------------ #}
+<div class="card">
+  <div class="stat-card-head">
+    <div class="stat-label">ETAT DU PARE-FEU</div>
+    {% if not fw.installed %}
+    <span class="badge badge-neutral">non installe</span>
+    {% elif fw.active %}
+    <span class="badge badge-ok">actif</span>
+    {% else %}
+    <span class="badge badge-danger">inactif</span>
+    {% endif %}
+  </div>
+
+  {% if not fw.installed %}
+  <div class="info-panel">
+    ufw n'est pas installe sur cette machine. Relance
+    <span class="mono">sudo ./install.sh</span> pour l'installer et poser les
+    regles de depart.
+  </div>
+  {% elif not fw.readable %}
+  <div class="warning-banner">
+    L'etat du pare-feu n'a pas pu etre lu{% if fw.error %} : {{ fw.error }}{% endif %}.
+    Rien n'est affiche plutot qu'un etat devine.
+  </div>
+  {% else %}
+
+  <div class="facts-grid">
+    <div>
+      <div class="stat-label">TRAFIC ENTRANT PAR DEFAUT</div>
+      <div class="mono">{{ fw.default_incoming or 'inconnu' }}</div>
+    </div>
+    <div>
+      <div class="stat-label">TRAFIC SORTANT PAR DEFAUT</div>
+      <div class="mono">{{ fw.default_outgoing or 'inconnu' }}</div>
+    </div>
+    <div>
+      <div class="stat-label">REGLES POSEES</div>
+      <div class="mono">{{ fw.rules|length }}</div>
+    </div>
+  </div>
+
+  {% if fw.active %}
+  <details class="changes-details">
+    <summary class="btn btn-muted btn-sm">Desactiver le pare-feu</summary>
+    <div class="confirm-box">
+      <p>
+        Desactiver ufw expose <strong>tous</strong> les ports de cette machine
+        au reseau local : ceux des services que tu utilises comme ceux que tu
+        n'utilises pas, et ceux ouverts par les stacks Docker. Si tu es ici
+        parce qu'un service ne passe pas, ouvre plutot son port ci-dessous -
+        c'est le but de cette page.
+      </p>
+      <form method="post" action="/firewall/disable">
+        <label for="disable-password">Mot de passe de <strong>{{ username }}</strong></label>
+        <input type="password" id="disable-password" name="confirm_password" required
+               autocomplete="current-password">
+        <div class="actions">
+          <button type="submit" class="btn-solid-danger">Desactiver le pare-feu</button>
+        </div>
+      </form>
+    </div>
+  </details>
+  {% else %}
+  <div class="danger-banner">
+    Aucun pare-feu local ne protege ce serveur. Tout ce qui ecoute sur cette
+    machine est joignable depuis le reseau.
+  </div>
+  <form method="post" action="/firewall/enable">
+    <p class="stat-sub">
+      L'interface NAS Manager ({{ web_ui_port }}/tcp) et SSH (22/tcp) seront
+      autorises <strong>avant</strong> l'activation : activer un pare-feu a
+      distance sans ouvrir son propre port d'administration est la facon la
+      plus connue de se retrouver enferme dehors.
+    </p>
+    <div class="actions">
+      <button type="submit" class="btn-primary">Activer le pare-feu</button>
+    </div>
+  </form>
+  {% endif %}
+  {% endif %}
+</div>
+
+{# ------------------------------------------------------------------ #}
+{# Decouverte reseau                                                   #}
+{# ------------------------------------------------------------------ #}
+<div class="card">
+  <div class="stat-card-head">
+    <div class="stat-label">DECOUVERTE RESEAU</div>
+    {% if discovery.fully_configured %}
+    <span class="badge badge-ok">complete</span>
+    {% elif discovery.avahi_active or discovery.wsdd_active %}
+    <span class="badge badge-warn">partielle</span>
+    {% else %}
+    <span class="badge badge-neutral">inactive</span>
+    {% endif %}
+  </div>
+
+  <p class="stat-sub">
+    Sans decouverte, un NAS parfaitement fonctionnel n'apparait nulle part :
+    il faut saisir son adresse IP a la main. Trois mecanismes distincts, qui
+    ne se remplacent pas l'un l'autre.
+  </p>
+
+  <table class="temp-table">
+    <tbody>
+      <tr>
+        <td>
+          <strong>mDNS / Bonjour</strong>
+          <div class="stat-sub">macOS, Linux, et la plupart des lecteurs reseau.</div>
+        </td>
+        <td>
+          {% if discovery.avahi_active and discovery.advert_published %}
+          <span class="badge badge-ok">annonce</span>
+          {% elif discovery.avahi_installed %}
+          <span class="badge badge-warn">installe, inactif</span>
+          {% else %}
+          <span class="badge badge-neutral">absent</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>WS-Discovery</strong>
+          <div class="stat-sub">
+            Windows 10 et 11. L'ancienne navigation NetBIOS reposait sur SMB1,
+            retire de Windows : sans ce service, le NAS n'apparait plus du
+            tout dans l'explorateur, meme quand le partage fonctionne.
+          </div>
+        </td>
+        <td>
+          {% if discovery.wsdd_active %}
+          <span class="badge badge-ok">actif</span>
+          {% elif discovery.wsdd_installed %}
+          <span class="badge badge-warn">installe, inactif</span>
+          {% else %}
+          <span class="badge badge-neutral">absent</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Ports NFS figes</strong>
+          <div class="stat-sub">
+            Seul 2049 est fixe. mountd, statd et lockd prennent sinon un port
+            au hasard a chaque demarrage - aucun pare-feu ne peut les
+            autoriser a l'avance, et le partage se monte puis se bloque.
+          </div>
+        </td>
+        <td>
+          {% if discovery.nfs_ports_pinned %}
+          <span class="badge badge-ok">figes</span>
+          {% else %}
+          <span class="badge badge-warn">au hasard</span>
+          {% endif %}
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="btn-row">
+    <form method="post" action="/firewall/discovery/enable">
+      <button type="submit" class="btn-primary">
+        {% if discovery.fully_configured %}Reappliquer{% else %}Activer la decouverte{% endif %}
+      </button>
+    </form>
+    {% if discovery.avahi_active or discovery.wsdd_active %}
+    <form method="post" action="/firewall/discovery/disable">
+      <button type="submit" class="btn-muted">Desactiver</button>
+    </form>
+    {% endif %}
+  </div>
+
+  {% if discovery.nfs_ports_pinned %}
+  <p class="stat-sub">
+    Figer les ports NFS redemarre le service NFS : les montages en cours sur
+    les autres machines sont brievement coupes, puis reprennent.
+  </p>
+  {% endif %}
+</div>
+
+{# ------------------------------------------------------------------ #}
+{# Catalogue de services                                               #}
+{# ------------------------------------------------------------------ #}
+<div class="card">
+  <h2>Ouvrir un service</h2>
+  <p class="stat-sub">
+    Chaque entree ouvre tous les ports dont le service a besoin, d'un geste.
+    C'est la difference entre « autoriser les partages NFS » et « ouvrir
+    2049/tcp, 111/tcp, 111/udp, 20048 et la plage 32765-32768 » - dont l'oubli
+    d'un seul suffit a rendre le partage inutilisable.
+  </p>
+
+  {% for entry in services %}
+  <div class="option-box">
+    <div class="stat-card-head">
+      <div>
+        <strong>{{ entry.service.label }}</strong>
+        <div class="stat-sub">{{ entry.service.summary }}</div>
+      </div>
+      {% if entry.fully_open %}
+      <span class="badge badge-ok">ouvert</span>
+      {% elif entry.partially_open %}
+      <span class="badge badge-warn">partiel</span>
+      {% else %}
+      <span class="badge badge-neutral">ferme</span>
+      {% endif %}
+    </div>
+
+    <div class="stat-sub">{{ entry.service.advice }}</div>
+
+    <div class="stat-sub mono">
+      {% for spec in entry.service.ports %}
+      <span class="stat-chip">{{ spec.label() }}</span>
+      {% endfor %}
+    </div>
+
+    {% if entry.partially_open %}
+    <div class="warning-banner">
+      Ce service n'est ouvert qu'a moitie : il manque
+      <span class="mono">{{ entry.missing_ports|join(', ') }}</span>. Un
+      service a moitie ouvert echoue souvent plus tard et plus
+      mysterieusement qu'un service ferme.
+    </div>
+    {% endif %}
+
+    {% if not entry.fully_open %}
+    <form method="post" action="/firewall/service" class="field-row">
+      <input type="hidden" name="key" value="{{ entry.service.key }}">
+      <label for="src-{{ entry.service.key }}">Limiter a un reseau (facultatif)</label>
+      <input type="text" id="src-{{ entry.service.key }}" name="source"
+             placeholder="192.168.1.0/24 - vide = depuis n'importe ou">
+      <button type="submit" class="btn-sm btn-primary">Ouvrir</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+{# ------------------------------------------------------------------ #}
+{# Regles actives                                                      #}
+{# ------------------------------------------------------------------ #}
+{% if fw.active and fw.readable %}
+<div class="card">
+  <h2>Regles actives</h2>
+  {% if not fw.rules %}
+  <div class="empty-state">
+    Aucune regle : avec une politique entrante en « deny », rien n'est
+    joignable depuis le reseau, pas meme cette interface. Si tu lis cette
+    page, c'est que ta connexion est deja etablie - ouvre au moins
+    l'interface avant de recharger.
+  </div>
+  {% else %}
+  <table class="temp-table">
+    <thead>
+      <tr>
+        <th>#</th><th>Port</th><th>Service</th><th>Action</th>
+        <th>Depuis</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for rule in fw.rules %}
+      <tr>
+        <td class="mono">{{ rule.number }}</td>
+        <td class="mono">{{ rule.to }}{% if rule.ipv6 %} <span class="badge badge-neutral">v6</span>{% endif %}</td>
+        <td>
+          {{ rule.service_label or rule.comment or '—' }}
+          {% if rule.service_label and rule.comment and rule.comment != rule.service_label %}
+          <div class="stat-sub">{{ rule.comment }}</div>
+          {% endif %}
+        </td>
+        <td>
+          {% if rule.action.startswith('ALLOW') %}
+          <span class="badge badge-ok">{{ rule.action }}</span>
+          {% else %}
+          <span class="badge badge-danger">{{ rule.action }}</span>
+          {% endif %}
+        </td>
+        <td class="mono">{{ rule.source }}</td>
+        <td>
+          {# `and rule.inbound`, exactement comme le module (v1.19.0) : seule
+             une regle qui AUTORISE l'interface est protegee. Sans ce test,
+             une regle qui la BLOQUE heritait du meme « protegee » et perdait
+             son bouton Supprimer - alors que c'est justement celle-la qu'il
+             faut pouvoir retirer, et que le module accepte de retirer. Le
+             message d'`ensure_admin_access` renvoyait ainsi vers une action
+             que l'ecran n'offrait pas. #}
+          {% if rule.is_web_ui and rule.inbound %}
+          <span class="stat-sub">protegee</span>
+          {% elif rule.number == 0 %}
+          {# Pare-feu eteint : ufw ne numerote pas ses regles, il n'y a donc
+             rien a viser pour une suppression. On active d'abord. #}
+          <span class="stat-sub">pare-feu inactif</span>
+          {% else %}
+          <details class="changes-details">
+            <summary class="btn btn-sm btn-muted">Supprimer</summary>
+            <div class="confirm-box">
+              {% if rule.is_ssh %}
+              <p class="warn-text">
+                C'est la regle SSH. La supprimer coupe l'acces console a cette
+                machine - y compris celui qu'utilisent la replication ZFS,
+                l'appairage des noeuds et le temoin de quorum.
+              </p>
+              {% endif %}
+              <form method="post" action="/firewall/rule/delete">
+                <input type="hidden" name="number" value="{{ rule.number }}">
+                <input type="hidden" name="signature" value="{{ rule.signature }}">
+                <label for="del-{{ rule.number }}">Mot de passe de <strong>{{ username }}</strong></label>
+                <input type="password" id="del-{{ rule.number }}" name="confirm_password"
+                       required autocomplete="current-password">
+                <div class="actions">
+                  <button type="submit" class="btn-danger">Supprimer cette regle</button>
+                </div>
+              </form>
+            </div>
+          </details>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="stat-sub">
+    La regle qui porte le port {{ web_ui_port }} ne peut pas etre supprimee
+    d'ici : c'est le seul fil par lequel tu parles a cette machine, et le
+    couper depuis la page qui sert a le couper demanderait un clavier
+    physique pour revenir en arriere.
+  </p>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ------------------------------------------------------------------ #}
+{# Port manuel                                                         #}
+{# ------------------------------------------------------------------ #}
+<div class="card">
+  <h2>Ouvrir un port precis</h2>
+  <p class="stat-sub">
+    Pour un service qui n'est pas au catalogue - une stack Docker, par
+    exemple. Contrairement au catalogue, personne n'a verifie a l'avance que
+    ce que tu exposes merite de l'etre : le mot de passe est demande.
+  </p>
+  <form method="post" action="/firewall/port">
+    <div class="facts-grid">
+      <div>
+        <label for="port">Port ou plage</label>
+        <input type="text" id="port" name="port" required placeholder="8096 ou 8000:8010">
+      </div>
+      <div>
+        <label for="proto">Protocole</label>
+        <select id="proto" name="proto">
+          <option value="tcp">TCP</option>
+          <option value="udp">UDP</option>
+        </select>
+      </div>
+      <div>
+        <label for="source">Limiter a un reseau (facultatif)</label>
+        <input type="text" id="source" name="source" placeholder="192.168.1.0/24">
+      </div>
+      <div>
+        <label for="comment">A quoi ca sert</label>
+        <input type="text" id="comment" name="comment" placeholder="Jellyfin">
+      </div>
+    </div>
+    <label for="port-password">Mot de passe de <strong>{{ username }}</strong></label>
+    <input type="password" id="port-password" name="confirm_password" required
+           autocomplete="current-password">
+    <div class="actions">
+      <button type="submit" class="btn-primary">Ouvrir ce port</button>
+    </div>
+  </form>
+</div>
+
+<div class="info-panel">
+  <strong>Une limite a connaitre, qui n'est pas de ce projet.</strong>
+  Docker ecrit ses propres regles iptables et contourne ufw : un port publie
+  par une stack (<span class="mono">"8081:80"</span> dans un
+  <span class="mono">docker-compose.yml</span>) reste joignable depuis le
+  reseau meme avec le pare-feu actif, et meme sans regle correspondante
+  ci-dessus. Pour restreindre l'acces a une stack, fais-le au niveau du
+  routeur, ou n'expose pas son port dans le compose.
+</div>
+{% endblock %}

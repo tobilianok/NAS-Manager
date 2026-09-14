@@ -240,3 +240,146 @@ def test_replace_intro_blocks_disk_not_in_pool(client, monkeypatch):
     )
     resp = client.get("/pools/tank/disks/sdq/replace")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Identite et sante des disques d'un pool (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def _smart(path, status="OK", warnings=(), temperature=38, serial="SER-A"):
+    return smart_module.SmartReport(
+        path=path, available=True, healthy=(status == "OK"), status_label=status,
+        temperature_c=temperature, power_on_hours=1000, serial=serial,
+        warnings=list(warnings),
+    )
+
+
+def _install_members(monkeypatch, inventory, reports):
+    monkeypatch.setattr(disks_module, "list_disks", lambda: inventory)
+    monkeypatch.setattr(smart_module, "get_smart_report", lambda path: reports[path])
+
+
+def test_pool_disks_show_model_and_serial(client, monkeypatch):
+    """« /dev/sda1 » ne dit ni quel disque ouvrir dans le boitier, ni s'il
+    donnait deja des signes de faiblesse."""
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool(
+        main_disks=["/dev/sdb1", "/dev/sdc1"],
+        disk_states={"/dev/sdb1": "ONLINE", "/dev/sdc1": "ONLINE"},
+        health="ONLINE",
+    ))
+    sdb = _disk("sdb", model="WDC WD40EFRX", serial="WD-AAA")
+    sdb.partitions = ["sdb1"]
+    sdc = _disk("sdc", model="ST4000VN008", serial="ZDH-BBB")
+    sdc.partitions = ["sdc1"]
+    _install_members(monkeypatch, [sdb, sdc], {
+        "/dev/sdb": _smart("/dev/sdb", serial="WD-AAA"),
+        "/dev/sdc": _smart("/dev/sdc", serial="ZDH-BBB", temperature=44),
+    })
+    text = client.get("/pools/tank").text
+    assert "WDC WD40EFRX" in text and "ST4000VN008" in text
+    assert "WD-AAA" in text and "ZDH-BBB" in text
+    assert "44 °C" in text
+
+
+def test_pool_disks_show_their_smart_errors(client, monkeypatch):
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool(
+        main_disks=["/dev/sdb1"], disk_states={"/dev/sdb1": "ONLINE"}, health="ONLINE",
+    ))
+    sdb = _disk("sdb", model="WDC WD40EFRX", serial="WD-AAA")
+    sdb.partitions = ["sdb1"]
+    _install_members(monkeypatch, [sdb], {
+        "/dev/sdb": _smart("/dev/sdb", status="CRITIQUE",
+                           warnings=["Secteurs realloues = 8 (devrait etre 0)"]),
+    })
+    text = client.get("/pools/tank").text
+    assert "CRITIQUE" in text
+    assert "Secteurs realloues = 8" in text
+
+
+def test_a_pool_device_with_no_physical_disk_is_flagged(client, monkeypatch):
+    """Le disque a ete retire : la page doit le dire plutot qu'inventer un
+    modele."""
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool(
+        main_disks=["/dev/sdz1"], disk_states={"/dev/sdz1": "UNAVAIL"},
+    ))
+    _install_members(monkeypatch, [], {})
+    text = client.get("/pools/tank").text
+    assert "a-t-il ete retire" in text
+
+
+def test_smart_is_read_once_per_physical_disk(client, monkeypatch):
+    """Un miroir de deux partitions d'un meme disque ne doit pas le faire
+    interroger deux fois."""
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool(
+        main_disks=["/dev/sdb1", "/dev/sdb2"],
+        disk_states={"/dev/sdb1": "ONLINE", "/dev/sdb2": "ONLINE"}, health="ONLINE",
+    ))
+    sdb = _disk("sdb")
+    sdb.partitions = ["sdb1", "sdb2"]
+    calls = []
+    monkeypatch.setattr(disks_module, "list_disks", lambda: [sdb])
+    monkeypatch.setattr(smart_module, "get_smart_report",
+                        lambda path: calls.append(path) or _smart(path))
+    client.get("/pools/tank")
+    assert calls == ["/dev/sdb"]
+
+
+def test_the_pool_page_survives_an_unreadable_inventory(client, monkeypatch):
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool())
+
+    def boom():
+        raise RuntimeError("lsblk absent")
+
+    monkeypatch.setattr(disks_module, "list_disks", boom)
+    resp = client.get("/pools/tank")
+    assert resp.status_code == 200
+    assert "/dev/sdc" in resp.text
+
+
+def test_a_reused_device_name_never_shows_another_disks_serial(client, monkeypatch):
+    """Le garde-fou le plus important de ce tableau (relecture adverse
+    v1.19.0). Le disque de `/dev/sdb1` meurt, la machine redemarre, un AUTRE
+    disque reprend le nom `sdb`. Afficher son modele et son numero de serie
+    en face d'une ligne FAULTED ferait debrancher le disque sain - sur un
+    RAIDZ1 deja degrade, c'est le pool."""
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool(
+        main_disks=["/dev/sdb1"], disk_states={"/dev/sdb1": "FAULTED"},
+    ))
+    intrus = _disk("sdb", model="Disque SAIN", serial="SERIAL-DU-VOISIN")
+    intrus.partitions = ["sdb1"]
+    _install_members(monkeypatch, [intrus], {"/dev/sdb": _smart("/dev/sdb")})
+    text = client.get("/pools/tank").text
+    assert "SERIAL-DU-VOISIN" not in text
+    assert "Disque SAIN" not in text
+    assert "Identite incertaine" in text
+
+
+def test_a_stable_path_is_trusted_even_when_faulted(client, monkeypatch):
+    """Un chemin /dev/disk/by-id ne souffre pas de la reutilisation de nom :
+    il n'y a rien a cacher."""
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool(
+        main_disks=["/dev/disk/by-id/wwn-0x5000-part1"],
+        disk_states={"/dev/disk/by-id/wwn-0x5000-part1": "FAULTED"},
+    ))
+    sdb = _disk("sdb", model="WDC WD40EFRX", serial="WD-AAA")
+    sdb.partitions = ["sdb1"]
+    monkeypatch.setattr(disks_module.os.path, "realpath",
+                        lambda path: "/dev/sdb1" if "by-id" in path else path)
+    _install_members(monkeypatch, [sdb], {"/dev/sdb": _smart("/dev/sdb", serial="WD-AAA")})
+    text = client.get("/pools/tank").text
+    assert "WD-AAA" in text
+    assert "Identite incertaine" not in text
+
+
+def test_an_online_member_is_trusted(client, monkeypatch):
+    """Un disque qui repond est bien celui qu'on croit : aucune raison de
+    masquer son identite."""
+    monkeypatch.setattr(zfs, "get_pool", lambda name: _fake_pool(
+        main_disks=["/dev/sdb1"], disk_states={"/dev/sdb1": "ONLINE"}, health="ONLINE",
+    ))
+    sdb = _disk("sdb", model="WDC WD40EFRX", serial="WD-AAA")
+    sdb.partitions = ["sdb1"]
+    _install_members(monkeypatch, [sdb], {"/dev/sdb": _smart("/dev/sdb", serial="WD-AAA")})
+    text = client.get("/pools/tank").text
+    assert "WD-AAA" in text
+    assert "Identite incertaine" not in text

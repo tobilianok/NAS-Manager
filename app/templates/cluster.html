@@ -61,31 +61,141 @@
   </div>
 </div>
 
-<div class="card">
-  <h2>Former un nouveau cluster</h2>
-  {% if not candidate_interfaces %}
-  <div class="info-panel">
-    Aucune carte reseau avec une adresse IP n'a ete detectee - impossible de
-    choisir une adresse d'annonce. Configure d'abord le reseau depuis
-    <a href="/network">Parametres → Reseau</a>.
-  </div>
-  {% else %}
-  <p class="stat-sub">
-    Ce noeud devient le premier <strong>manager</strong> du cluster. Choisis
-    de preference la carte reseau <strong>dediee au cluster</strong>, distincte
-    de celle utilisee pour cette interface d'administration - c'est ce que
-    recommande l'analyse du projet pour ne jamais melanger le trafic
-    d'administration et celui du cluster.
-  </p>
-  <form method="post" action="/cluster/init">
-    <label for="init_advertise_ip">Carte reseau / adresse d'annonce</label>
-    <select id="init_advertise_ip" name="advertise_ip" required>
-      {% for iface in candidate_interfaces %}
+{# --- Une carte DEDIEE, sans exception (v1.19.0) -------------------------
+     La liste ne montre pas seulement les cartes utilisables : elle montre
+     toutes les cartes, chacune avec la raison qui l'ecarte. Une option
+     absente passe pour un bug ; une option barree s'explique. #}
+{% macro advertise_select(field_id, net) -%}
+<select id="{{ field_id }}" name="advertise_ip" required>
+  {% for iface in net.interfaces %}
+    {% if iface.usable %}
       {% for addr in iface.addresses %}
       <option value="{{ addr }}">{{ iface.name }} — {{ addr }}</option>
       {% endfor %}
+    {% else %}
+      <option disabled>{{ iface.name }}{% if iface.addresses %} — {{ iface.addresses | join(', ') }}{% endif %} ({{ iface.reason }})</option>
+    {% endif %}
+  {% endfor %}
+</select>
+{%- endmacro %}
+
+<div class="card">
+  <h2>La carte reseau du cluster</h2>
+  <p class="stat-sub">
+    Le trafic d'un cluster n'est pas du trafic comme un autre : Swarm echange
+    des battements de coeur a cadence fixe, et une replication ZFS sature un
+    lien pendant des heures. Les faire passer par la carte qui porte aussi
+    cette interface et les partages, c'est accepter qu'un envoi de sauvegarde
+    fasse declarer ce noeud mort — et depuis le quorum (v1.18.0),
+    <strong>un noeud declare mort cesse de servir ses partages</strong>.
+    L'inverse compte autant : une panne du cluster ne doit jamais emporter
+    l'acces a l'interface, qui est le seul moyen de la reparer.
+  </p>
+  <p class="stat-sub">
+    <strong>Le cluster passe donc par une carte dediee, sans exception.</strong>
+    La carte principale — celle qui porte la route par defaut — n'est pas
+    proposee, et le serveur la refuse meme si la requete est forgee.
+  </p>
+
+  <table>
+    <thead><tr><th>Carte</th><th>Adresse(s)</th><th>Pour le cluster</th></tr></thead>
+    <tbody>
+      {% for iface in networking.interfaces %}
+      <tr>
+        <td class="mono">{{ iface.name }}</td>
+        <td class="dim">{{ iface.addresses | join(', ') if iface.addresses else '—' }}</td>
+        <td>
+          {% if iface.usable %}
+          <span class="badge badge-ok">Utilisable</span>
+          {% else %}
+          <span class="badge badge-neutral">Ecartee</span>
+          <span class="dim">{{ iface.reason }}</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3" class="dim">Aucune carte reseau physique detectee.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if not networking.possible %}
+  <div class="info-panel" style="margin-top:1rem;">
+    {{ networking.blocking_reason }}
+  </div>
+  {% endif %}
+</div>
+
+{% if dedicated_plan %}
+<div class="card">
+  <h2>Configurer la carte dediee</h2>
+  <p class="stat-sub">
+    Une carte dediee est branchee sur un cable direct ou un switch a part :
+    <strong>il n'y a aucun serveur DHCP dessus</strong>, elle restera donc
+    sans adresse indefiniment. Voici une configuration fixe conforme aux
+    bonnes pratiques, avec une plage choisie pour ne recouvrir aucun reseau
+    deja utilise par cette machine.
+  </p>
+
+  {% if dedicated_plan.error %}
+  <div class="info-panel">{{ dedicated_plan.error }}</div>
+  {% else %}
+  <ul class="stat-sub" style="line-height:1.7;">
+    {% for note in dedicated_plan.notes %}<li>{{ note }}</li>{% endfor %}
+  </ul>
+
+  <form method="post" action="/cluster/network">
+    <label for="dedicated_interface">Carte a configurer</label>
+    <select id="dedicated_interface" name="interface" required>
+      {% for iface in networking.spares %}
+      <option value="{{ iface.name }}"{% if iface.name == dedicated_plan.interface %} selected{% endif %}>{{ iface.name }}</option>
       {% endfor %}
     </select>
+
+    <label for="dedicated_address" style="margin-top:.6rem;">Adresse fixe de CE noeud</label>
+    <input type="text" id="dedicated_address" name="address"
+           value="{{ dedicated_plan.address }}" required>
+    <div class="meta">
+      Sur l'autre noeud, pose <span class="mono">{{ dedicated_plan.peer_address }}</span>
+      dans la meme plage <span class="mono">{{ dedicated_plan.subnet }}</span>.
+      Aucune passerelle, aucun DNS : ni l'un ni l'autre n'a de sens sur un lien
+      entre deux machines.
+    </div>
+
+    {# Mot de passe de l'admin connecte : reconfigurer une carte reseau peut
+       couper l'acces a cette interface. Regle constante depuis la Phase 8b. #}
+    <label for="dedicated_password" style="margin-top:.6rem;">Ton mot de passe administrateur</label>
+    <input type="password" id="dedicated_password" name="confirm_password"
+           autocomplete="current-password" required>
+
+    <div class="actions">
+      <button type="submit" class="btn-primary">Preparer cette configuration</button>
+    </div>
+    <div class="meta">
+      Rien n'est applique tout de suite : l'ecran suivant applique le
+      changement avec <span class="mono">netplan try</span>, qui revient tout
+      seul en arriere si personne ne confirme. C'est le seul chemin du projet
+      qui ne peut pas t'enfermer dehors.
+    </div>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Former un nouveau cluster</h2>
+  {% if not networking.possible %}
+  <div class="info-panel">
+    {{ networking.blocking_reason }}
+  </div>
+  {% else %}
+  <p class="stat-sub">
+    Ce noeud devient le premier <strong>manager</strong> du cluster, annonce
+    sur sa carte dediee.
+  </p>
+  <form method="post" action="/cluster/init">
+    <label for="init_advertise_ip">Carte reseau / adresse d'annonce</label>
+    {{ advertise_select('init_advertise_ip', networking) }}
     <div class="actions">
       <button type="submit" class="btn-primary">Former le cluster</button>
     </div>
@@ -102,27 +212,20 @@
     simple noeud de calcul ; un jeton <strong>manager</strong> lui donne aussi
     la main sur l'administration du cluster.
   </p>
-  {% if not candidate_interfaces %}
+  {% if not networking.possible %}
   <div class="info-panel">
-    Aucune carte reseau avec une adresse IP n'a ete detectee - impossible de
-    choisir une adresse d'annonce.
+    {{ networking.blocking_reason }}
   </div>
   {% else %}
   <form method="post" action="/cluster/join">
     <label for="join_remote_addr">Adresse du manager (ip[:port], port {{ 2377 }} par defaut)</label>
-    <input type="text" id="join_remote_addr" name="remote_addr" placeholder="192.168.1.50" required>
+    <input type="text" id="join_remote_addr" name="remote_addr" placeholder="10.10.10.1" required>
 
     <label for="join_token" style="margin-top:.6rem;">Jeton de jonction</label>
     <input type="text" id="join_token" name="token" placeholder="SWMTKN-1-..." autocomplete="off" required>
 
     <label for="join_advertise_ip" style="margin-top:.6rem;">Carte reseau / adresse d'annonce de CE noeud</label>
-    <select id="join_advertise_ip" name="advertise_ip" required>
-      {% for iface in candidate_interfaces %}
-      {% for addr in iface.addresses %}
-      <option value="{{ addr }}">{{ iface.name }} — {{ addr }}</option>
-      {% endfor %}
-      {% endfor %}
-    </select>
+    {{ advertise_select('join_advertise_ip', networking) }}
     <div class="actions">
       <button type="submit" class="btn-primary">Rejoindre le cluster</button>
     </div>

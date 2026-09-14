@@ -151,3 +151,71 @@ def test_the_acpi_probe_is_distinguishable_from_the_board_sensor():
     distinguent pas : la sonde ACPI porte sa provenance."""
     payload = json.dumps({"acpitz-acpi-0": {"temp1": {"temp1_input": 27.8}}})
     assert sensors.parse(payload)[0].name == "Carte mere (ACPI)"
+
+
+# ---------------------------------------------------------------------------
+# Temperatures du processeur pour la carte CPU (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def _r(name, celsius, group="Processeur", level="ok"):
+    return sensors.Reading(name=name, group=group, celsius=celsius, level=level)
+
+
+def test_cpu_thermals_separates_package_from_cores():
+    thermals = sensors.cpu_thermals([
+        _r("Processeur (ensemble)", 55.0),
+        _r("Coeur 0", 48.0),
+        _r("Coeur 1", 51.0),
+        _r("SSD NVMe", 40.0, group="Stockage"),
+    ])
+    assert thermals.package.celsius == 55.0
+    assert sorted(thermals.cores) == [0, 1]
+    assert thermals.cores[1].celsius == 51.0
+    assert thermals.hottest.celsius == 55.0
+    assert thermals.has_any is True
+
+
+def test_cpu_thermals_ignores_sensors_from_other_groups():
+    """Une sonde de carte mere nommee « CPU Temperature » mesure le socket,
+    pas la puce : app.sensors la range deja dans « Carte mere », et elle ne
+    doit pas remonter dans la carte CPU."""
+    thermals = sensors.cpu_thermals([
+        _r("Processeur (sonde carte mere)", 61.0, group="Carte mere"),
+    ])
+    assert thermals.has_any is False
+    assert thermals.package is None
+
+
+def test_cpu_thermals_keeps_the_hottest_when_a_core_appears_twice():
+    thermals = sensors.cpu_thermals([_r("Coeur 0", 42.0), _r("Coeur 0", 66.0)])
+    assert thermals.cores[0].celsius == 66.0
+
+
+def test_cpu_thermals_on_a_machine_without_sensors():
+    thermals = sensors.cpu_thermals([])
+    assert thermals.has_any is False
+    assert thermals.hottest is None
+
+
+def test_cached_readings_do_not_relaunch_sensors(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sensors, "_run_sensors", lambda: calls.append(1) or "{}")
+    sensors.reset_cache()
+    sensors.cached_readings()
+    sensors.cached_readings()
+    assert len(calls) == 1
+    # Une duree de vie nulle force la relecture.
+    sensors.cached_readings(max_age=0)
+    assert len(calls) == 2
+    sensors.reset_cache()
+
+
+def test_disk_group_comes_right_after_the_cpu():
+    """Sur un NAS, la temperature des disques est ce qu'on regarde juste
+    apres celle du processeur."""
+    groups = sensors.group_readings([
+        _r("Carte mere", 38.0, group="Carte mere"),
+        _r("Coeur 0", 48.0),
+        _r("WDC WD40 (sda)", 41.0, group=sensors.DISK_GROUP),
+    ])
+    assert [name for name, _ in groups] == ["Processeur", sensors.DISK_GROUP, "Carte mere"]

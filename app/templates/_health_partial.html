@@ -44,6 +44,35 @@
     </div>
   </div>
 
+  {# POURQUOI le temps est mauvais, sur la carte fermee (v1.19.0).
+
+     Jusqu'ici la carte disait « 2 points demandent une action » et il
+     fallait cliquer pour savoir lesquels. Une meteo qui annonce de l'orage
+     sans dire ou est une meteo qu'on finit par ne plus ouvrir - et c'est
+     exactement ce qu'on ne veut pas d'une carte de sante.
+
+     Deux lignes au plus, le reste compte dans « + n autre(s) » : la carte
+     doit garder la hauteur de la carte horloge (v1.9.0), et trois lignes de
+     detail la feraient deborder. #}
+  {% if report.attention_checks %}
+  <div class="weather-reasons">
+    {% for c in report.attention_checks[:2] %}
+    <div class="weather-reason weather-reason-{{ c.level | lower }}">
+      <span class="weather-reason-dot" aria-hidden="true"></span>
+      <div class="weather-reason-body">
+        <strong>{{ c.label }}</strong>
+        <span class="weather-reason-detail" title="{{ c.detail }}">{{ c.detail }}</span>
+      </div>
+    </div>
+    {% endfor %}
+    {% if report.attention_checks | length > 2 %}
+    <div class="weather-reason-more">
+      + {{ report.attention_checks | length - 2 }} autre{{ 's' if report.attention_checks | length - 2 > 1 }} point{{ 's' if report.attention_checks | length - 2 > 1 }} dans le detail
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
   {# La ligne la plus actionnable, a la place ou l'horloge met sa
      disponibilite : ce qu'on veut savoir sans ouvrir quoi que ce soit. #}
   <div class="weather-headline">
@@ -62,8 +91,21 @@
   </div>
 
   <div class="weather-actions">
+    {# Ouvrir le panneau vaut demande de verification (v1.19.0) : c'est
+       precisement le moment ou l'on veut savoir s'il y a des mises a jour,
+       et attendre un second clic sur « Verifier maintenant » revenait a
+       montrer d'abord un resultat perime. La reponse remplace ce fragment
+       pendant que la fenetre est ouverte - l'etat `open` vit sur le
+       conteneur parent, hors de la zone remplacee.
+
+       `on_open=1` : le serveur saute la verification si une autre vient
+       d'avoir lieu, pour qu'un double-clic ne lance pas deux `git fetch`. #}
     <button type="button" class="btn-muted btn-sm weather-open" @click="open = true"
-            aria-haspopup="dialog">
+            aria-haspopup="dialog"
+            hx-post="/notifications/refresh?on_open=1"
+            hx-target="#live-health"
+            hx-swap="innerHTML"
+            hx-disabled-elt="this">
       Voir le detail
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
     </button>
@@ -73,7 +115,11 @@
 {# ----------------------------- La fenetre ----------------------------- #}
 <div class="modal-overlay" x-show="open" x-cloak
      @keydown.escape.window="open = false" role="dialog" aria-modal="true">
-  <div class="modal-box modal-wide health-modal" @click.outside="open = false">
+  {# v1.19.0 : la fenetre passe de 720 px a un format large et rectangulaire,
+     et son corps se lit sur DEUX colonnes. Avec quinze verifications, une
+     colonne unique obligeait a faire defiler pour voir la moitie des
+     controles - donc a les chercher au lieu de les voir. #}
+  <div class="modal-box modal-xwide health-modal" @click.outside="open = false">
 
     <div class="health-modal-head weather-{{ report.weather }}">
       <div class="weather-icon">{{ weather_icon(report.weather) }}</div>
@@ -95,16 +141,25 @@
       {# Trie par gravite : un pool degrade ne doit pas se retrouver en
          septieme position entre deux lignes vertes. #}
       {% for c in report.sorted_checks %}
-      <div class="health-row health-row-{{ c.level }}">
+      {# Les deux controles qui portent un tableau ou une liste d'actions
+         prennent la largeur entiere : les serrer dans une colonne de moitie
+         rendrait leurs tableaux illisibles. #}
+      <div class="health-row health-row-{{ c.level }}{% if c.key in ('temps', 'updates') %} health-row-full{% endif %}">
         <span class="badge status-{{ c.level }}">{{ c.level }}</span>
         <div class="health-row-body">
           <strong>{{ c.label }}</strong>
           <div class="weather-check-detail">{{ c.detail }}</div>
 
-          {# --- Detail des capteurs, sous la ligne Temperatures --- #}
+          {# --- Detail des capteurs, sous la ligne Temperatures ---
+                 Ouvert par defaut depuis la v1.19.0 : la fenetre est
+                 desormais assez large pour le porter, et une information
+                 qu'il faut deplier est une information qu'on ne lit pas.
+                 Les disques y figurent au meme titre que les autres
+                 capteurs (groupe « Disques (SMART) »). #}
           {% if c.key == 'temps' and temperatures %}
-          <details class="temp-details">
-            <summary>Voir les {{ temperature_count }} capteurs</summary>
+          <details class="temp-details" open>
+            <summary>{{ temperature_count }} capteur(s) de temperature</summary>
+            <div class="temp-groups">
             {% for group, readings in temperatures %}
             <div class="temp-group">
               <div class="temp-group-name">{{ group }}</div>
@@ -127,11 +182,19 @@
               </table>
             </div>
             {% endfor %}
+            </div>
             <p class="temp-note">
               Chaque capteur est compare a <strong>sa propre limite</strong>, pas a
               un chiffre unique : 70 °C sont banals pour un SSD NVMe limite a 85,
               et deja notables pour un coeur limite a 80. Survole un nom pour voir
               la mesure brute.
+            </p>
+            <p class="temp-note">
+              Les <strong>disques</strong> ne sont pas lus par les capteurs de la
+              carte mere mais par SMART, et gardent donc leur propre echelle :
+              50 °C pour un avertissement, 60 °C pour une alerte. Ils pesent sur
+              la meteo par la ligne <strong>Disques (SMART)</strong>, pas par
+              celle-ci — les deux lisent exactement la meme valeur.
             </p>
           </details>
           {% endif %}
@@ -192,9 +255,13 @@
       </div>
       {% endfor %}
 
-      <p class="health-modal-note">
+      <p class="health-modal-note health-row-full">
         Ces controles se relisent tout seuls toutes les 30 secondes, y compris
-        pendant que cette fenetre est ouverte. Seuls les correctifs de
+        pendant que cette fenetre est ouverte. Une verification des mises a
+        jour part a chaque ouverture de cette fenetre — en tache de fond, son
+        resultat apparait ici tout seul quelques secondes plus tard — et de
+        nouveau toutes les heures, meme si personne ne regarde. Seuls les
+        correctifs de
         <strong>securite</strong> non appliques et un <strong>redemarrage en
         attente</strong> font varier la meteo : un NAS a presque toujours une
         image ou un paquet a mettre a jour, et une meteo grise en permanence

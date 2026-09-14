@@ -264,7 +264,7 @@ def test_share_nfs_networks_update(client, monkeypatch):
     monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda path: "/tank/partages/photos")
     client.post("/shares", data={"name": "photos", "pool": "tank", "protocol_nfs": "1"})
 
-    resp = client.post("/shares/photos/nfs-networks", data={"networks": "10.0.0.0/24, 10.0.1.0/24"})
+    resp = client.post("/shares/photos/nfs-networks", data={"networks": "10.0.0.0/24, 10.0.1.0/24", "confirm_password": "x"})
     assert resp.status_code == 200
     share = shares.get_share("photos")
     assert share.nfs_networks == ["10.0.0.0/24", "10.0.1.0/24"]
@@ -352,3 +352,59 @@ def test_share_users_revoke_admin_self_blocked(client, monkeypatch):
     resp = client.post("/share-users/testuser/admin/revoke", data={"confirm_password": "mypw"})
     assert resp.status_code == 400
     assert "propre compte" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Identites NFS (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def _nfs_share_via_route(client, monkeypatch, tmp_path, name="poulette"):
+    mountpoint = tmp_path / "mnt" / name
+    mountpoint.mkdir(parents=True)
+    monkeypatch.setattr(zfs, "get_pool", lambda pn: _fake_pool())
+    monkeypatch.setattr(zfs, "create_dataset", lambda p: None)
+    monkeypatch.setattr(zfs, "get_dataset_mountpoint", lambda p: str(mountpoint))
+    monkeypatch.setattr(nasusers, "list_share_users", lambda: [])
+    monkeypatch.setattr(nasusers, "list_assignable_groups", lambda: [])
+    client.post("/shares", data={"name": name, "pool": "tank", "protocol_nfs": "1"},
+                follow_redirects=False)
+    return name
+
+
+def test_the_share_page_explains_the_permission_denied(client, monkeypatch, tmp_path):
+    """Le symptome exact que Louis a rencontre : le montage passe, le
+    premier mkdir echoue."""
+    name = _nfs_share_via_route(client, monkeypatch, tmp_path)
+    text = client.get(f"/shares/{name}").text
+    assert "Permission denied" in text
+    assert "all_squash" in text  # les options reellement ecrites, affichees
+
+
+def test_the_mode_can_be_changed_from_the_page(client, monkeypatch, tmp_path):
+    name = _nfs_share_via_route(client, monkeypatch, tmp_path)
+    response = client.post(f"/shares/{name}/nfs-options",
+                           data={"mode": shares.NFS_MODE_UID_MATCH, "access": "rw", "confirm_password": "x"})
+    assert response.status_code == 200
+    assert shares.get_share(name).nfs_mode == shares.NFS_MODE_UID_MATCH
+
+
+def test_an_unknown_mode_sent_by_a_forged_request_is_refused(client, monkeypatch, tmp_path):
+    """Le mode decide de qui peut ecrire, et l'un des trois donne le root du
+    client sur ces donnees : il ne se prend pas tel quel dans un
+    formulaire."""
+    name = _nfs_share_via_route(client, monkeypatch, tmp_path)
+    response = client.post(f"/shares/{name}/nfs-options",
+                           data={"mode": "no_root_squash", "access": "rw", "confirm_password": "x"})
+    assert response.status_code == 400
+    assert shares.get_share(name).nfs_mode == shares.DEFAULT_NFS_MODE
+
+
+def test_an_invalid_network_is_refused_instead_of_landing_in_exports(
+        client, monkeypatch, tmp_path):
+    """Ce champ finit dans /etc/exports juste avant la parenthese des
+    options : une parenthese de plus y injecterait no_root_squash."""
+    name = _nfs_share_via_route(client, monkeypatch, tmp_path)
+    response = client.post(f"/shares/{name}/nfs-networks",
+                           data={"networks": "192.168.1.0/24(rw,no_root_squash)", "confirm_password": "x"})
+    assert response.status_code == 400
+    assert "no_root_squash" not in (tmp_path / "exports").read_text()

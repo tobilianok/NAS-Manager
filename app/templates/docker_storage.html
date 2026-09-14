@@ -16,6 +16,154 @@
     {% if error %}<div class="msg msg-error">{{ error }}</div>{% endif %}
     {% if message %}<div class="msg msg-success">{{ message }}</div>{% endif %}
 
+    {# --------------------------------------------------------------- #}
+    {# Ou le DEMON range ses images (v1.19.0)                           #}
+    {# --------------------------------------------------------------- #}
+    <h2 class="section-title">Emplacement des images Docker</h2>
+    <div class="card">
+      <div class="info-box">
+        Choisir un pool pour une stack ne place sur ce pool que son
+        <code>docker-compose.yml</code> et ses volumes. Les <strong>images</strong>,
+        elles, vivent la ou le demon Docker les range — par defaut sur le
+        <strong>disque systeme</strong>. Sur une machine dont le systeme tient
+        sur deux petits disques en RAID&nbsp;1, quelques images suffisent a le
+        remplir, et l'installation d'une stack echoue sur
+        <code>no space left on device</code> alors que le pool affiche des
+        centaines de gigaoctets libres.
+      </div>
+
+      {% if not engine.docker_available %}
+      <div class="msg msg-warning">Docker n'est pas installe sur cette machine.</div>
+      {% else %}
+
+      <div class="facts-grid">
+        {% for loc in [engine.docker_root, engine.containerd_root] %}
+        <div>
+          <div class="stat-label">
+            {{ 'DONNEES DOCKER' if loop.first else 'IMAGES (CONTAINERD)' }}
+          </div>
+          <div class="mono">{{ loc.path }}</div>
+          <div class="stat-sub">
+            {{ loc.fstype or 'systeme de fichiers inconnu' }}
+            {% if loc.on_zfs %}<span class="badge badge-ok">ZFS</span>
+            {% else %}<span class="badge badge-warn">disque systeme</span>{% endif %}
+          </div>
+          {% if loc.total_bytes %}
+          <div class="bar-bg">
+            <div class="bar-fill {{ 'bar-crit' if loc.critical else ('bar-warn' if loc.warning else 'bar-ok') }}"
+                 style="width: {{ loc.used_percent }}%"></div>
+          </div>
+          <div class="stat-sub">
+            {{ format_bytes(loc.used_bytes) }} / {{ format_bytes(loc.total_bytes) }}
+            ({{ loc.used_percent }} %) — {{ format_bytes(loc.free_bytes) }} libres
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+
+      {% if engine.on_system_disk %}
+      <div class="msg msg-warning">
+        Le stockage du demon est sur le disque systeme. Un disque systeme
+        plein ne casse pas que Docker : il empeche aussi les journaux, les
+        mises a jour, et parfois le demarrage.
+      </div>
+      {% else %}
+      <div class="msg msg-success">
+        Le stockage du demon est sur ZFS : les images n'occupent plus le
+        disque systeme.
+      </div>
+      {% endif %}
+
+      {# --- etat d'un deplacement en cours ou termine --- #}
+      {% if move_state.running and not move_state.stale %}
+      <div class="msg msg-warning">
+        <strong>Deplacement en cours</strong> — etape « {{ move_state.step }} ».
+        {{ move_state.message }}<br>
+        Docker et toutes les stacks sont arretes le temps de la copie. Tu peux
+        fermer cette page : l'operation est detachee et continue.
+      </div>
+      {% elif move_state.status == 'failed' %}
+      <div class="msg msg-error">
+        <strong>Le dernier deplacement a echoue</strong> a l'etape
+        « {{ move_state.step }} » : {{ move_state.message }}
+      </div>
+      {% elif move_state.status == 'done' %}
+      <div class="msg msg-success">{{ move_state.message }}</div>
+      {% endif %}
+
+      {# --- lancer un deplacement --- #}
+      {% if not (move_state.running and not move_state.stale) %}
+        {% if not movable_pools %}
+        <div class="empty-state">
+          Aucun pool ZFS disponible pour accueillir le stockage Docker.
+        </div>
+        {% else %}
+        <form method="post" action="/docker/storage/engine/move">
+          <label for="engine-pool">Deplacer vers le pool</label>
+          <select id="engine-pool" name="pool" required>
+            {% for name in movable_pools %}
+            <option value="{{ name }}">{{ name }} → {{ name }}/{{ engine_dataset_name }}</option>
+            {% endfor %}
+          </select>
+          <div class="info-box">
+            Ce que fait l'operation, dans cet ordre : arret de Docker et de
+            containerd, copie des deux emplacements vers le pool (liens durs,
+            ACL et attributs etendus preserves — sans eux, des images
+            deviennent inutilisables), bascule de la configuration,
+            redemarrage, puis <strong>verification que le demon utilise bien
+            le nouvel emplacement</strong> plutot que de se fier a ce qu'on
+            lui a demande. En cas d'echec a n'importe quelle etape, la
+            configuration d'origine est restauree et Docker relance.<br><br>
+            <strong>L'ancien emplacement n'est jamais supprime par cette
+            operation.</strong> Il reste intact et occupe toujours sa place :
+            c'est ce qui rend un retour en arriere possible. Sa suppression
+            est une action separee, proposee ici une fois le deplacement
+            reussi.<br><br>
+            Les stacks dont le compose porte
+            <code>restart: unless-stopped</code> repartiront seules ; les
+            autres sont a relancer depuis la page Docker.
+          </div>
+          <label for="engine-password">Mot de passe de <strong>{{ username }}</strong></label>
+          <input type="password" id="engine-password" name="confirm_password" required
+                 autocomplete="current-password">
+          <div class="actions">
+            <button type="submit" class="btn-primary">Deplacer le stockage Docker</button>
+          </div>
+        </form>
+        {% endif %}
+      {% endif %}
+
+      {# --- nettoyage de l'ancien emplacement --- #}
+      {% if move_state.leftovers_present %}
+      <details class="changes-details">
+        <summary class="btn btn-muted btn-sm">Supprimer l'ancien emplacement</summary>
+        <div class="confirm-box">
+          <p>
+            A ne faire qu'apres avoir verifie que tes stacks fonctionnent
+            depuis le nouvel emplacement. Cette suppression ferme la porte du
+            retour en arriere : tant qu'elle n'a pas eu lieu, remettre
+            l'ancienne valeur de <code>data-root</code> suffit a retrouver
+            l'etat d'avant.
+          </p>
+          <p class="mono">
+            {{ move_state.previous_docker_root }}<br>
+            {{ move_state.previous_containerd_root }}
+          </p>
+          <form method="post" action="/docker/storage/engine/cleanup">
+            <label for="cleanup-password">Mot de passe de <strong>{{ username }}</strong></label>
+            <input type="password" id="cleanup-password" name="confirm_password" required
+                   autocomplete="current-password">
+            <div class="actions">
+              <button type="submit" class="btn-danger">Supprimer definitivement</button>
+            </div>
+          </form>
+        </div>
+      </details>
+      {% endif %}
+      {% endif %}
+    </div>
+
     {% if orphans or ghosts %}
     <div class="msg msg-warning">
       {% if orphans %}<strong>{{ orphans }}</strong> élément(s) orphelin(s) détecté(s) — à supprimer ci-dessous si tu n'en as plus besoin.{% endif %}

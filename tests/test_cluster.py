@@ -25,9 +25,21 @@ def _interface(name="eth0", addresses=("192.168.1.50/24",)):
 @pytest.fixture(autouse=True)
 def _default_interfaces(monkeypatch):
     """La plupart des tests supposent qu'une carte porte 192.168.1.50 -
-    surchargeable au cas par cas."""
+    surchargeable au cas par cas.
+
+    La route par defaut est stubee a « aucune » : sans ca, ces tests
+    liraient le /proc/net/route de la machine qui les execute, et la carte
+    d'essai serait consideree comme la carte principale (donc interdite au
+    cluster depuis la v1.19.0) selon l'environnement."""
     from app import netconfig
     monkeypatch.setattr(netconfig, "list_physical_interfaces", lambda: [_interface()])
+    monkeypatch.setattr(netconfig, "default_route_interfaces", lambda: {"__aucune__"})
+    # Le controle de recouvrement lit TOUTES les interfaces (ponts compris,
+    # depuis la relecture adverse de la v1.19.0) : on le fait suivre ce que
+    # chaque test declare comme cartes physiques.
+    monkeypatch.setattr(
+        netconfig, "all_ipv4_networks",
+        lambda: [a for i in netconfig.list_physical_interfaces() for a in i.addresses])
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +124,146 @@ def test_list_candidate_interfaces_keeps_only_addressed_ones(monkeypatch):
     ])
     result = cluster.list_candidate_interfaces()
     assert [i.name for i in result] == ["eth0"]
+
+
+# ---------------------------------------------------------------------------
+# La carte principale ne peut pas porter le cluster (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def _two_cards(monkeypatch, primary="eth0"):
+    from app import netconfig
+    monkeypatch.setattr(netconfig, "list_physical_interfaces", lambda: [
+        _interface("eth0", ["192.168.1.50/24"]),
+        _interface("eth1", ["10.10.10.1/24"]),
+    ])
+    monkeypatch.setattr(netconfig, "default_route_interfaces",
+                        lambda: {primary} if primary else set())
+
+
+def test_candidate_interfaces_exclude_the_default_route_card(monkeypatch):
+    _two_cards(monkeypatch)
+    assert [i.name for i in cluster.list_candidate_interfaces()] == ["eth1"]
+
+
+def test_candidate_interfaces_exclude_bond_members(monkeypatch):
+    from app import netconfig
+    member = _interface("eth1", ["10.10.10.1/24"])
+    member.bond_member_of = "bond0"
+    monkeypatch.setattr(netconfig, "list_physical_interfaces", lambda: [member])
+    monkeypatch.setattr(netconfig, "default_route_interfaces", lambda: set())
+    assert cluster.list_candidate_interfaces() == []
+
+
+def test_networking_reports_every_card_with_its_reason(monkeypatch):
+    _two_cards(monkeypatch)
+    net = cluster.networking()
+    assert [i.name for i in net.interfaces] == ["eth0", "eth1"]
+    assert [i.name for i in net.candidates] == ["eth1"]
+    assert net.possible is True
+    principale = next(i for i in net.interfaces if i.name == "eth0")
+    assert principale.usable is False
+    assert "principale" in principale.reason
+
+
+def test_a_single_card_makes_the_cluster_impossible(monkeypatch):
+    from app import netconfig
+    monkeypatch.setattr(netconfig, "list_physical_interfaces",
+                        lambda: [_interface("eth0", ["192.168.1.50/24"])])
+    monkeypatch.setattr(netconfig, "default_route_interfaces", lambda: {"eth0"})
+    net = cluster.networking()
+    assert net.possible is False
+    assert "une seule carte" in net.blocking_reason
+
+
+def test_a_spare_card_without_address_is_offered_to_the_assistant(monkeypatch):
+    from app import netconfig
+    monkeypatch.setattr(netconfig, "list_physical_interfaces", lambda: [
+        _interface("eth0", ["192.168.1.50/24"]),
+        _interface("eth1", []),
+    ])
+    monkeypatch.setattr(netconfig, "default_route_interfaces", lambda: {"eth0"})
+    net = cluster.networking()
+    assert net.possible is False
+    assert [i.name for i in net.spares] == ["eth1"]
+    assert "adresse fixe" in net.blocking_reason
+
+
+def test_advertising_on_the_primary_card_is_refused(monkeypatch):
+    """Le garde-fou vit dans le module, pas dans le gabarit : une liste
+    deroulante ne protege de rien, la requete se forge."""
+    _two_cards(monkeypatch)
+    with pytest.raises(cluster.ClusterError, match="carte principale"):
+        cluster._resolve_advertise_ip("192.168.1.50")
+    assert cluster._resolve_advertise_ip("10.10.10.1") == "10.10.10.1"
+
+
+def test_advertising_on_a_bond_member_names_the_bond(monkeypatch):
+    from app import netconfig
+    member = _interface("eth1", ["10.10.10.1/24"])
+    member.bond_member_of = "bond0"
+    monkeypatch.setattr(netconfig, "list_physical_interfaces", lambda: [member])
+    monkeypatch.setattr(netconfig, "default_route_interfaces", lambda: set())
+    with pytest.raises(cluster.ClusterError, match="agregat"):
+        cluster._resolve_advertise_ip("10.10.10.1")
+
+
+# ---------------------------------------------------------------------------
+# Assistant d'adressage de la carte dediee (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def test_suggested_plan_avoids_the_existing_network(monkeypatch):
+    from app import netconfig
+    monkeypatch.setattr(netconfig, "list_physical_interfaces",
+                        lambda: [_interface("eth0", ["10.10.10.7/24"])])
+    monkeypatch.setattr(netconfig, "default_route_interfaces", lambda: {"eth0"})
+    plan = cluster.suggest_dedicated_plan("eth1")
+    assert plan.ok
+    assert not plan.subnet.startswith("10.10.10.")
+    assert plan.address.endswith("/24")
+    # Le second noeud prend l'adresse voisine dans la meme plage.
+    assert plan.peer_address.rsplit(".", 1)[0] == plan.address.rsplit(".", 1)[0]
+
+
+def test_suggested_plan_never_proposes_a_gateway(monkeypatch):
+    plan = cluster.suggest_dedicated_plan("eth1")
+    assert plan.ok
+    assert any("passerelle" in note for note in plan.notes)
+
+
+def test_second_node_gets_the_other_address(monkeypatch):
+    first = cluster.suggest_dedicated_plan("eth1", host_index=1)
+    second = cluster.suggest_dedicated_plan("eth1", host_index=2)
+    assert first.address == second.peer_address
+    assert second.address == first.peer_address
+
+
+def test_dedicated_address_refused_on_the_primary_card(monkeypatch):
+    _two_cards(monkeypatch)
+    with pytest.raises(cluster.ClusterError, match="route par defaut"):
+        cluster.validate_dedicated_address("eth0", "10.20.30.1/24")
+
+
+def test_dedicated_address_refused_when_it_overlaps_an_existing_network(monkeypatch):
+    _two_cards(monkeypatch, primary="eth0")
+    with pytest.raises(cluster.ClusterError, match="recouvre"):
+        cluster.validate_dedicated_address("eth1", "192.168.1.240/24")
+
+
+def test_dedicated_address_must_be_a_cidr(monkeypatch):
+    _two_cards(monkeypatch)
+    with pytest.raises(cluster.ClusterError, match="Adresse invalide"):
+        cluster.validate_dedicated_address("eth1", "pas-une-adresse")
+
+
+def test_dedicated_address_accepted_and_normalised(monkeypatch):
+    _two_cards(monkeypatch)
+    assert cluster.validate_dedicated_address("eth1", " 10.20.30.1/24 ") == "10.20.30.1/24"
+
+
+def test_dedicated_address_on_an_unknown_card_is_refused(monkeypatch):
+    _two_cards(monkeypatch)
+    with pytest.raises(cluster.ClusterError, match="introuvable"):
+        cluster.validate_dedicated_address("eth9", "10.20.30.1/24")
 
 
 def test_resolving_an_address_not_on_this_machine_is_refused():
@@ -429,3 +581,87 @@ def test_check_reachable_reports_a_clear_error(monkeypatch):
     monkeypatch.setattr(cluster.socket, "create_connection", _raise)
     with pytest.raises(cluster.ClusterError, match="Impossible de joindre"):
         cluster._check_reachable("192.168.1.99:2377")
+
+
+# ---------------------------------------------------------------------------
+# Une inconnue ferme la porte (relecture adverse v1.19.0)
+# ---------------------------------------------------------------------------
+
+def test_an_unknown_primary_card_makes_the_cluster_impossible(monkeypatch):
+    """Table de routage illisible, ou aucune route par defaut a cet instant
+    (lien coupe, bail DHCP perdu, acces en IPv6 seul). Un ensemble vide
+    aurait voulu dire « aucune carte n'est principale », donc « toutes sont
+    libres pour le cluster » - l'inverse de ce qu'il faut conclure."""
+    from app import netconfig
+    _two_cards(monkeypatch)
+    monkeypatch.setattr(netconfig, "default_route_interfaces", lambda: None)
+
+    net = cluster.networking()
+    assert net.possible is False
+    assert net.candidates == []
+    assert net.spares == []
+    assert "carte principale" in net.blocking_reason
+    assert cluster.list_candidate_interfaces() == []
+
+
+def test_an_unknown_primary_card_refuses_every_advertise_address(monkeypatch):
+    from app import netconfig
+    _two_cards(monkeypatch)
+    monkeypatch.setattr(netconfig, "default_route_interfaces", lambda: None)
+    with pytest.raises(cluster.ClusterError, match="carte principale"):
+        cluster._resolve_advertise_ip("10.10.10.1")
+
+
+def test_an_unknown_primary_card_refuses_every_reconfiguration(monkeypatch):
+    from app import netconfig
+    _two_cards(monkeypatch)
+    monkeypatch.setattr(netconfig, "default_route_interfaces", lambda: None)
+    with pytest.raises(cluster.ClusterError, match="carte principale"):
+        cluster.validate_dedicated_address("eth1", "10.20.30.1/24")
+
+
+def test_a_network_carried_by_a_bridge_is_seen_by_the_overlap_check(monkeypatch):
+    """L'administration arrive souvent par un pont (libvirt, macvlan,
+    netplan) : son reseau n'apparait sur AUCUNE carte physique. L'assistant
+    proposait alors la plage de l'administrateur comme « libre »."""
+    from app import netconfig
+    monkeypatch.setattr(netconfig, "list_physical_interfaces",
+                        lambda: [_interface("enp1s0", [])])
+    monkeypatch.setattr(netconfig, "default_route_interfaces", lambda: {"br0", "enp1s0"})
+    monkeypatch.setattr(netconfig, "all_ipv4_networks", lambda: ["10.10.10.5/24"])
+
+    plan = cluster.suggest_dedicated_plan("eth1")
+    assert plan.ok
+    assert not plan.subnet.startswith("10.10.10.")
+
+
+# ---------------------------------------------------------------------------
+# Adresser une carte dediee : les garde-fous (relecture adverse v1.19.0)
+# ---------------------------------------------------------------------------
+
+def test_configuring_a_dedicated_card_is_refused_on_a_node_already_in_a_cluster(monkeypatch):
+    """La carte dediee porte alors l'adresse d'annonce du noeud : en changer
+    le rend injoignable pour Swarm, qui le declare mort - et depuis la
+    v1.18.0, un noeud declare mort cesse de servir ses partages."""
+    _two_cards(monkeypatch)
+    monkeypatch.setattr(cluster, "get_status", lambda: cluster.ClusterStatus(
+        active=True, is_manager=True, advertise_addr="10.10.10.1"))
+    with pytest.raises(cluster.ClusterError, match="deja partie d'un cluster"):
+        cluster.configure_dedicated("eth1", "10.20.30.1/24", "louis", "secret")
+
+
+def test_configuring_a_dedicated_card_requires_the_password(monkeypatch):
+    from app import auth
+    _two_cards(monkeypatch)
+    monkeypatch.setattr(cluster, "get_status", lambda: cluster.ClusterStatus(active=False))
+    monkeypatch.setattr(auth, "authenticate", lambda u, p: False)
+    with pytest.raises(cluster.ClusterError, match="Mot de passe"):
+        cluster.configure_dedicated("eth1", "10.20.30.1/24", "louis", "faux")
+
+
+def test_configuring_a_dedicated_card_accepts_a_valid_plan(monkeypatch):
+    from app import auth
+    _two_cards(monkeypatch)
+    monkeypatch.setattr(cluster, "get_status", lambda: cluster.ClusterStatus(active=False))
+    monkeypatch.setattr(auth, "authenticate", lambda u, p: True)
+    assert cluster.configure_dedicated("eth1", "10.20.30.1/24", "louis", "bon") == "10.20.30.1/24"

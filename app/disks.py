@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -283,6 +284,54 @@ def list_disks() -> list[Disk]:
         ))
 
     return disks
+
+
+def resolve_device(device: str, inventory: list[Disk] | None = None) -> Disk | None:
+    """Disque PHYSIQUE derriere un peripherique cite par ZFS (v1.19.0).
+
+    `zpool status` nomme ce qu'on lui a donne : une partition
+    (`/dev/sda1`), un disque entier (`/dev/sdb`), ou un lien stable
+    (`/dev/disk/by-id/wwn-0x...-part1`). La page d'un pool veut, elle,
+    afficher le modele et le numero de serie - qui n'existent qu'au niveau
+    du disque physique.
+
+    Trois tentatives, de la plus sure a la plus approximative :
+    1. le lien symbolique est resolu (`by-id` -> `sda1`) ;
+    2. le nom obtenu est cherche parmi les disques ET leurs partitions
+       reellement inventoriees - c'est exact, aucune deduction ;
+    3. a defaut seulement, le suffixe de partition est retire par motif
+       (`sda1` -> `sda`, `nvme0n1p2` -> `nvme0n1`). Le motif ne s'applique
+       jamais a un nom deja reconnu a l'etape 2, ce qui evite de transformer
+       `nvme0n1` (un disque entier) en `nvme0n`.
+
+    Rend None quand rien ne correspond : un disque retire d'une machine
+    allumee est exactement ce cas, et la page doit l'afficher tel quel
+    plutot que d'inventer un modele."""
+    raw = (device or "").strip()
+    if not raw:
+        return None
+
+    disk_list = list_disks() if inventory is None else inventory
+    by_name = {d.name: d for d in disk_list}
+    by_partition = {part: d for d in disk_list for part in d.partitions}
+
+    candidate = raw
+    if candidate.startswith("/"):
+        try:
+            candidate = os.path.realpath(candidate)
+        except OSError:
+            pass
+    name = Path(candidate).name
+
+    if name in by_name:
+        return by_name[name]
+    if name in by_partition:
+        return by_partition[name]
+
+    stripped = re.sub(r"(p\d+|\d+)$", "", name)
+    if stripped and stripped != name:
+        return by_name.get(stripped)
+    return None
 
 
 def get_available_disks() -> list[Disk]:

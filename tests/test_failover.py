@@ -33,11 +33,14 @@ def _group(name="photos", pool="tank", peer="192.168.1.42"):
 
 class _Share:
     def __init__(self, name, pool, dataset, mountpoint="/tank/partages/x",
-                 protocols=("smb",), users=(), groups=(), nfs_networks=()):
+                 protocols=("smb",), users=(), groups=(), nfs_networks=(),
+                 nfs_mode="squash_all", nfs_anon_user="", nfs_access="rw"):
         self.name, self.pool, self.dataset = name, pool, dataset
         self.mountpoint, self.protocols = mountpoint, list(protocols)
         self.users, self.groups = list(users), list(groups)
         self.nfs_networks = list(nfs_networks)
+        self.nfs_mode, self.nfs_anon_user = nfs_mode, nfs_anon_user
+        self.nfs_access = nfs_access
 
 
 class _Stack:

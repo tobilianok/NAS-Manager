@@ -1,7 +1,12 @@
 {# Fragment HTMX : rafraichi automatiquement (voir dashboard.html), pas de doctype/head/body ici.
    Le reseau est rendu ICI (et non plus par son propre bloc HTMX) pour qu'il
    partage la meme grille et le meme rythme de rafraichissement que le reste
-   de l'etat du systeme. #}
+   de l'etat du systeme.
+
+   v1.19.0 - la grille passe a QUATRE tuiles de meme taille (2 x 2) : le
+   reseau occupait toute la largeur et le disque systeme n'existait pas. Avec
+   l'horloge et la carte de sante a gauche, le haut du tableau de bord forme
+   maintenant six cartes de meme gabarit. #}
 <div class="stat-grid stat-grid-system">
 
   {# ---------------- CPU ---------------- #}
@@ -28,20 +33,60 @@
         {% endif %}
         {% if stats.cpu.mhz_max %}<br>Max materiel {{ format_frequency(stats.cpu.mhz_max) }}{% endif %}
       </div>
+
+      {# La temperature d'ensemble de la puce, a cote de sa charge : 100 %
+         de charge ne raconte pas la meme histoire a 45 degC et a 95. #}
+      {% if cpu_thermals and cpu_thermals.package %}
+      <div class="cpu-temp temp-{{ cpu_thermals.package.level }}"
+           title="{{ cpu_thermals.package.name }} — mesure brute : {{ cpu_thermals.package.technical }}{% if cpu_thermals.package.limit %} · limite constructeur {{ '%.0f' | format(cpu_thermals.package.limit) }} °C{% endif %}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14 14.8V4.5a2 2 0 1 0-4 0v10.3a4 4 0 1 0 4 0z"/>
+        </svg>
+        <span class="cpu-temp-value">{{ '%.0f' | format(cpu_thermals.package.celsius) }} °C</span>
+      </div>
+      {% endif %}
     </div>
 
     {% if stats.per_core_percent %}
-    {# Une barre verticale par coeur logique : on voit d'un coup d'oeil si la
-       charge est repartie ou si un seul coeur sature (typique d'une tache
-       mono-thread : un scrub ne se comporte pas comme un transcodage). #}
-    <div class="core-bars" role="img" aria-label="Charge par coeur">
+    {# Une tuile par coeur logique (v1.19.0). Les barres verticales
+       precedentes tenaient dans 44 px de haut : lisibles de loin, mais
+       incapables de porter un chiffre, et donc muettes sur la temperature.
+       Chaque tuile porte desormais son numero, sa charge et - quand la puce
+       la publie - la temperature de son coeur PHYSIQUE.
+
+       Deux threads d'un meme coeur partagent une seule sonde : c'est
+       `stats.cpu.core_id()` qui fait la traduction, et non le numero de
+       thread, qui donnerait la temperature d'un coeur voisin. #}
+    <div class="core-list">
+      {# Le numero du processeur logique vient de `per_core_ids`, jamais de
+         la position dans la liste : un cpu mis hors ligne disparait de
+         /proc/stat et decalerait tout ce qui suit. #}
       {% for value in stats.per_core_percent %}
-      <div class="core-bar" title="Coeur {{ loop.index0 }} : {{ value }}%">
-        <div class="core-bar-fill core-{{ 'crit' if value >= 90 else ('warn' if value >= 70 else 'ok') }}" style="height: {{ [value, 3] | max }}%;"></div>
+      {% set cpu_index = stats.per_core_ids[loop.index0] if loop.index0 < (stats.per_core_ids | length) else loop.index0 %}
+      {% set core_id = stats.cpu.core_id(cpu_index) %}
+      {% set temp = cpu_thermals.cores.get(core_id) if (cpu_thermals and core_id is not none) else none %}
+      {% set level = 'crit' if value >= 90 else ('warn' if value >= 70 else 'ok') %}
+      <div class="core-tile core-tile-{{ level }}"
+           title="Processeur logique {{ cpu_index }}{% if core_id is not none %} (coeur physique {{ core_id }}){% endif %} : {{ value }} % de charge{% if temp %} · {{ '%.0f' | format(temp.celsius) }} °C{% endif %}">
+        <div class="core-tile-head">
+          <span class="core-tile-name">C{{ cpu_index }}</span>
+          {% if temp %}
+          <span class="core-tile-temp temp-{{ temp.level }}">{{ '%.0f' | format(temp.celsius) }}°</span>
+          {% endif %}
+        </div>
+        <div class="core-track">
+          <div class="core-track-fill core-{{ level }}" style="width: {{ [value, 2] | max }}%;"></div>
+        </div>
+        <div class="core-tile-value">{{ value | round | int }} %</div>
       </div>
       {% endfor %}
     </div>
-    <div class="stat-sub">Charge par coeur ({{ stats.per_core_percent | length }})</div>
+    <div class="stat-sub core-list-legend">
+      Charge par coeur ({{ stats.per_core_percent | length }} threads)
+      {%- if cpu_thermals and cpu_thermals.cores %} &middot; temperature par coeur physique
+      {%- elif cpu_thermals and cpu_thermals.package %} &middot; la puce ne publie qu'une temperature d'ensemble
+      {%- endif %}
+    </div>
     {% endif %}
 
     <div class="stat-sub stat-sub-load" title="Nombre moyen de taches en attente d'execution sur 1, 5 et 15 minutes. Une valeur durablement superieure au nombre de threads ({{ stats.cpu.threads }}) signale une machine saturee.">
@@ -95,9 +140,66 @@
   {# La tuile DISPONIBILITE vivait ici jusqu'a la v1.6.0. Elle a rejoint la
      carte horloge : « depuis quand la machine tourne » se lit naturellement
      a cote de « quelle heure il est », et le compteur y avance en direct au
-     lieu d'attendre le rafraichissement de ce fragment. #}
-  <div class="stat-card stat-card-wide">
+     lieu d'attendre le rafraichissement de ce fragment.
+
+     v1.19.0 : la carte ne prend plus toute la largeur (`stat-card-wide`).
+     Elle ne portait pas assez de contenu pour la justifier, et le disque
+     systeme n'avait nulle part ou aller. #}
+  <div class="stat-card stat-card-net">
     <div class="stat-label">RESEAU</div>
     {% include "_network_partial.html" %}
+  </div>
+
+  {# ---------------- DISQUE SYSTEME ---------------- #}
+  {# Les pools ZFS avaient leurs alertes de remplissage depuis la Phase 3 ;
+     le disque qui porte Ubuntu, NAS Manager, les journaux et - sauf
+     deplacement explicite - les images Docker n'en avait aucune. C'est
+     pourtant le seul dont le debordement arrete la machine au lieu d'arreter
+     le stockage. #}
+  <div class="stat-card">
+    <div class="stat-card-head">
+      <div class="stat-label">DISQUE SYSTEME</div>
+      {% if system_disk.readable %}
+      <div class="stat-chip">{{ format_bytes(system_disk.total_bytes) }} au total</div>
+      {% endif %}
+    </div>
+    <div class="stat-model" title="{{ system_disk.device }} ({{ system_disk.fstype }}) monte sur {{ system_disk.mountpoint }}">
+      {{ system_disk.device or '—' }}{% if system_disk.fstype %} &middot; {{ system_disk.fstype }}{% endif %}
+    </div>
+
+    {% if system_disk.level == 'unknown' %}
+    <div class="cpu-main">
+      <div class="stat-value stat-value-small">Illisible</div>
+      <div class="cpu-meta">L'occupation de {{ system_disk.mountpoint }} n'a pas pu etre lue.</div>
+    </div>
+    {% else %}
+    <div class="cpu-main">
+      <div class="stat-value cpu-{{ 'crit' if system_disk.level == 'critical' else ('warn' if system_disk.level == 'warning' else 'ok') }}">{{ system_disk.used_percent }}%</div>
+      <div class="cpu-meta">
+        {{ format_bytes(system_disk.used_bytes) }} utilises<br>
+        {{ format_bytes(system_disk.available_bytes) }} disponibles
+      </div>
+    </div>
+
+    <div class="bar-bg sysdisk-bar" role="img"
+         aria-label="Remplissage du disque systeme : {{ system_disk.used_percent }} %">
+      <div class="bar-fill bar-{{ 'crit' if system_disk.level == 'critical' else ('warn' if system_disk.level == 'warning' else 'ok') }}"
+           style="width: {{ [system_disk.used_percent, 2] | max }}%;"></div>
+    </div>
+
+    <div class="stat-sub stat-sub-load">
+      {% if system_disk.level == 'critical' %}
+      <span class="badge badge-danger">critique</span>
+      Un disque systeme plein arrete les journaux et les mises a jour.
+      <a class="btn-link" href="/docker/storage">Stockage Docker →</a>
+      {% elif system_disk.level == 'warning' %}
+      <span class="badge badge-warn">a surveiller</span>
+      Le plus gros consommateur habituel est le stockage des images Docker.
+      <a class="btn-link" href="/docker/storage">Stockage Docker →</a>
+      {% else %}
+      Racine {{ system_disk.mountpoint }} &middot; alerte a partir de 75 %
+      {% endif %}
+    </div>
+    {% endif %}
   </div>
 </div>

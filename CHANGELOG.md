@@ -13,6 +13,239 @@ fichiers ont été modifiés à la main sur le serveur).
 
 ---
 
+## v1.19.0 — 2026-09-14
+
+**Le NAS se fait voir, se laisse écrire, et se surveille d'un coup d'œil.**
+Une version de terrain : tout ce qu'elle contient vient de choses qui n'ont
+pas marché sur la vraie machine — un partage NFS qui refuse un `mkdir`, un
+pare-feu qu'on finit par éteindre en entier parce qu'il est trop pénible à
+configurer, des images Docker qui remplissent le disque système alors qu'un
+pool de plusieurs centaines de gigaoctets attend à côté, et un tableau de
+bord qui annonce du mauvais temps sans dire où.
+
+### Le NAS est de nouveau visible sur le réseau
+
+Trois causes distinctes, souvent confondues en une seule :
+
+- **Windows ne navigue plus en NetBIOS.** L'ancien « voisinage réseau »
+  reposait sur SMB1, retiré de Windows 10/11. Depuis, Windows découvre par
+  **WS-Discovery**, que Samba ne parle pas : sans démon dédié (`wsdd`), un
+  NAS parfaitement fonctionnel n'apparaît tout simplement plus dans
+  l'explorateur.
+- **macOS et Linux découvrent en mDNS** (Bonjour / Avahi). Sans annonce,
+  il faut connaître l'adresse IP par cœur.
+- **NFS n'écoute à port fixe que sur 2049.** `rpc.mountd`, `statd` et
+  `lockd` prennent un port libre à chaque démarrage : aucun pare-feu ne peut
+  les autoriser à l'avance, et le symptôme est exactement celui qu'on
+  observait — le partage se monte, puis ne répond plus.
+
+`install.sh` installe et active `avahi-daemon` et `wsdd`, publie l'annonce,
+et **fige les ports NFS**. Un nouveau module `app/discovery.py` fait la même
+chose depuis l'interface, et une désactivation depuis l'écran **survit aux
+mises à jour** : le script d'installation repasse à chaque version, et
+réactiver à chaque fois un service qu'on vient d'éteindre reviendrait à
+ignorer la décision prise.
+
+### Un partage NFS où l'on peut enfin écrire
+
+Le bug : `mkdir: Permission denied` alors que le montage réussit. Deux faits
+se combinaient. Le dataset d'un partage est créé `root:nasshares` en mode
+2770 ; l'export était écrit avec `root_squash`, qui ramène le root du client
+à `nobody` — lequel n'appartient pas à `nasshares`. Et un utilisateur
+non-root ne s'en sort pas mieux : **NFS v3 transmet des numéros
+d'utilisateur**, et l'UID 1000 d'un portable Ubuntu ne désigne personne de
+particulier sur le NAS.
+
+C'est la difficulté de fond de NFS, pas un défaut de ce projet : NFS
+n'authentifie personne, il fait confiance aux UID annoncés. Trois façons
+d'en sortir, toutes offertes, avec leurs conséquences écrites dans
+l'interface :
+
+- **Identité unique** (par défaut) — tout ce qui arrive par NFS écrit sous
+  un seul compte. Ce que font Unraid et OpenMediaVault, et ce qui marche
+  sans rien configurer côté client.
+- **Correspondance des UID** — propre dans un parc Unix aligné des deux
+  côtés, inutilisable sinon.
+- **Root du client autorisé** — débloque tout, et donne à quiconque obtient
+  root sur une machine du réseau un pouvoir total sur ces données.
+
+**Un refus catégorique** : ce dernier mode ne se combine jamais avec une
+plage ouverte au monde entier (`*`, `0.0.0.0/0`). Les deux réglages exigent
+par ailleurs le mot de passe de l'administrateur connecté — ils décident à
+qui les données sont offertes.
+
+### Un pare-feu qu'on n'a plus envie d'éteindre
+
+Nouvelle page **Paramètres → Pare-feu**. `install.sh` ouvrait les bons ports
+à l'installation et plus rien ensuite : toute modification passait par la
+ligne de commande. Conséquence observée en réel — confronté à un cluster qui
+ne communiquait pas, l'utilisateur a **désactivé ufw en entier**, c'est-à-dire
+supprimé le pare-feu plutôt que d'ouvrir deux ports, parce que c'était la
+seule action simple à sa portée. *Un dispositif de sécurité trop pénible à
+configurer finit toujours par être éteint ; rendre la configuration simple
+EST une mesure de sécurité.*
+
+La page parle en **usages**, pas en numéros de port : « Partages SMB »,
+« Partages NFS », « Découverte Windows », « Cluster Docker Swarm »… chacun
+avec ce qu'il ouvre et pourquoi. Le module ne réimplémente pas ufw, il
+l'appelle : les règles vivent dans ufw, qui reste la source de vérité.
+
+Quatre garde-fous : **le port de l'interface ne peut jamais être fermé
+depuis l'interface** ; **activer le pare-feu ouvre d'abord l'interface et
+SSH** ; **une suppression vise une règle, pas un numéro** (les numéros d'ufw
+se décalent dès qu'une règle disparaît) ; et **`install.sh` ne repose plus
+les règles à chaque mise à jour** — sinon un port fermé volontairement était
+rouvert en silence à la version suivante.
+
+### Les images Docker ne remplissent plus le disque système
+
+Nouvelle page **Docker → Stockage**, et la correction d'un malentendu qui
+coûtait cher : **choisir un pool pour une stack ne choisit que l'emplacement
+de son `docker-compose.yml` et de ses volumes**. Les images, elles, vivent
+là où le démon les range — par défaut sur le disque système. D'où
+l'installation qui échoue avec « no space left on device » alors que le pool
+affiche des centaines de gigaoctets libres.
+
+**Deux emplacements, pas un.** Depuis Docker 25, les couches d'image vivent
+sous `/var/lib/containerd`, qui n'obéit **pas** à `data-root` de
+`daemon.json`. Ne déplacer que le premier donne l'impression d'avoir agi et
+laisse le disque se remplir comme avant.
+
+Le déplacement est détaché (`systemd-run`), copie avec `rsync -aHAX`
+(liens durs et attributs étendus : sans eux, des images deviennent
+inutilisables), pose `xattr=sa` et `acltype=posixacl` sur le dataset, et
+**vérifie ce que le démon rapporte** plutôt que ce qu'on lui a demandé.
+**L'ancien emplacement n'est jamais supprimé** par l'opération : sa
+suppression est une action séparée, une fois le nouvel emplacement éprouvé.
+Et une interruption — délai systemd atteint, tueur de mémoire, `systemctl
+stop` — restaure la configuration, supprime la copie partielle et **relance
+Docker** plutôt que de laisser la machine sans conteneurs.
+
+### Le tableau de bord
+
+- **Six cartes du même gabarit** : heure du serveur, santé & sécurité, CPU,
+  RAM, réseau et — nouvelle — **disque système**. La carte réseau passe en
+  demi-largeur pour laisser la place à la jauge du disque qui porte Ubuntu et
+  NAS Manager, le seul dont le débordement arrête la machine au lieu
+  d'arrêter le stockage.
+- **Carte CPU refaite** : une tuile par thread avec son numéro, sa charge et
+  **sa température**, plus la température d'ensemble de la puce. La
+  traduction thread → cœur physique passe par la topologie de
+  `/proc/cpuinfo` : deux threads d'un même cœur partagent une seule sonde, et
+  un cpu mis hors ligne ne décale plus rien.
+- **La météo dit ce qui ne va pas** sans qu'on l'ouvre : dès « à
+  surveiller », les deux contrôles les plus graves s'affichent sur la carte,
+  le reste est compté.
+- **La fenêtre de santé** passe en format large sur **deux colonnes**, et le
+  détail des températures y est ouvert par défaut — **températures des
+  disques comprises**, lues par SMART (le pilote `drivetemp` n'est chargé ni
+  par défaut ni derrière un contrôleur SAS).
+- **Les mises à jour se vérifient à l'ouverture du panneau** — en tâche de
+  fond, le résultat arrive tout seul quelques secondes plus tard — **et
+  toutes les heures**, même si personne ne regarde.
+- **Mention du cluster** : un bandeau discret quand ce nœud appartient à une
+  grappe, avec son état de santé. Invisible sinon.
+
+### Les disques d'un pool ont enfin une identité
+
+La page d'un pool n'affichait que `/dev/sda1`. C'est pourtant là qu'on
+regarde quand un pool se dégrade — et « sda1 » ne dit ni quel disque ouvrir
+dans le boîtier, ni s'il donnait déjà des signes de faiblesse. Modèle,
+**numéro de série**, température et **erreurs SMART** y figurent désormais.
+
+Avec un garde-fou qui vient de la Phase 12a : un disque mort disparaît au
+redémarrage suivant et **un autre disque peut reprendre son nom**. Un membre
+qui n'est pas ONLINE et n'est désigné que par un nom de périphérique voit
+donc son identité masquée, avec l'explication — plutôt que d'afficher le
+numéro de série du disque sain d'à côté et de faire débrancher le mauvais.
+
+### Cluster : une carte réseau dédiée, sans exception
+
+Le trafic d'un cluster n'est pas du trafic comme un autre : Swarm échange des
+battements de cœur à cadence fixe, et une réplication ZFS sature un lien
+pendant des heures. Les faire passer par la carte qui porte aussi
+l'administration et les partages, c'est accepter qu'un envoi de sauvegarde
+fasse déclarer ce nœud mort — et **depuis le quorum de la v1.18.0, un nœud
+déclaré mort cesse de servir ses partages**.
+
+La carte principale — celle qui porte la route par défaut, IPv4 **ou IPv6**,
+ponts et agrégats compris — n'est donc plus proposée, et le serveur la refuse
+même par requête forgée. Une machine à une seule carte ne peut pas former de
+cluster, et l'écran dit pourquoi. **Quand le système ne sait pas dire quelle
+carte est la principale, aucune n'est proposée** : une inconnue ferme la
+porte.
+
+Et comme une carte dédiée est branchée sur un câble direct — donc **sans
+aucun serveur DHCP** —, l'assistant propose une configuration fixe conforme
+aux bonnes pratiques : plage privée choisie pour ne recouvrir aucun réseau
+déjà utilisé par la machine, **aucune passerelle** (une seconde route par
+défaut fait sortir du trafic par un câble qui ne mène nulle part), **aucun
+DNS**, et l'adresse voisine à poser sur l'autre nœud. L'application passe par
+`netplan try`, qui revient tout seul en arrière si personne ne confirme.
+
+### Étape 5 du chantier cluster : `check_cluster()`
+
+La dernière pièce manquante rejoint la carte « Santé & sécurité », qui compte
+désormais **quinze** vérifications (avec le disque système). Nœud hors ligne,
+cluster sans leader, manager injoignable, nœud en vidange. Un **worker** ne
+peut pas lister les autres nœuds : il rend « inconnu », jamais « tout va
+bien ». **Le chantier cluster est complet.**
+
+### Relecture adverse : 27 défauts, dont 9 graves
+
+Confiée à deux regards neufs, un par moitié de version. Les plus coûteux :
+
+1. **Une interruption du déplacement Docker laissait la machine sans aucun
+   conteneur**, l'état figé sur « en cours » pendant 24 h, et aucune issue
+   depuis l'interface. Reproduit pour de vrai, corrigé par un filet
+   (`trap`) qui restaure, nettoie et relance.
+2. **Une copie ratée abandonnait des centaines de gigaoctets sur le pool**
+   que plus rien ne pouvait supprimer — et bloquait définitivement toute
+   nouvelle tentative. Le nettoyage est gardé par un témoin déposé avant la
+   copie : on ne supprime jamais un dataset qu'on n'a pas rempli soi-même.
+3. **NFS ouvrable au monde entier, en écriture, avec root du client, par
+   deux formulaires sans mot de passe.** Corrigé aux deux bouts.
+4. **Le garde-fou « une règle bloque déjà l'interface » ne pouvait jamais se
+   déclencher** : ufw inactif conserve ses règles mais ne les affiche pas, et
+   c'est le seul état où l'activation est proposée. On lit désormais
+   `ufw show added`.
+5. **Une règle DENY sur le port de l'interface était indéboulonnable depuis
+   la page** — la protection vivait dans un `{% if %}` et protégeait la
+   mauvaise règle.
+6. **Un `LIMIT` sur SSH était compté comme fermé**, et l'activation posait un
+   `allow` qui remplaçait la limitation : la protection anti-force-brute
+   disparaissait sans un mot.
+7. **Des plages NFS parfaitement valides désexportaient silencieusement le
+   partage** (masque pointé, netgroup), et la correction proposée était
+   impossible à appliquer.
+8. **`smartctl` sans délai** : un disque agonisant immobilisait un fil de
+   travail à chaque rafraîchissement de la carte de santé, jusqu'à ce que
+   toute l'interface cesse de répondre — au moment précis où il faut y entrer
+   pour remplacer le disque. Au passage, la lecture SMART est mutualisée :
+   **un seul passage par rendu** au lieu de deux, et plus de contradiction
+   entre la ligne « Disques » et le tableau des températures.
+9. **La table de routage illisible ouvrait le cluster à la carte
+   d'administration** — un ensemble vide voulait dire « aucune carte n'est
+   principale », donc « toutes sont libres ». Une machine en IPv6 seul y
+   tombait sans aucune panne.
+
+S'y ajoutent : trois appels Docker au lieu d'un par rafraîchissement du
+bandeau cluster, un worker au vert quel que soit l'état réel du cluster, le
+fichier d'état des notifications écrit sans `os.replace` alors qu'un fil de
+fond y écrit désormais, le verrou de vérification qui mettait en file
+d'attente au lieu de dédupliquer, des serveurs DNS posés sur le lien de
+cluster à l'encontre de ce que la page promet, un double-clic qui rendait
+l'ancien emplacement Docker impossible à nettoyer, un contrôle de place qui
+comptait deux fois le disque et refusait le déplacement précisément sur les
+machines qui en ont besoin, `lockd` placé sur le premier port de la plage
+éphémère, un `mountpoint=legacy` traité comme un chemin, la découverte qui
+coupait les montages NFS à chaque clic, et la fenêtre de santé illisible
+sous 820 px.
+
+**2095 tests** au total (281 de plus), suite complète verte.
+
+---
+
 ## v1.18.0 — 2026-09-13
 
 **Le quorum, le témoin et la bascule automatique.** Étape 4, et la version la

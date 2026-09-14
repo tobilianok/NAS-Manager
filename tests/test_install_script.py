@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parent.parent
 INSTALL = ROOT / "install.sh"
 SELF_UPDATE = ROOT / "scripts" / "self-update.sh"
 DISK_JOB = ROOT / "scripts" / "disk-job.sh"
-SCRIPTS = [INSTALL, SELF_UPDATE, DISK_JOB]
+DOCKER_MOVE = ROOT / "scripts" / "docker-move.sh"
+SCRIPTS = [INSTALL, SELF_UPDATE, DISK_JOB, DOCKER_MOVE]
 
 
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
@@ -26,7 +27,7 @@ def test_the_script_is_syntactically_valid(script):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("script", [SELF_UPDATE, DISK_JOB], ids=lambda p: p.name)
+@pytest.mark.parametrize("script", [SELF_UPDATE, DISK_JOB, DOCKER_MOVE], ids=lambda p: p.name)
 def test_detached_scripts_are_executable(script):
     """Une archive zip ou un checkout maladroit peut perdre le bit
     d'execution ; install.sh le repose, mais autant qu'il soit juste dans le
@@ -142,3 +143,106 @@ def test_the_disk_job_pins_the_locale():
 
 def test_the_disk_job_refuses_a_mounted_disk():
     assert "MOUNTPOINT" in DISK_JOB.read_text()
+
+
+# ---------------------------------------------------------------------------
+# docker-move.sh : ce script arrete Docker et copie tout son stockage
+# ---------------------------------------------------------------------------
+
+def test_the_move_never_deletes_the_original():
+    """La promesse centrale du module : les donnees sont COPIEES, la
+    bascule est verifiee, et l'ancien emplacement reste intact jusqu'a ce
+    que quelqu'un demande explicitement sa suppression."""
+    content = DOCKER_MOVE.read_text()
+    assert "rsync" in content
+    assert 'rm -rf "${OLD_DOCKER}' not in content
+    assert 'rm -rf "${OLD_CONTAINERD}' not in content
+
+
+def test_the_copy_preserves_hardlinks_acls_and_extended_attributes():
+    """Sans -H la copie peut doubler de taille (les couches d'image
+    reposent sur les liens durs) ; sans -X des images deviennent
+    inutilisables, et le symptome ne designe pas sa cause."""
+    assert "rsync -aHAX --numeric-ids" in DOCKER_MOVE.read_text()
+
+
+def test_the_daemon_is_really_stopped_before_anything_is_copied():
+    """Copier un stockage en cours d'ecriture donne une copie incoherente.
+    docker.socket doit tomber en premier, sinon systemd relance le demon a
+    la premiere sollicitation, en pleine copie."""
+    content = DOCKER_MOVE.read_text()
+    assert "systemctl stop docker.socket" in content
+    assert content.index("systemctl stop docker.socket") < content.index("systemctl stop docker.service")
+    assert "pgrep -x dockerd" in content
+    assert content.index("pgrep -x dockerd") < content.index("rsync")
+
+
+def test_both_locations_are_moved_not_just_data_root():
+    """`data-root` de daemon.json ne gouverne PAS /var/lib/containerd, ou
+    vivent les couches d'image depuis Docker 25. N'en deplacer qu'un donne
+    l'impression d'avoir agi."""
+    content = DOCKER_MOVE.read_text()
+    assert "/etc/docker/daemon.json" in content
+    assert "/etc/containerd/config.toml" in content
+
+
+def test_the_result_is_verified_against_what_the_daemon_reports():
+    """Une cle mal placee dans daemon.json est silencieusement ignoree : se
+    fier a ce qu'on a demande ne prouve rien."""
+    content = DOCKER_MOVE.read_text()
+    assert "docker info --format '{{.DockerRootDir}}'" in content
+    assert '"${ACTUAL}" != "${NEW_DOCKER}"' in content
+
+
+def test_a_failure_restores_the_original_configuration():
+    """Une machine qui sort d'un echec avec Docker arrete est une panne de
+    plus, pas une securite."""
+    content = DOCKER_MOVE.read_text()
+    assert "restore_and_fail" in content
+    assert "systemctl start docker.service" in content
+
+
+def test_the_state_file_is_merged_not_overwritten():
+    """Il porte deja le pool et les anciens chemins, ecrits cote Python.
+    Les perdre rendrait l'ancien emplacement impossible a supprimer depuis
+    l'interface."""
+    content = DOCKER_MOVE.read_text()
+    assert "json.load(open(path))" in content
+
+
+def test_an_unreadable_daemon_json_is_never_clobbered():
+    """Il porte peut-etre des reglages que personne ne saurait retrouver."""
+    assert "json.loads(raw)" in DOCKER_MOVE.read_text()
+
+
+# ---------------------------------------------------------------------------
+# install.sh : decouverte reseau et ports NFS (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def test_install_pins_the_nfs_ports():
+    """Sans ca, mountd et lockd prennent un port au hasard : le partage se
+    monte, puis se bloque - et aucune regle de pare-feu ne peut l'eviter."""
+    content = INSTALL.read_text()
+    assert "/etc/nfs.conf.d/nas-manager-ports.conf" in content
+    assert "port = 20048" in content
+
+
+def test_install_opens_the_discovery_and_nfs_ports():
+    content = INSTALL.read_text()
+    for port in ("5353/udp", "3702/udp", "5357/tcp", "20048/tcp", "32765:32767/tcp"):
+        assert f"ufw allow {port}" in content, port
+
+
+def test_install_does_not_re_enable_a_discovery_that_was_refused():
+    """install.sh repasse a chaque mise a jour applicative : rallumer a
+    chaque version un service qu'on vient d'eteindre reviendrait a ignorer
+    la decision prise a l'ecran."""
+    assert "/var/lib/nas-manager/discovery_disabled" in INSTALL.read_text()
+
+
+def test_a_missing_wsdd_package_does_not_fail_the_installation():
+    """Le paquet vit dans « universe » et pourrait manquer. Le reste de
+    l'installation n'a aucune raison d'echouer pour autant."""
+    content = INSTALL.read_text()
+    assert "wsdd" in content
+    assert "2>/dev/null; then" in content

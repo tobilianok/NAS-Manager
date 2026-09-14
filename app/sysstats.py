@@ -23,6 +23,24 @@ class CpuInfo:
     threads: int = 1
     mhz_current: float | None = None
     mhz_max: float | None = None
+    # Numero de coeur PHYSIQUE de chaque processeur logique, dans l'ordre de
+    # /proc/cpuinfo (donc dans le meme ordre que per_core_percent). Liste
+    # vide si /proc/cpuinfo ne publie pas « core id » (VM, ARM).
+    #
+    # A quoi ca sert (v1.19.0) : les sondes de temperature d'un Intel
+    # s'appellent « Core 0 », « Core 1 »... et numerotent les coeurs
+    # PHYSIQUES. Avec l'hyperthreading, cpu0 et cpu4 partagent le coeur
+    # physique 0 et donc la meme sonde. Sans cette table, afficher « la
+    # temperature du coeur 4 » a cote de la charge de cpu4 attribuerait a un
+    # thread la temperature d'un coeur qui n'est pas le sien.
+    core_of_cpu: list[int] = field(default_factory=list)
+
+    def core_id(self, logical_index: int) -> int | None:
+        """Coeur physique portant ce processeur logique, ou None si la
+        machine ne publie pas sa topologie."""
+        if 0 <= logical_index < len(self.core_of_cpu):
+            return self.core_of_cpu[logical_index]
+        return None
 
 
 @dataclass
@@ -43,6 +61,14 @@ class SystemStats:
     # Charge par coeur logique, dans l'ordre de /proc/stat. Liste vide tant
     # que le second echantillon n'a pas ete pris.
     per_core_percent: list[float] = field(default_factory=list)
+    # Numero du processeur logique de chaque valeur ci-dessus (v1.19.0).
+    # Indispensable : un cpu mis hors ligne (hot-unplug de vCPU,
+    # `echo 0 > /sys/devices/system/cpu/cpuN/online`, coeur desactive par le
+    # noyau) disparait de /proc/stat, et toutes les valeurs suivantes se
+    # decalent d'un cran. Sans cette liste, la tuile « C3 » afficherait la
+    # charge de cpu4 et la temperature du coeur 3 - exactement le mensonge
+    # que la topologie existe pour eviter.
+    per_core_ids: list[int] = field(default_factory=list)
     ram_free_bytes: int = 0        # reellement libre (MemFree)
     ram_cache_bytes: int = 0       # cache + tampons : recuperable a la demande
     ram_apps_bytes: int = 0        # total - libre - cache : ce que consomment les programmes
@@ -125,9 +151,13 @@ def _read_proc_stat_cores() -> dict[str, tuple[int, int]]:
     return samples
 
 
-def _per_core_percent() -> list[float]:
+def _per_core_percent() -> list[tuple[int, float]]:
     """Charge de chaque coeur logique, calculee par delta comme _cpu_percent.
-    Retourne une liste vide au premier appel (aucun delta possible)."""
+    Retourne une liste vide au premier appel (aucun delta possible).
+
+    Chaque valeur est accompagnee du NUMERO du processeur logique et non de
+    sa seule position : les cpu absents de /proc/stat sont sautes, et une
+    position ne designe donc pas forcement le cpu du meme rang."""
     global _last_core_samples
     samples = _read_proc_stat_cores()
     if not samples:
@@ -142,7 +172,7 @@ def _per_core_percent() -> list[float]:
         digits = name[3:]
         return int(digits) if digits.isdigit() else 0
 
-    result: list[float] = []
+    result: list[tuple[int, float]] = []
     for name in sorted(samples, key=index):
         if name not in previous:
             continue
@@ -150,10 +180,10 @@ def _per_core_percent() -> list[float]:
         idle, total = samples[name]
         delta_total = total - prev_total
         if delta_total <= 0:
-            result.append(0.0)
+            result.append((index(name), 0.0))
             continue
         percent = 100.0 * (1 - (idle - prev_idle) / delta_total)
-        result.append(round(max(0.0, min(100.0, percent)), 1))
+        result.append((index(name), round(max(0.0, min(100.0, percent)), 1)))
     return result
 
 
@@ -170,12 +200,21 @@ def _read_static_cpu_info() -> CpuInfo:
     threads = 0
     physical: set[tuple[str, str]] = set()
     current: dict[str, str] = {}
+    # (index logique, coeur physique) releve bloc par bloc. On ne se fie pas
+    # a l'ordre d'apparition pour l'index : /proc/cpuinfo publie « processor
+    # : N », autant le lire.
+    topology: dict[int, int] = {}
 
     def flush() -> None:
         phys = current.get("physical id")
         core = current.get("core id")
         if phys is not None and core is not None:
             physical.add((phys, core))
+        try:
+            logical = int(current["processor"])
+            topology[logical] = int(current["core id"])
+        except (KeyError, ValueError):
+            pass
 
     try:
         with open("/proc/cpuinfo") as f:
@@ -209,6 +248,12 @@ def _read_static_cpu_info() -> CpuInfo:
     info.physical_cores = len(physical)
     info.mhz_max = _read_khz("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
     info.mhz_current = fallback_mhz
+    # Table dense indexee par processeur logique. Un trou (bloc sans « core
+    # id ») invalide la table entiere plutot que de decaler les suivants :
+    # une topologie a moitie juste est pire qu'une topologie absente, elle
+    # attribuerait la temperature d'un coeur a un autre.
+    if topology and set(topology) == set(range(len(topology))):
+        info.core_of_cpu = [topology[i] for i in range(len(topology))]
     return info
 
 
@@ -244,6 +289,7 @@ def get_cpu_info() -> CpuInfo:
         threads=base.threads,
         mhz_current=live if live is not None else base.mhz_current,
         mhz_max=base.mhz_max,
+        core_of_cpu=list(base.core_of_cpu),
     )
 
 
@@ -306,6 +352,7 @@ def get_system_stats() -> SystemStats:
         load1 = load5 = load15 = 0.0
 
     uptime = _uptime_seconds()
+    cores = _per_core_percent()
 
     return SystemStats(
         cpu_percent=_cpu_percent(),
@@ -321,12 +368,122 @@ def get_system_stats() -> SystemStats:
         swap_percent=swap_percent,
         uptime_seconds=uptime,
         cpu=get_cpu_info(),
-        per_core_percent=_per_core_percent(),
+        per_core_percent=[value for _, value in cores],
+        per_core_ids=[index for index, _ in cores],
         ram_free_bytes=ram_free,
         ram_cache_bytes=ram_cache,
         ram_apps_bytes=ram_apps,
         boot_epoch=time.time() - uptime,
     )
+
+
+# ---------------------------------------------------------------------------
+# Remplissage du disque systeme (v1.19.0)
+# ---------------------------------------------------------------------------
+#
+# POURQUOI CETTE CARTE EXISTE
+# ---------------------------
+# Le tableau de bord savait dire le remplissage de chaque pool ZFS, et rien
+# du disque qui porte Ubuntu et NAS Manager lui-meme. C'est pourtant celui
+# dont le remplissage arrete tout : plus de journaux, plus de mises a jour,
+# parfois plus de demarrage - et c'est exactement ce qui est arrive le
+# 2026-09-13 avec les images Docker (voir app/dockerstorage.py). Un pool
+# plein empeche d'ecrire des donnees ; un disque systeme plein empeche la
+# machine de fonctionner.
+#
+# Les seuils sont les memes que ceux des pools (75 % / 90 %) : deux echelles
+# differentes pour la meme question - « est-ce que ca va deborder ? » -
+# seraient impossibles a retenir.
+
+SYSTEM_DISK_WARNING_PCT = 75.0
+SYSTEM_DISK_CRITICAL_PCT = 90.0
+
+
+@dataclass
+class DiskUsage:
+    """Occupation d'un systeme de fichiers monte."""
+    mountpoint: str
+    device: str = ""
+    fstype: str = ""
+    total_bytes: int = 0
+    used_bytes: int = 0
+    # Ce que l'utilisateur courant peut REELLEMENT ecrire : sur ext4, une
+    # part du disque est reservee a root (5 % par defaut). L'afficher comme
+    # libre ferait mentir la jauge de quelques pour cent.
+    available_bytes: int = 0
+    readable: bool = False
+
+    @property
+    def used_percent(self) -> float:
+        """Pourcentage a la maniere de `df` : rapporte a ce qui est
+        reellement utilisable, pas a la taille brute. C'est ce qui fait
+        qu'un ext4 « plein » affiche 100 % et non 95 %."""
+        usable = self.used_bytes + self.available_bytes
+        if usable <= 0:
+            return 0.0
+        return round(100 * self.used_bytes / usable, 1)
+
+    @property
+    def level(self) -> str:
+        # Un systeme de fichiers lisible mais sans aucun bloc utilisable
+        # (montage degenere, pseudo-systeme de fichiers) ne se juge pas : une
+        # jauge verte a 0 % serait une mesure inventee.
+        if not self.readable or (self.used_bytes + self.available_bytes) <= 0:
+            return "unknown"
+        if self.used_percent >= SYSTEM_DISK_CRITICAL_PCT:
+            return "critical"
+        if self.used_percent >= SYSTEM_DISK_WARNING_PCT:
+            return "warning"
+        return "ok"
+
+
+def _mount_entry(mountpoint: str) -> tuple[str, str]:
+    """(peripherique, type de systeme de fichiers) d'un point de montage, lu
+    dans /proc/mounts. Aucune dependance externe, comme tout ce module.
+
+    Le dernier montage d'un meme point l'emporte : c'est celui qui est
+    effectivement visible (un montage peut en recouvrir un autre)."""
+    device = fstype = ""
+    try:
+        with open("/proc/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                # /proc/mounts echappe les espaces en \040.
+                if parts[1].replace("\\040", " ") != mountpoint:
+                    continue
+                device, fstype = parts[0], parts[2]
+    except OSError:
+        return "", ""
+    return device, fstype
+
+
+def get_disk_usage(mountpoint: str = "/") -> DiskUsage:
+    """Occupation d'un point de montage. Ne leve jamais : un systeme de
+    fichiers illisible rend un releve marque `readable=False`, que
+    l'interface affiche comme inconnu plutot que comme vide - la meme regle
+    que SMART et les capteurs."""
+    usage = DiskUsage(mountpoint=mountpoint)
+    device, fstype = _mount_entry(mountpoint)
+    usage.device, usage.fstype = device, fstype
+    try:
+        st = os.statvfs(mountpoint)
+    except OSError:
+        return usage
+    if st.f_frsize <= 0 or st.f_blocks <= 0:
+        return usage
+    usage.total_bytes = st.f_blocks * st.f_frsize
+    usage.available_bytes = st.f_bavail * st.f_frsize
+    usage.used_bytes = (st.f_blocks - st.f_bfree) * st.f_frsize
+    usage.readable = True
+    return usage
+
+
+def get_system_disk() -> DiskUsage:
+    """Le systeme de fichiers racine : celui qui porte Ubuntu, NAS Manager,
+    les journaux et - sauf deplacement explicite - les images Docker."""
+    return get_disk_usage("/")
 
 
 def format_uptime(seconds: float) -> str:

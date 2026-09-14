@@ -37,10 +37,21 @@ apt-get install -y "${APT_OPTS[@]}" \
     zfsutils-linux smartmontools lsscsi nvme-cli hdparm \
     samba nfs-kernel-server acl \
     openssl ufw \
+    avahi-daemon avahi-utils rsync \
     lm-sensors \
     unattended-upgrades \
     netplan.io iw wpasupplicant \
     git curl unzip
+
+# wsdd : la decouverte WS-Discovery, seule facon pour Windows 10/11 de voir
+# ce NAS dans l'explorateur depuis le retrait de SMB1. Installe a part et
+# sans faire echouer le script : le paquet vit dans « universe » et pourrait
+# ne pas etre disponible sur toutes les installations.
+if ! apt-get install -y "${APT_OPTS[@]}" wsdd 2>/dev/null; then
+    echo "    ATTENTION : le paquet 'wsdd' n'a pas pu etre installe." >&2
+    echo "    Le NAS n'apparaitra pas tout seul dans l'explorateur Windows." >&2
+    echo "    Le reste (mDNS, partages, NFS) fonctionne normalement." >&2
+fi
 
 echo "==> [2/15] Detection des capteurs materiels (lm-sensors)"
 # Necessaire pour le widget "meteo" de sante du tableau de bord (temperatures
@@ -123,8 +134,54 @@ EOF
     echo "    /etc/samba/smb.conf minimal cree."
 fi
 touch /etc/exports
+
+# NFS n'ecoute a port fixe que sur 2049 ; mountd, statd et lockd en prennent
+# un au hasard a chaque demarrage. Aucun pare-feu ne peut donc les autoriser
+# a l'avance, et le symptome est deroutant : le partage se monte, puis se
+# bloque. On les fige (voir app/discovery.py, qui ecrit exactement le meme
+# fichier depuis l'interface).
+mkdir -p /etc/nfs.conf.d
+cat > /etc/nfs.conf.d/nas-manager-ports.conf <<'EOF'
+# Genere par NAS Manager - ne pas modifier a la main.
+[mountd]
+port = 20048
+
+[statd]
+port = 32765
+outgoing-port = 32766
+
+[lockd]
+port = 32767
+udp-port = 32767
+EOF
+
 systemctl enable smbd nmbd nfs-kernel-server >/dev/null 2>&1 || true
 systemctl restart smbd nmbd nfs-kernel-server
+
+# Annonce de decouverte (mDNS/Bonjour et WS-Discovery). Posee UNIQUEMENT si
+# personne ne l'a refusee depuis l'interface : ce script repasse a chaque
+# mise a jour applicative, et reactiver a chaque version un service qu'on
+# vient d'eteindre reviendrait a ignorer la decision prise a l'ecran.
+if [[ -f /var/lib/nas-manager/discovery_disabled ]]; then
+    echo "    Decouverte reseau laissee desactivee (refus enregistre depuis l'interface)."
+else
+    mkdir -p /etc/avahi/services
+    cat > /etc/avahi/services/nas-manager.service <<'EOF'
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- Genere par NAS Manager - ne pas modifier a la main. -->
+<service-group>
+  <name replace-wildcards="yes">%h</name>
+  <service><type>_smb._tcp</type><port>445</port></service>
+  <service><type>_nfs._tcp</type><port>2049</port></service>
+  <service><type>_https._tcp</type><port>8443</port><txt-record>path=/</txt-record></service>
+  <service><type>_device-info._tcp</type><port>0</port><txt-record>model=RackMac</txt-record></service>
+</service-group>
+EOF
+    systemctl enable --now avahi-daemon >/dev/null 2>&1 || true
+    systemctl enable --now wsdd >/dev/null 2>&1 || true
+    echo "    Decouverte reseau active (mDNS + WS-Discovery)."
+fi
 
 echo "==> [10/15] Installation de Docker Engine (gestion des stacks Docker Compose)"
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
@@ -171,17 +228,54 @@ echo "==> [12/15] Pare-feu (ufw) - ouverture des seuls ports necessaires"
 # actif. C'est une limitation connue de Docker (pas de ce script) ; si tu as
 # besoin de restreindre l'acces reseau a une stack precise, filtre-la au
 # niveau du routeur/pare-feu perimetrique, ou renseigne-toi sur "ufw-docker".
+#
+# CE BLOC NE S'EXECUTE QU'UNE FOIS. Ce script repasse a chaque mise a jour
+# applicative (scripts/self-update.sh le relance) : reposer les regles a
+# chaque version defaisait en silence les decisions prises depuis la page
+# Pare-feu - un port ferme volontairement etait rouvert, un pare-feu coupe
+# pour un diagnostic etait reactive. C'est le meme raisonnement que le
+# marqueur de la decouverte reseau a l'etape 9, et la meme lecon que la
+# v1.14.1 : quand une etape humaine se defait toute seule, on change le
+# mecanisme.
+#
+# Le port de l'interface et SSH font exception : ils sont reposes a chaque
+# fois. Les fermer n'est de toute facon pas possible depuis l'interface, et
+# se retrouver dehors apres une mise a jour serait la panne la plus couteuse
+# du projet.
+mkdir -p /var/lib/nas-manager
+FIREWALL_MARKER=/var/lib/nas-manager/firewall_initialized
+
 ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp
 ufw allow 8443/tcp comment 'NAS Manager (HTTPS)'
-ufw allow 445/tcp comment 'Samba'
-ufw allow 139/tcp comment 'Samba (NetBIOS)'
-ufw allow 137/udp comment 'Samba (NetBIOS)'
-ufw allow 138/udp comment 'Samba (NetBIOS)'
-ufw allow 2049/tcp comment 'NFS'
-ufw allow 111/tcp comment 'NFS (rpcbind)'
-ufw allow 111/udp comment 'NFS (rpcbind)'
-ufw --force enable >/dev/null 2>&1 || true
-echo "    Pare-feu actif. Regles :"
+
+if [[ -f "${FIREWALL_MARKER}" ]]; then
+    echo "    Regles de pare-feu deja posees a l'installation initiale :"
+    echo "    elles ne sont PAS reappliquees, pour ne pas defaire ce qui a ete"
+    echo "    regle depuis Parametres -> Pare-feu."
+else
+    ufw allow 445/tcp comment 'Samba'
+    ufw allow 139/tcp comment 'Samba (NetBIOS)'
+    ufw allow 137/udp comment 'Samba (NetBIOS)'
+    ufw allow 138/udp comment 'Samba (NetBIOS)'
+    ufw allow 2049/tcp comment 'NFS'
+    ufw allow 111/tcp comment 'NFS (rpcbind)'
+    ufw allow 111/udp comment 'NFS (rpcbind)'
+    # Les ports figes ci-dessus (etape 9). Sans eux, un partage NFS se monte
+    # puis se bloque - le defaut le plus deroutant de tout le projet, parce
+    # que le montage reussit.
+    ufw allow 20048/tcp comment 'NFS (mountd)'
+    ufw allow 20048/udp comment 'NFS (mountd)'
+    ufw allow 32765:32767/tcp comment 'NFS (statd, lockd)'
+    ufw allow 32765:32767/udp comment 'NFS (statd, lockd)'
+    # Decouverte : sans ces ports, l'annonce posee a l'etape 9 n'atteint
+    # personne et le NAS reste invisible malgre des partages fonctionnels.
+    ufw allow 5353/udp comment 'Decouverte mDNS (Bonjour)'
+    ufw allow 3702/udp comment 'Decouverte Windows (WS-Discovery)'
+    ufw allow 5357/tcp comment 'Decouverte Windows (WSD)'
+    ufw --force enable >/dev/null 2>&1 || true
+    touch "${FIREWALL_MARKER}"
+fi
+echo "    Regles de pare-feu :"
 ufw status | sed 's/^/    /'
 
 echo "==> [13/15] Script de mise a jour automatique"

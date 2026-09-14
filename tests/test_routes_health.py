@@ -147,3 +147,79 @@ def test_the_window_explains_what_moves_the_weather(client):
     soleil - ou, pire, on croit a un bug."""
     text = client.get("/partials/health").text
     assert "securite" in text and "redemarrage" in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# La raison du mauvais temps, sur la carte fermee (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def test_the_card_names_what_is_wrong_without_opening_anything(client):
+    """Jusqu'ici la carte disait « 2 points demandent une action » et il
+    fallait cliquer pour savoir lesquels."""
+    text = client.get("/partials/health").text
+    card = text.split('class="modal-overlay"')[0]
+    assert "weather-reasons" in card
+    assert "Stacks Docker" in card              # le critique en premier
+    assert "jellyfin redemarre en boucle." in card
+
+
+def test_the_reasons_are_sorted_by_severity(client):
+    card = client.get("/partials/health").text.split('class="modal-overlay"')[0]
+    assert card.index("Stacks Docker") < card.index("Pools ZFS")
+
+
+def test_only_two_reasons_are_shown_on_the_card(client, monkeypatch):
+    """La carte doit garder la hauteur de la carte horloge : le reste est
+    compte, pas affiche."""
+    monkeypatch.setattr(health, "get_report", lambda: health.HealthReport(checks=[
+        _check("a", "Controle A", health.LEVEL_CRITIQUE),
+        _check("b", "Controle B", health.LEVEL_CRITIQUE),
+        _check("c", "Controle C", health.LEVEL_ATTENTION),
+        _check("d", "Controle D", health.LEVEL_ATTENTION),
+    ]))
+    card = client.get("/partials/health").text.split('class="modal-overlay"')[0]
+    assert "Controle A" in card and "Controle B" in card
+    assert "Controle C" not in card
+    assert "+ 2 autres points dans le detail" in card
+
+
+def test_a_green_card_shows_no_reason_block(client, monkeypatch):
+    monkeypatch.setattr(health, "get_report", lambda: health.HealthReport(checks=[
+        _check("a", "Controle A", health.LEVEL_OK),
+    ]))
+    card = client.get("/partials/health").text.split('class="modal-overlay"')[0]
+    assert "weather-reasons" not in card
+
+
+# ---------------------------------------------------------------------------
+# La fenetre : large, sur deux colonnes, temperatures des disques (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def test_the_window_is_wide_and_two_columns(client):
+    text = client.get("/partials/health").text
+    assert "modal-xwide" in text
+    assert "modal-wide" not in text.replace("modal-xwide", "")
+
+
+def test_the_temperature_row_spans_the_full_width(client):
+    """Son tableau serait illisible dans une demi-colonne."""
+    text = client.get("/partials/health").text
+    assert "health-row-full" in text
+
+
+def test_disk_temperatures_are_listed_with_the_other_sensors(client, monkeypatch):
+    from app import smart as smart_module
+    monkeypatch.setattr(sensors, "cached_readings", lambda *a, **k: [
+        sensors.Reading(name="Coeur 0", group="Processeur", celsius=45.0),
+    ])
+    monkeypatch.setattr(smart_module, "list_disk_temperatures", lambda: [
+        sensors.Reading(name="WDC WD40 (sda)", group=sensors.DISK_GROUP,
+                        celsius=41.0, limit=60.0, raw_label="WD-1"),
+    ])
+    text = client.get("/partials/health").text
+    assert "Disques (SMART)" in text
+    assert "WDC WD40 (sda)" in text
+    assert "41 °C" in text
+    assert "2 capteur(s) de temperature" in text
+    # Et l'ecran dit pourquoi les disques gardent leur propre echelle.
+    assert "50 °C pour un avertissement" in text

@@ -3,7 +3,9 @@ Vue d'ensemble "meteo" de la sante et de la securite du systeme.
 
 Agrege plusieurs sources independantes (etat SMART des disques, sante des
 pools ZFS, cartes reseau physiques, temperatures materielles, pare-feu
-ufw, etat des containers Docker, comptes de partage ayant l'acces admin)
+ufw, etat des containers Docker, remplissage du stockage Docker,
+remplissage du disque systeme, etat du cluster Docker Swarm, comptes
+de partage ayant l'acces admin)
 en un seul statut global avec une icone
 "meteo" (beau temps / nuageux / orageux), et conserve le detail de
 chaque verification pour comprendre POURQUOI - le statut global seul ne
@@ -122,18 +124,35 @@ class HealthReport:
         quelque chose a y voir."""
         return sum(1 for c in self.checks if c.level in (LEVEL_CRITIQUE, LEVEL_ATTENTION))
 
+    @property
+    def attention_checks(self) -> list[HealthCheck]:
+        """Les controles qui demandent une action, le plus grave d'abord.
+
+        Affiches A MEME la carte fermee depuis la v1.19.0. Jusque-la, la
+        carte disait « 2 points demandent une action » et il fallait cliquer
+        pour savoir lesquels : une meteo qui annonce du mauvais temps sans
+        dire ou est une meteo qu'on finit par ne plus ouvrir. Le detail
+        complet reste dans la fenetre ; ce qu'on veut ici, c'est le nom du
+        probleme en un coup d'oeil."""
+        return [c for c in self.sorted_checks
+                if c.level in (LEVEL_CRITIQUE, LEVEL_ATTENTION)]
+
 
 def check_disks() -> HealthCheck:
-    """Pire statut SMART parmi tous les disques physiques detectes."""
-    from app import disks as disks_module, smart as smart_module
+    """Pire statut SMART parmi tous les disques physiques detectes.
 
-    disk_list = disks_module.list_disks()
-    if not disk_list:
+    Passe par `smart.list_reports`, comme le tableau des temperatures de la
+    fenetre : un seul passage smartctl par rendu au lieu de deux, et surtout
+    la meme mesure des deux cotes - sinon le meme disque pouvait etre
+    CRITIQUE sur cette ligne et vert dans le tableau juste en dessous."""
+    from app import smart as smart_module
+
+    pairs = smart_module.list_reports()
+    if not pairs:
         return HealthCheck("disks", "Disques (SMART)", LEVEL_INCONNU, "Aucun disque detecte.")
 
-    reports = [smart_module.get_smart_report(d.path) for d in disk_list]
     by_label: dict[str, list[str]] = {}
-    for d, r in zip(disk_list, reports):
+    for d, r in pairs:
         by_label.setdefault(r.status_label, []).append(d.path)
 
     if "CRITIQUE" in by_label:
@@ -249,6 +268,97 @@ def check_docker() -> HealthCheck:
                             f"Container(s) en boucle de redemarrage ou plantes sur : {', '.join(sorted(problem_stacks))}.")
     return HealthCheck("docker", "Stacks Docker", LEVEL_OK,
                         f"{len(stacks)} stack(s) geree(s), aucun container en echec detecte.")
+
+
+def check_docker_storage() -> HealthCheck:
+    """Le disque qui porte les images Docker (v1.19.0).
+
+    Ajoutee apres un incident reel : une stack refusait de s'installer
+    (« no space left on device ») alors que le pool ZFS choisi affichait des
+    centaines de gigaoctets libres. Les images ne vivent pas sur le pool de
+    la stack mais la ou le demon les range - par defaut sur le disque
+    systeme. Rien nulle part ne le disait, et le message d'erreur de Docker
+    ne nomme qu'un chemin.
+
+    Le seuil est celui du remplissage, pas l'emplacement : un stockage
+    Docker sur le disque systeme qui respire ne demande aucune action, et
+    une carte qui reclame en permanence est une carte qu'on apprend a
+    ignorer (lecon de la v1.8.0)."""
+    from app import dockerstorage
+
+    try:
+        layout = dockerstorage.current_layout()
+    except Exception:  # noqa: BLE001 - une lecture impossible n'est pas une panne
+        logger.exception("Lecture de l'emplacement du stockage Docker impossible")
+        return HealthCheck("docker_storage", "Stockage Docker", LEVEL_INCONNU,
+                           "Emplacement du stockage Docker illisible.")
+
+    if not layout.docker_available:
+        return HealthCheck("docker_storage", "Stockage Docker", LEVEL_INCONNU,
+                           "Docker n'est pas installe.")
+
+    emplacements = [
+        ("donnees Docker", layout.docker_root),
+        ("images (containerd)", layout.containerd_root),
+    ]
+    lisibles = [(nom, loc) for nom, loc in emplacements if loc.total_bytes > 0]
+    if not lisibles:
+        return HealthCheck("docker_storage", "Stockage Docker", LEVEL_INCONNU,
+                           "Occupation des emplacements Docker illisible.")
+
+    ou = "sur le disque systeme" if layout.on_system_disk else "sur ZFS"
+    pire_nom, pire = max(lisibles, key=lambda entry: entry[1].used_percent)
+
+    if pire.critical:
+        return HealthCheck(
+            "docker_storage", "Stockage Docker", LEVEL_CRITIQUE,
+            f"Le stockage Docker ({pire_nom}, {ou}) est rempli a "
+            f"{pire.used_percent} % - il ne reste que "
+            f"{pire.free_bytes / (1000 ** 3):.1f} Go. Toute installation d'image "
+            "va echouer, et sur le disque systeme c'est aussi les journaux et "
+            "les mises a jour qui s'arretent. Docker -> Stockage permet de le "
+            "deplacer sur un pool ZFS.")
+    if pire.warning:
+        return HealthCheck(
+            "docker_storage", "Stockage Docker", LEVEL_ATTENTION,
+            f"Le stockage Docker ({pire_nom}, {ou}) est rempli a "
+            f"{pire.used_percent} %.")
+    return HealthCheck("docker_storage", "Stockage Docker", LEVEL_OK,
+                       f"Stockage Docker {ou}, rempli a {pire.used_percent} %.")
+
+
+def check_system_disk() -> HealthCheck:
+    """Le disque qui porte Ubuntu et NAS Manager (v1.19.0).
+
+    Les pools ZFS avaient leurs alertes de remplissage depuis la Phase 3, le
+    disque systeme n'en avait aucune. C'est pourtant le seul dont le
+    debordement arrete la machine plutot que le stockage : plus de journaux,
+    plus de mises a jour, un `apt` qui echoue a mi-chemin, et parfois un
+    demarrage qui ne va pas au bout. Memes seuils que les pools (75 / 90 %) :
+    une seconde echelle pour la meme question serait impossible a retenir."""
+    from app import sysstats as sysstats_module
+
+    usage = sysstats_module.get_system_disk()
+    if usage.level == "unknown":
+        return HealthCheck("system_disk", "Disque systeme", LEVEL_INCONNU,
+                           "Occupation du disque systeme illisible.")
+
+    free_go = usage.available_bytes / (1000 ** 3)
+    if usage.level == "critical":
+        return HealthCheck(
+            "system_disk", "Disque systeme", LEVEL_CRITIQUE,
+            f"Le disque systeme est rempli a {usage.used_percent} % - il ne reste "
+            f"que {free_go:.1f} Go. Les journaux, les mises a jour et parfois le "
+            "demarrage s'arretent quand il est plein. Le plus gros consommateur "
+            "habituel est le stockage des images Docker (Docker -> Stockage).")
+    if usage.level == "warning":
+        return HealthCheck(
+            "system_disk", "Disque systeme", LEVEL_ATTENTION,
+            f"Le disque systeme est rempli a {usage.used_percent} % "
+            f"({free_go:.1f} Go libres).")
+    return HealthCheck("system_disk", "Disque systeme", LEVEL_OK,
+                       f"Disque systeme rempli a {usage.used_percent} % "
+                       f"({free_go:.1f} Go libres).")
 
 
 def check_share_admins() -> HealthCheck:
@@ -502,6 +612,92 @@ def check_quorum() -> HealthCheck:
                         f"groupe(s) suivis, {armes} arme(s) en automatique.")
 
 
+def check_cluster(status=None) -> HealthCheck:
+    """L'etat du cluster Docker Swarm (v1.19.0).
+
+    Derniere piece de l'etape 5 du chantier cluster : la derive de
+    replication (v1.15.0), la couverture de bascule (v1.16.0) et le quorum
+    de stockage (v1.18.0) etaient deja ici, le cluster de calcul lui-meme ne
+    l'etait pas. Un noeud tombe se voit sur la page Cluster - encore
+    faut-il l'ouvrir, et personne n'ouvre une page ou tout va toujours bien.
+
+    Aucun cluster = INCONNU : ne pas en avoir est le cas le plus courant et
+    n'a rien d'anormal.
+
+    Un noeud NON manager ne peut pas lister les autres (`docker node ls` est
+    refuse aux workers). On ne conclut donc rien de ce silence : il dit ce
+    qu'il sait - il appartient au cluster - et s'arrete la, plutot que de
+    rapporter un « 0 noeud » qui serait faux.
+
+    `status` peut etre fourni par l'appelant : lire l'etat du cluster coute
+    un `docker info` plus un `docker node ls`, et le bandeau du tableau de
+    bord vient justement de le faire."""
+    from app import cluster as cluster_module
+
+    try:
+        if status is None:
+            status = cluster_module.get_status()
+    except Exception:  # noqa: BLE001 - jamais faire tomber le tableau de bord
+        logger.exception("Lecture de l'etat du cluster impossible")
+        return HealthCheck("cluster", "Cluster", LEVEL_INCONNU,
+                           "Impossible de lire l'etat du cluster.")
+
+    if not status.docker_available:
+        return HealthCheck("cluster", "Cluster", LEVEL_INCONNU,
+                           "Docker n'est pas installe : aucun cluster possible.")
+    if not status.active:
+        return HealthCheck("cluster", "Cluster", LEVEL_INCONNU,
+                           "Ce noeud n'appartient a aucun cluster.")
+
+    role = "manager" if status.is_manager else "worker"
+    if not status.is_manager:
+        # INCONNU et non OK : un worker ne peut pas lister les noeuds, il ne
+        # sait donc rien de la sante du cluster. Rendre OK mettait la ligne
+        # au vert - et le bandeau du tableau de bord avec - alors que les
+        # deux managers pouvaient etre morts et ce noeud incapable de
+        # recevoir la moindre tache. Le seul ecran cense dire « regarde par
+        # ici » disait « tout va bien ».
+        return HealthCheck("cluster", "Cluster", LEVEL_INCONNU,
+                           f"Ce noeud participe au cluster en tant que {role} : "
+                           "il ne peut pas lire l'etat des autres noeuds, seul un "
+                           "manager le peut.")
+
+    if not status.nodes:
+        return HealthCheck("cluster", "Cluster", LEVEL_INCONNU,
+                           status.error or "Liste des noeuds du cluster illisible.")
+
+    down = [n.hostname for n in status.nodes if n.status != "ready"]
+    unreachable = [n.hostname for n in status.nodes
+                   if n.role == cluster_module.ROLE_MANAGER
+                   and n.manager_status not in ("leader", "reachable")]
+    # Un Swarm sans leader n'accepte plus aucune commande d'administration :
+    # les services deja lances continuent de tourner, mais plus rien ne peut
+    # etre deploye, corrige ni deplace. C'est la panne la plus couteuse de
+    # cette page, donc la seule a peser « critique ».
+    if not any(n.is_leader for n in status.nodes):
+        return HealthCheck("cluster", "Cluster", LEVEL_CRITIQUE,
+                           "Le cluster n'a plus de leader : plus aucune action "
+                           "d'administration n'est possible tant qu'un quorum de "
+                           "managers n'est pas retabli.")
+    if down:
+        return HealthCheck("cluster", "Cluster", LEVEL_CRITIQUE,
+                           f"Noeud(s) hors ligne : {', '.join(down)}.")
+    if unreachable:
+        return HealthCheck("cluster", "Cluster", LEVEL_ATTENTION,
+                           f"Manager(s) injoignable(s) depuis le leader : "
+                           f"{', '.join(unreachable)}.")
+
+    drained = [n.hostname for n in status.nodes if n.availability != "active"]
+    if drained:
+        return HealthCheck("cluster", "Cluster", LEVEL_ATTENTION,
+                           f"{len(status.nodes)} noeud(s), tous en ligne, mais "
+                           f"non disponible(s) pour les taches : {', '.join(drained)}.")
+
+    return HealthCheck("cluster", "Cluster", LEVEL_OK,
+                       f"{len(status.nodes)} noeud(s) en ligne "
+                       f"({status.manager_count} manager(s)), ce noeud est {role}.")
+
+
 def get_report() -> HealthReport:
     """Execute toutes les verifications. Peut prendre quelques secondes
     (smartctl par disque, sensors, docker compose ps par stack) - a
@@ -514,11 +710,14 @@ def get_report() -> HealthReport:
         check_temperatures(),
         check_firewall(),
         check_docker(),
+        check_docker_storage(),
+        check_system_disk(),
         check_share_admins(),
         check_snapshots(),
         check_replication(),
         check_failover(),
         check_quorum(),
+        check_cluster(),
         check_updates(),
     ]
     return HealthReport(checks=checks)

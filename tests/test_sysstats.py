@@ -92,8 +92,29 @@ def test_per_core_computes_delta_and_orders_numerically(monkeypatch):
         "intr 12345\n"
     )
     monkeypatch.setattr("builtins.open", lambda *a, **k: io.StringIO(second))
-    # L'ordre doit etre cpu0, cpu1, cpu10 - pas l'ordre alphabetique.
-    assert sysstats._per_core_percent() == [100.0, 0.0, 50.0]
+    # L'ordre doit etre cpu0, cpu1, cpu10 - pas l'ordre alphabetique. Et
+    # chaque valeur porte le NUMERO de son processeur logique (v1.19.0),
+    # pas seulement sa position : un cpu mis hors ligne disparait de
+    # /proc/stat et decalerait toutes les suivantes.
+    assert sysstats._per_core_percent() == [(0, 100.0), (1, 0.0), (10, 50.0)]
+
+
+def test_an_offline_cpu_does_not_shift_the_following_ones(monkeypatch):
+    """`echo 0 > /sys/devices/system/cpu/cpu1/online`, ou un vCPU retire a
+    chaud : cpu1 quitte /proc/stat. Sans numero explicite, la tuile « C1 »
+    afficherait la charge de cpu10 et la temperature du coeur 1."""
+    monkeypatch.setattr(sysstats, "_last_core_samples", {})
+    monkeypatch.setattr("builtins.open", lambda *a, **k: io.StringIO(FAKE_STAT_CORES))
+    sysstats._per_core_percent()
+
+    without_cpu1 = (
+        "cpu  1000 0 500 8000 200 0 0 0 0 0\n"
+        "cpu0 600 0 250 4000 100 0 0 0 0 0\n"
+        "cpu10 550 0 250 4050 100 0 0 0 0 0\n"
+        "intr 12345\n"
+    )
+    monkeypatch.setattr("builtins.open", lambda *a, **k: io.StringIO(without_cpu1))
+    assert sysstats._per_core_percent() == [(0, 100.0), (10, 50.0)]
 
 
 def test_per_core_ignores_a_core_that_appeared_between_two_samples(monkeypatch):
@@ -273,3 +294,135 @@ def test_server_clock_smoke():
     assert 0 <= clock.seconds_of_day < 86400
     assert len(clock.time_label) == 8
     assert clock.date_label
+
+
+# ---------------------------------------------------------------------------
+# Topologie du processeur (v1.19.0)
+# ---------------------------------------------------------------------------
+
+_CPUINFO_HT = """processor\t: 0
+model name\t: Intel(R) Core(TM) i3-2100
+physical id\t: 0
+core id\t\t: 0
+cpu MHz\t\t: 3100.000
+
+processor\t: 1
+model name\t: Intel(R) Core(TM) i3-2100
+physical id\t: 0
+core id\t\t: 1
+
+processor\t: 2
+model name\t: Intel(R) Core(TM) i3-2100
+physical id\t: 0
+core id\t\t: 0
+
+processor\t: 3
+model name\t: Intel(R) Core(TM) i3-2100
+physical id\t: 0
+core id\t\t: 1
+"""
+
+
+def _read_cpuinfo(monkeypatch, tmp_path, payload):
+    path = tmp_path / "cpuinfo"
+    path.write_text(payload)
+    real_open = open
+
+    def fake_open(name, *args, **kwargs):
+        if name == "/proc/cpuinfo":
+            return real_open(path, *args, **kwargs)
+        return real_open(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    monkeypatch.setattr(sysstats, "_static_cpu_info", None)
+    return sysstats._read_static_cpu_info()
+
+
+def test_hyperthreading_topology_is_read(monkeypatch, tmp_path):
+    info = _read_cpuinfo(monkeypatch, tmp_path, _CPUINFO_HT)
+    assert info.threads == 4
+    assert info.physical_cores == 2
+    assert info.core_of_cpu == [0, 1, 0, 1]
+    # Deux threads d'un meme coeur partagent la meme sonde de temperature.
+    assert info.core_id(0) == info.core_id(2) == 0
+    assert info.core_id(1) == info.core_id(3) == 1
+    assert info.core_id(9) is None
+
+
+def test_a_cpuinfo_without_core_id_yields_no_topology(monkeypatch, tmp_path):
+    """Sur une VM, /proc/cpuinfo ne publie souvent pas « core id ». Mieux
+    vaut aucune topologie qu'une topologie a moitie juste, qui attribuerait
+    a un thread la temperature d'un autre coeur."""
+    payload = "processor\t: 0\nmodel name\t: QEMU Virtual CPU\n\nprocessor\t: 1\nmodel name\t: QEMU Virtual CPU\n"
+    info = _read_cpuinfo(monkeypatch, tmp_path, payload)
+    assert info.threads == 2
+    assert info.core_of_cpu == []
+    assert info.core_id(0) is None
+
+
+# ---------------------------------------------------------------------------
+# Remplissage du disque systeme (v1.19.0)
+# ---------------------------------------------------------------------------
+
+class _Statvfs:
+    def __init__(self, blocks, bfree, bavail, frsize=4096):
+        self.f_blocks, self.f_bfree, self.f_bavail, self.f_frsize = blocks, bfree, bavail, frsize
+
+
+def test_system_disk_usage_is_computed_like_df(monkeypatch):
+    """`df` rapporte l'occupation a ce qui est REELLEMENT utilisable, pas a
+    la taille brute : la reserve root d'ext4 (5 %) n'est disponible pour
+    personne, l'inclure ferait mentir la jauge."""
+    monkeypatch.setattr(sysstats.os, "statvfs",
+                        lambda path: _Statvfs(blocks=1000, bfree=200, bavail=100))
+    monkeypatch.setattr(sysstats, "_mount_entry", lambda mp: ("/dev/md0", "ext4"))
+    usage = sysstats.get_system_disk()
+    assert usage.readable is True
+    assert usage.device == "/dev/md0"
+    assert usage.total_bytes == 1000 * 4096
+    assert usage.used_bytes == 800 * 4096
+    assert usage.available_bytes == 100 * 4096
+    # 800 utilises sur 900 utilisables = 88,9 %, pas 80 %.
+    assert usage.used_percent == 88.9
+
+
+def test_system_disk_levels_follow_the_pool_thresholds(monkeypatch):
+    monkeypatch.setattr(sysstats, "_mount_entry", lambda mp: ("/dev/sda1", "ext4"))
+
+    def at(percent):
+        monkeypatch.setattr(sysstats.os, "statvfs",
+                            lambda path: _Statvfs(blocks=1000, bfree=1000 - percent * 10,
+                                                  bavail=1000 - percent * 10))
+        return sysstats.get_system_disk().level
+
+    assert at(50) == "ok"
+    assert at(75) == "warning"
+    assert at(90) == "critical"
+
+
+def test_an_unreadable_filesystem_is_unknown_not_empty(monkeypatch):
+    """Meme regle que SMART et les capteurs : une lecture impossible ne
+    devient jamais une valeur."""
+    def boom(path):
+        raise OSError("nope")
+    monkeypatch.setattr(sysstats.os, "statvfs", boom)
+    monkeypatch.setattr(sysstats, "_mount_entry", lambda mp: ("", ""))
+    usage = sysstats.get_system_disk()
+    assert usage.readable is False
+    assert usage.level == "unknown"
+    assert usage.used_percent == 0.0
+
+
+def test_mount_entry_decodes_escaped_spaces(monkeypatch, tmp_path):
+    mounts = tmp_path / "mounts"
+    mounts.write_text("/dev/sda1 / ext4 rw 0 0\n/dev/sdb1 /mnt/mon\\040disque ext4 rw 0 0\n")
+    real_open = open
+
+    def fake_open(name, *args, **kwargs):
+        if name == "/proc/mounts":
+            return real_open(mounts, *args, **kwargs)
+        return real_open(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    assert sysstats._mount_entry("/") == ("/dev/sda1", "ext4")
+    assert sysstats._mount_entry("/mnt/mon disque") == ("/dev/sdb1", "ext4")

@@ -13,6 +13,10 @@
     </div>
     {% endif %}
 
+    {# Mention du cluster (v1.19.0). Fragment vide quand ce noeud n'en fait
+       pas partie : rien ne s'affiche, et rien ne prend de place. #}
+    <div id="live-cluster" hx-get="/partials/cluster" hx-trigger="load, every 30s" hx-swap="innerHTML"></div>
+
     {# Toutes les bandes partagent le meme decoupage en colonnes (v1.9.0) :
        les separations verticales tombent au meme endroit d'un bout a l'autre
        de la page. Elles etaient auparavant a deux endroits differents selon

@@ -204,16 +204,20 @@ def test_check_docker_all_running(monkeypatch):
 def test_get_report_smoke(monkeypatch):
     """Ne doit jamais lever d'exception, meme sans aucune source disponible
     (systeme minimal / VM de test)."""
-    from app import disks as disks_module, zfs, netstats, dockerstacks
+    from app import disks as disks_module, zfs, netstats, dockerstacks, sysstats
 
     monkeypatch.setattr(disks_module, "list_disks", lambda: [])
     monkeypatch.setattr(zfs, "list_pools", lambda: [])
     monkeypatch.setattr(netstats, "list_interfaces", lambda: [])
     monkeypatch.setattr(dockerstacks, "list_stacks", lambda: [])
     monkeypatch.setattr(health.shutil, "which", lambda name: None)
+    # Le disque systeme existe toujours sur la machine qui execute les
+    # tests : sans ce stub, « aucune source disponible » serait faux.
+    monkeypatch.setattr(sysstats, "get_system_disk",
+                        lambda: sysstats.DiskUsage(mountpoint="/"))
 
     report = health.get_report()
-    assert len(report.checks) == 12
+    assert len(report.checks) == 15
     # Plus aucune verification "toujours OK" (la politique de mot de passe a
     # ete retiree, cf. commentaire dans health.py) - quand toutes les sources
     # sont indisponibles, le rapport global doit donc etre "inconnu" et non
@@ -225,7 +229,7 @@ def test_get_report_real_system_smoke():
     """Test de fumee sur le vrai systeme (sandbox) : ne doit jamais lever
     d'exception, meme sans zfs/docker/ufw/sensors installes."""
     report = health.get_report()
-    assert len(report.checks) == 12
+    assert len(report.checks) == 15
     assert report.overall_level in (
         health.LEVEL_OK, health.LEVEL_ATTENTION, health.LEVEL_CRITIQUE, health.LEVEL_INCONNU,
     )
@@ -495,3 +499,217 @@ def test_a_covered_group_is_ok(monkeypatch):
     check = health.check_failover()
     assert check.level == health.LEVEL_OK
     assert "3 dataset(s)" in check.detail
+
+
+# ---------------------------------------------------------------------------
+# Stockage Docker (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def _layout(used_percent, on_zfs=False):
+    from app import dockerstorage
+    total = 100 * 1024 ** 3
+    used = int(total * used_percent / 100)
+    fstype = "zfs" if on_zfs else "ext4"
+    location = dockerstorage.Location(
+        path="/var/lib/docker", exists=True, fstype=fstype,
+        total_bytes=total, used_bytes=used, free_bytes=total - used)
+    autre = dockerstorage.Location(
+        path="/var/lib/containerd", exists=True, fstype=fstype,
+        total_bytes=total, used_bytes=used, free_bytes=total - used)
+    return dockerstorage.Layout(docker_available=True, docker_root=location,
+                                containerd_root=autre)
+
+
+def test_a_docker_storage_that_breathes_asks_for_nothing(monkeypatch):
+    """Une carte qui reclame en permanence est une carte qu'on apprend a
+    ignorer (lecon de la v1.8.0) : l'emplacement seul ne suffit pas a
+    declencher une alerte."""
+    from app import dockerstorage
+    monkeypatch.setattr(dockerstorage, "current_layout", lambda: _layout(30))
+    assert health.check_docker_storage().level == health.LEVEL_OK
+
+
+def test_a_nearly_full_docker_storage_is_critical_and_says_what_to_do(monkeypatch):
+    from app import dockerstorage
+    monkeypatch.setattr(dockerstorage, "current_layout", lambda: _layout(96))
+    check = health.check_docker_storage()
+    assert check.level == health.LEVEL_CRITIQUE
+    assert "disque systeme" in check.detail
+    assert "ZFS" in check.detail
+
+
+def test_a_full_docker_storage_on_zfs_is_still_reported(monkeypatch):
+    from app import dockerstorage
+    monkeypatch.setattr(dockerstorage, "current_layout", lambda: _layout(96, on_zfs=True))
+    check = health.check_docker_storage()
+    assert check.level == health.LEVEL_CRITIQUE
+    assert "sur ZFS" in check.detail
+
+
+def test_an_unreadable_layout_is_unknown_not_a_crash(monkeypatch):
+    from app import dockerstorage
+
+    def boom():
+        raise RuntimeError("docker muet")
+
+    monkeypatch.setattr(dockerstorage, "current_layout", boom)
+    assert health.check_docker_storage().level == health.LEVEL_INCONNU
+
+
+def test_no_docker_at_all_is_unknown(monkeypatch):
+    from app import dockerstorage
+    monkeypatch.setattr(dockerstorage, "current_layout",
+                        lambda: dockerstorage.Layout(docker_available=False))
+    assert health.check_docker_storage().level == health.LEVEL_INCONNU
+
+
+# ---------------------------------------------------------------------------
+# Disque systeme (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def _usage(percent, readable=True):
+    from app import sysstats
+    total = 100_000_000_000
+    used = int(total * percent / 100)
+    return sysstats.DiskUsage(
+        mountpoint="/", device="/dev/md0", fstype="ext4", total_bytes=total,
+        used_bytes=used, available_bytes=total - used, readable=readable,
+    )
+
+
+def test_system_disk_check_follows_the_pool_thresholds(monkeypatch):
+    from app import sysstats
+    monkeypatch.setattr(sysstats, "get_system_disk", lambda: _usage(40))
+    assert health.check_system_disk().level == health.LEVEL_OK
+    monkeypatch.setattr(sysstats, "get_system_disk", lambda: _usage(80))
+    assert health.check_system_disk().level == health.LEVEL_ATTENTION
+    monkeypatch.setattr(sysstats, "get_system_disk", lambda: _usage(95))
+    check = health.check_system_disk()
+    assert check.level == health.LEVEL_CRITIQUE
+    # Le message nomme la cause la plus frequente, pas seulement le symptome.
+    assert "Docker" in check.detail
+
+
+def test_an_unreadable_system_disk_is_unknown(monkeypatch):
+    from app import sysstats
+    monkeypatch.setattr(sysstats, "get_system_disk", lambda: _usage(0, readable=False))
+    assert health.check_system_disk().level == health.LEVEL_INCONNU
+
+
+# ---------------------------------------------------------------------------
+# Cluster (v1.19.0) - derniere piece de l'etape 5 du chantier cluster
+# ---------------------------------------------------------------------------
+
+def _cluster_status(**kw):
+    from app import cluster
+    return cluster.ClusterStatus(**kw)
+
+
+def _node(hostname="nas-1", role="manager", manager_status="leader",
+          status="ready", availability="active"):
+    from app import cluster
+    return cluster.ClusterNode(id=hostname, hostname=hostname, role=role,
+                               manager_status=manager_status, status=status,
+                               availability=availability)
+
+
+def _with_status(monkeypatch, status):
+    from app import cluster
+    monkeypatch.setattr(cluster, "get_status", lambda: status)
+
+
+def test_no_cluster_is_unknown_not_a_problem(monkeypatch):
+    """Ne pas avoir de cluster est le cas le plus courant."""
+    _with_status(monkeypatch, _cluster_status(active=False))
+    assert health.check_cluster().level == health.LEVEL_INCONNU
+
+
+def test_a_healthy_cluster_is_ok(monkeypatch):
+    _with_status(monkeypatch, _cluster_status(
+        active=True, is_manager=True,
+        nodes=[_node("nas-1"), _node("nas-2", role="worker", manager_status="")],
+    ))
+    check = health.check_cluster()
+    assert check.level == health.LEVEL_OK
+    assert "2 noeud(s)" in check.detail
+
+
+def test_a_node_offline_is_critical(monkeypatch):
+    _with_status(monkeypatch, _cluster_status(
+        active=True, is_manager=True,
+        nodes=[_node("nas-1"), _node("nas-2", role="worker", manager_status="", status="down")],
+    ))
+    check = health.check_cluster()
+    assert check.level == health.LEVEL_CRITIQUE
+    assert "nas-2" in check.detail
+
+
+def test_a_cluster_without_leader_is_critical(monkeypatch):
+    """Sans leader, plus aucune action d'administration n'est possible :
+    les services deja lances tournent, mais rien ne peut plus etre deploye
+    ni deplace."""
+    _with_status(monkeypatch, _cluster_status(
+        active=True, is_manager=True,
+        nodes=[_node("nas-1", manager_status="unreachable"),
+               _node("nas-2", manager_status="unreachable")],
+    ))
+    check = health.check_cluster()
+    assert check.level == health.LEVEL_CRITIQUE
+    assert "leader" in check.detail
+
+
+def test_a_drained_node_is_only_worth_attention(monkeypatch):
+    _with_status(monkeypatch, _cluster_status(
+        active=True, is_manager=True,
+        nodes=[_node("nas-1"), _node("nas-2", role="worker", manager_status="",
+                                     availability="drain")],
+    ))
+    assert health.check_cluster().level == health.LEVEL_ATTENTION
+
+
+def test_a_worker_does_not_pretend_to_know_the_other_nodes(monkeypatch):
+    """`docker node ls` est refuse aux workers : on ne conclut rien de ce
+    silence, surtout pas un « 0 noeud » - ni un vert. Un worker dont les
+    deux managers sont morts ne recoit plus rien et ne peut plus etre
+    administre : la carte de sante n'a pas a le dire tranquille."""
+    _with_status(monkeypatch, _cluster_status(active=True, is_manager=False))
+    check = health.check_cluster()
+    assert check.level == health.LEVEL_INCONNU
+    assert "worker" in check.detail
+
+
+def test_the_caller_can_pass_a_status_it_already_read(monkeypatch):
+    """Lire l'etat du cluster coute un `docker info` plus un `docker node
+    ls` : le bandeau du tableau de bord vient de le faire."""
+    from app import cluster
+
+    def boom():
+        raise AssertionError("get_status ne doit pas etre rappele")
+
+    monkeypatch.setattr(cluster, "get_status", boom)
+    status = _cluster_status(active=True, is_manager=True, nodes=[_node()])
+    assert health.check_cluster(status).level == health.LEVEL_OK
+
+
+def test_cluster_check_never_raises(monkeypatch):
+    from app import cluster
+
+    def boom():
+        raise RuntimeError("docker absent")
+
+    monkeypatch.setattr(cluster, "get_status", boom)
+    assert health.check_cluster().level == health.LEVEL_INCONNU
+
+
+# ---------------------------------------------------------------------------
+# Ce qui demande une action (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def test_attention_checks_are_sorted_and_exclude_the_green_ones():
+    report = health.HealthReport(checks=[
+        health.HealthCheck("a", "A", health.LEVEL_OK, ""),
+        health.HealthCheck("b", "B", health.LEVEL_ATTENTION, ""),
+        health.HealthCheck("c", "C", health.LEVEL_INCONNU, ""),
+        health.HealthCheck("d", "D", health.LEVEL_CRITIQUE, ""),
+    ])
+    assert [c.key for c in report.attention_checks] == ["d", "b"]

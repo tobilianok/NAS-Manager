@@ -241,3 +241,52 @@ def test_get_disk_accepts_a_name_or_a_path(monkeypatch):
     assert disks_module.get_disk("sdc").path == "/dev/sdc"
     assert disks_module.get_disk("/dev/sdc").name == "sdc"
     assert disks_module.get_disk("sdz") is None
+
+
+# ---------------------------------------------------------------------------
+# Du peripherique cite par ZFS au disque physique (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def _inventory():
+    return [
+        disks_module.Disk(name="sda", path="/dev/sda", size_bytes=1, model="WDC",
+                          serial="WD-1", rota=True, status="in_pool",
+                          partitions=["sda1", "sda9"]),
+        disks_module.Disk(name="nvme0n1", path="/dev/nvme0n1", size_bytes=1,
+                          model="Samsung", serial="S-1", rota=False,
+                          status="available", partitions=[]),
+    ]
+
+
+def test_a_partition_resolves_to_its_physical_disk():
+    disk = disks_module.resolve_device("/dev/sda1", _inventory())
+    assert disk is not None and disk.name == "sda"
+
+
+def test_a_whole_disk_resolves_to_itself():
+    disk = disks_module.resolve_device("/dev/nvme0n1", _inventory())
+    assert disk is not None and disk.name == "nvme0n1"
+
+
+def test_an_nvme_disk_is_not_mangled_by_the_partition_pattern():
+    """`nvme0n1` finit par un chiffre : un retrait de suffixe applique sans
+    reflechir en ferait `nvme0n`, c'est-a-dire rien."""
+    inventory = _inventory()
+    assert disks_module.resolve_device("nvme0n1", inventory).name == "nvme0n1"
+    # Une partition NVMe, elle, doit bien retomber sur son disque.
+    inventory[1].partitions = ["nvme0n1p1"]
+    assert disks_module.resolve_device("/dev/nvme0n1p1", inventory).name == "nvme0n1"
+
+
+def test_a_by_id_link_is_resolved(monkeypatch):
+    monkeypatch.setattr(disks_module.os.path, "realpath",
+                        lambda path: "/dev/sda1" if "by-id" in path else path)
+    disk = disks_module.resolve_device("/dev/disk/by-id/wwn-0x5000-part1", _inventory())
+    assert disk is not None and disk.name == "sda"
+
+
+def test_an_unknown_device_yields_none():
+    """Un disque retire a chaud - justement le cas ou l'on vient regarder
+    cette page. Mieux vaut une case vide qu'un modele invente."""
+    assert disks_module.resolve_device("/dev/sdz1", _inventory()) is None
+    assert disks_module.resolve_device("", _inventory()) is None

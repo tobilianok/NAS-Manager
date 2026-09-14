@@ -6,7 +6,7 @@
 
 Interface web de gestion NAS pour Ubuntu Server 26.04 LTS, basée sur ZFS.
 
-**Version actuelle : v1.18.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
+**Version actuelle : v1.19.0** — voir [CHANGELOG.md](CHANGELOG.md). Le numéro
 est affiché en bas du menu latéral ; le survol donne le commit déployé et
 signale si des fichiers ont été modifiés à la main sur le serveur.
 
@@ -52,6 +52,18 @@ nœuds. Un **bail exclusif** garantit qu'un groupe n'est servi que par un seul
 d'entre eux, l'**auto-effacement** fait cesser de servir celui qui se découvre
 isolé, et c'est seulement parce que ces deux-là existent qu'une **reprise
 automatique** devient acceptable.
+La v1.19.0 est une version de terrain : **découverte réseau** (mDNS/Bonjour et
+WS-Discovery, plus les ports NFS figés) pour que le NAS apparaisse tout seul
+dans l'explorateur Windows et le Finder ; **identités NFS** réglables, qui
+corrigent le « Permission denied » au premier `mkdir` ; une page **Pare-feu**
+qui parle en usages plutôt qu'en numéros de port ; le **déplacement du
+stockage Docker** vers un pool ZFS, parce que les images ne vivent pas où
+vivent les stacks ; un **tableau de bord** à six cartes du même gabarit avec
+jauge du disque système, températures par cœur et raison du mauvais temps
+affichée sans clic ; le **modèle, le numéro de série et l'état SMART** des
+disques d'un pool ; et, côté cluster, une **carte réseau dédiée obligatoire**
+avec assistant d'adressage statique. `check_cluster()` referme au passage
+l'étape 5 du chantier cluster, **désormais complet**.
 Le tout s'installe par un script unique après une installation fraîche
 d'Ubuntu Server 26.04 LTS.
 
@@ -129,8 +141,16 @@ régénère jamais un certificat déjà présent).
 
 `install.sh` active `ufw` et n'ouvre que les ports strictement nécessaires :
 l'interface NAS Manager (8443/tcp), SSH (22/tcp), Samba (445/tcp, 139/tcp,
-137-138/udp) et NFS (2049/tcp, 111/tcp+udp). Tout le reste est bloqué en
-entrée par défaut.
+137-138/udp), NFS (2049/tcp, 111/tcp+udp, plus les ports figés de mountd,
+statd et lockd) et la découverte réseau (5353/udp, 3702/udp, 5357/tcp). Tout
+le reste est bloqué en entrée par défaut.
+
+Depuis la v1.19.0, tout cela se règle depuis **Paramètres → Pare-feu** : la
+page parle en usages (« Partages NFS », « Découverte Windows », « Cluster
+Docker Swarm ») plutôt qu'en numéros de port, et ne peut jamais fermer le
+port de l'interface. Ce bloc de règles n'est posé qu'à la **première**
+installation : une mise à jour applicative ne redéfait plus ce qui a été
+réglé depuis l'écran.
 
 **Limite importante à connaître** : Docker gère ses propres règles `iptables`
 et contourne `ufw` par défaut — un port publié par une stack Docker Compose
@@ -158,7 +178,7 @@ pytest tests/ -v
 ```
 
 Optionnel (pas nécessaire pour faire tourner NAS Manager), mais recommandé
-avant de valider une modification faite à la main. **1814 tests** couvrent :
+avant de valider une modification faite à la main. **2095 tests** couvrent :
 
 - **Stockage** : détection et identité des disques (étiquette ZFS plutôt que
   nom de périphérique), validation des pools, agrandissement, suppression en

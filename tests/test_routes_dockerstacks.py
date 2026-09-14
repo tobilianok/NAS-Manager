@@ -430,3 +430,69 @@ def test_an_invalid_compose_is_still_refused_before_anything_is_kept(client, mon
                                         "compose_content": COMPOSE_YAML})
     assert resp.status_code == 400
     assert dockerstacks.get_stack("myapp") is None
+
+
+# ---------------------------------------------------------------------------
+# Emplacement du stockage du demon (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def _on_system_disk():
+    from app import dockerstorage
+    return dockerstorage.Layout(
+        docker_available=True,
+        docker_root=dockerstorage.Location(
+            path="/var/lib/docker", exists=True, fstype="ext4", source="/dev/md0",
+            total_bytes=100 * 1024 ** 3, used_bytes=96 * 1024 ** 3,
+            free_bytes=4 * 1024 ** 3),
+        containerd_root=dockerstorage.Location(
+            path="/var/lib/containerd", exists=True, fstype="ext4", source="/dev/md0",
+            total_bytes=100 * 1024 ** 3, used_bytes=96 * 1024 ** 3,
+            free_bytes=4 * 1024 ** 3),
+    )
+
+
+@pytest.fixture
+def storage_page(client, monkeypatch, tmp_path):
+    from app import dockerstorage, snapshots as snapshots_module
+    monkeypatch.setattr(dockerstorage, "STATE_FILE", tmp_path / "docker_move.json")
+    monkeypatch.setattr(dockerstorage, "current_layout", _on_system_disk)
+    monkeypatch.setattr(dockerstacks, "list_docker_storage", lambda with_tree=True: [])
+    monkeypatch.setattr(zfs, "list_pools", lambda: [_fake_pool("tank"), _fake_pool("rpool")])
+    monkeypatch.setattr(snapshots_module, "system_pool_names", lambda: {"rpool"})
+    return client
+
+
+def test_the_storage_page_says_where_the_images_really_live(storage_page):
+    """La confusion qui remplissait le disque systeme : choisir un pool pour
+    une stack ne deplace pas les images."""
+    text = storage_page.get("/docker/storage").text
+    assert "/var/lib/containerd" in text
+    assert "disque systeme" in text
+
+
+def test_a_full_system_disk_is_called_out(storage_page):
+    text = storage_page.get("/docker/storage").text
+    assert "bar-crit" in text
+
+
+def test_the_system_pool_is_not_offered_as_a_destination(storage_page):
+    """Y mettre le stockage Docker ramenerait exactement le probleme qu'on
+    cherche a resoudre."""
+    text = storage_page.get("/docker/storage").text
+    assert "tank/docker-engine" in text
+    assert "rpool/docker-engine" not in text
+
+
+def test_moving_without_the_password_is_refused(storage_page, monkeypatch):
+    from app import auth as auth_module
+    monkeypatch.setattr(auth_module, "authenticate", lambda u, p: False)
+    response = storage_page.post("/docker/storage/engine/move",
+                                 data={"pool": "tank", "confirm_password": "mauvais"})
+    assert response.status_code == 400
+
+
+def test_the_page_says_the_old_location_is_kept(storage_page):
+    """C'est la promesse centrale du module : un deplacement rate ne coute
+    rien tant que l'original est la."""
+    text = storage_page.get("/docker/storage").text
+    assert "jamais supprime" in text

@@ -793,7 +793,15 @@ def get_dataset_mountpoint(dataset_path: str) -> str | None:
     if code != 0 or not out:
         return None
     mountpoint = out.strip()
-    return mountpoint if mountpoint not in ("none", "-") else None
+    # « legacy » signifie « ZFS ne monte pas ce dataset, c'est /etc/fstab ou
+    # un script qui s'en charge » : ce n'est PAS un chemin. Le rendre tel
+    # quel donnait une chaine relative, et un appelant qui ecrivait dedans
+    # (le deplacement du stockage Docker, v1.19.0) creait un dossier
+    # « legacy/ » relatif a son repertoire de travail - donc sur le disque
+    # systeme, exactement l'inverse du but poursuivi.
+    if mountpoint in ("none", "-", "legacy") or not mountpoint.startswith("/"):
+        return None
+    return mountpoint
 
 
 def create_dataset(dataset_path: str) -> str:

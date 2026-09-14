@@ -317,6 +317,12 @@ class MemberShare:
     users: list[dict] = field(default_factory=list)
     groups: list[dict] = field(default_factory=list)
     nfs_networks: list[str] = field(default_factory=list)
+    # v1.19.0 : la facon dont NFS traduit les identites du client. Elle
+    # voyage avec le partage - sans elle, un groupe repris repartirait avec
+    # le mode par defaut, donc avec des droits que personne n'a choisis.
+    nfs_mode: str = ""
+    nfs_anon_user: str = ""
+    nfs_access: str = "rw"
 
 
 @dataclass
@@ -356,6 +362,8 @@ def inventory(group: Group) -> Inventory:
             users=[{"username": u.username, "access": u.access} for u in s.users],
             groups=[{"groupname": g.groupname, "access": g.access} for g in s.groups],
             nfs_networks=list(s.nfs_networks),
+            nfs_mode=s.nfs_mode, nfs_anon_user=s.nfs_anon_user,
+            nfs_access=s.nfs_access,
         )
         for s in shares_module.list_shares() if s.pool == group.pool
     ]
@@ -922,6 +930,7 @@ def readopt_group(name: str, username: str, password: str) -> ReleaseReport:
                     users=[shares_module.ShareAccess(**u) for u in brut.get("users", [])],
                     groups=[shares_module.GroupAccess(**g) for g in brut.get("groups", [])],
                     nfs_networks=list(brut.get("nfs_networks", [])),
+                    **_nfs_identity_fields(brut),
                 )
                 report.problems.extend(shares_module.adopt_share(share))
                 report.removed_shares.append(share.name)
@@ -1039,7 +1048,8 @@ def release_group(name: str, expected_pool: str = "") -> ReleaseReport:
                 {"name": s.name, "pool": group.pool, "dataset": s.dataset,
                  "mountpoint": s.mountpoint, "protocols": s.protocols,
                  "users": s.users, "groups": s.groups,
-                 "nfs_networks": s.nfs_networks}
+                 "nfs_networks": s.nfs_networks, "nfs_mode": s.nfs_mode,
+                 "nfs_anon_user": s.nfs_anon_user, "nfs_access": s.nfs_access}
                 for s in inv.shares
             ],
             "stacks": [s.name for s in inv.stacks],
@@ -1324,6 +1334,25 @@ def _valid_addresses(manifest: dict) -> list[str]:
     return valides
 
 
+def _nfs_identity_fields(brut: dict) -> dict:
+    """Les trois champs NFS d'un partage decrit par un manifeste (v1.19.0).
+
+    `validate_manifest` les a deja refuses s'ils etaient aberrants ; ici on
+    se contente de retomber sur le defaut quand ils sont absents - un
+    manifeste produit par une machine en v1.18.0 ou anterieure n'en a
+    aucun."""
+    from app import shares as shares_module
+
+    mode = brut.get("nfs_mode") or shares_module.DEFAULT_NFS_MODE
+    if mode not in shares_module.NFS_MODES:
+        mode = shares_module.DEFAULT_NFS_MODE
+    return {
+        "nfs_mode": mode,
+        "nfs_anon_user": brut.get("nfs_anon_user", "") or "",
+        "nfs_access": "ro" if brut.get("nfs_access") == "ro" else "rw",
+    }
+
+
 def validate_manifest(manifest: dict) -> None:
     """Un manifeste vient d'une AUTRE machine : c'est une donnee, pas une
     verite.
@@ -1387,6 +1416,22 @@ def validate_manifest(manifest: dict) -> None:
                     "compte ou de groupe acceptable.")
         for reseau in brut.get("nfs_networks", []) or []:
             _validate_network(_texte(reseau, "une plage NFS"))
+        # Le mode NFS decide de qui peut ecrire, et l'un des trois donne le
+        # root du client sur ces donnees. Une valeur venue d'une autre
+        # machine ne s'applique pas sans etre reconnue.
+        mode_nfs = brut.get("nfs_mode", "")
+        if mode_nfs not in ("", *shares_module.NFS_MODES):
+            raise FailoverError(
+                f"Manifeste invalide : mode NFS inconnu « {mode_nfs} » sur le "
+                f"partage « {nom} ».")
+        compte_nfs = brut.get("nfs_anon_user", "") or ""
+        if compte_nfs and not _POSIX_NAME_RE.match(_texte(compte_nfs, "un compte NFS")):
+            raise FailoverError(
+                f"Manifeste invalide : « {compte_nfs} » n'est pas un nom de "
+                "compte acceptable.")
+        if brut.get("nfs_access", "rw") not in ("rw", "ro"):
+            raise FailoverError(
+                f"Manifeste invalide : acces NFS illisible sur le partage « {nom} ».")
 
     for brut in manifest.get("stacks", []):
         if not isinstance(brut, dict):
@@ -1929,6 +1974,7 @@ def _apply_promotion(plan: PromotionPlan, report: PromotionReport,
                 users=[shares_module.ShareAccess(**u) for u in brut.get("users", [])],
                 groups=[shares_module.GroupAccess(**g) for g in brut.get("groups", [])],
                 nfs_networks=list(brut.get("nfs_networks", [])),
+                **_nfs_identity_fields(brut),
             )
             report.problems.extend(shares_module.adopt_share(share))
             report.adopted_shares.append(share.name)

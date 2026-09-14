@@ -28,6 +28,7 @@ from app import (
     power, servicerestart, sensors, diskage, timezone, notifications,
     systemsettings, fancontrol, cluster, snapshots as snapshots_module,
     replication, zfsreplicate, failover, setupwizard, quorum,
+    firewall, discovery, dockerstorage,
 )
 
 BASE_DIR = os.path.dirname(__file__)
@@ -112,6 +113,17 @@ def _start_quorum_watchdog() -> None:
     planificateurs ci-dessus, et pour la meme raison. Sans temoin enregistre
     il ne fait rien du tout - le comportement reste celui de la v1.16.0."""
     quorum.start_watchdog()
+
+
+@app.on_event("startup")
+def _start_update_notifications() -> None:
+    """La verification des mises a jour ne partait que sur un clic : une
+    machine que personne ne regarde affichait donc indefiniment un resultat
+    vieux d'autant - et c'est justement celle pour laquelle un correctif de
+    securite en attente compte le plus. Fil interne horaire, sans etat
+    propre (l'echeance se deduit de l'horodatage du dernier resultat), meme
+    mecanique que les planificateurs ci-dessus."""
+    notifications.start_scheduler()
 
 
 @app.on_event("startup")
@@ -262,6 +274,14 @@ def partial_sysstats(request: Request, username: str = Depends(require_login)):
             "boot_label": sysstats.format_boot_date(stats.boot_epoch),
             "format_frequency": sysstats.format_frequency,
             "format_bytes": sysstats.format_bytes,
+            # Temperatures du processeur (v1.19.0), a cote de sa charge : un
+            # coeur a 100 % ne dit pas la meme chose a 45 degC et a 95.
+            # Lecture mise en cache quelques secondes - ce fragment repasse
+            # toutes les 5 s.
+            "cpu_thermals": sensors.cpu_thermals(sensors.cached_readings()),
+            # Jauge du disque systeme (v1.19.0) : les pools avaient la leur,
+            # le disque qui porte Ubuntu et NAS Manager n'en avait aucune.
+            "system_disk": sysstats.get_system_disk(),
             # Le widget reseau est desormais une tuile de cette grille : il
             # est rendu par le meme fragment, avec les memes aides.
             "interfaces": netstats.list_interfaces(),
@@ -295,7 +315,12 @@ def _health_context(request: Request) -> dict:
     Lecture seule de bout en bout : ce fragment est rafraichi tout seul
     toutes les 30 secondes, un acces reseau ici interrogerait GitHub et le
     registre Docker en boucle."""
-    readings = sensors.list_readings()
+    # Les temperatures des disques ne viennent PAS de `sensors` (le pilote
+    # drivetemp n'est charge ni par defaut, ni derriere un controleur SAS ou
+    # un boitier USB) mais de SMART. Elles rejoignent la meme liste pour
+    # etre affichees dans le meme tableau, avec leur propre groupe et leur
+    # propre echelle - voir app.smart.list_disk_temperatures.
+    readings = sensors.cached_readings() + smart_module.list_disk_temperatures()
     snapshot = notifications.read()
     return {
         "request": request, "report": health.get_report(),
@@ -329,6 +354,31 @@ def partial_pools(request: Request, username: str = Depends(require_login)):
 @app.get("/partials/health", response_class=HTMLResponse)
 def partial_health(request: Request, username: str = Depends(require_login)):
     return templates.TemplateResponse("_health_partial.html", _health_context(request))
+
+
+@app.get("/partials/cluster", response_class=HTMLResponse)
+def partial_cluster_badge(request: Request, username: str = Depends(require_login)):
+    """Mention discrete « ce noeud appartient a un cluster » sur le tableau
+    de bord (v1.19.0).
+
+    Elle ne vit pas dans une carte : quand il n'y a pas de cluster - le cas
+    le plus courant - le fragment est vide et ne prend pas un pixel. Quand
+    il y en a un, c'est la premiere chose que l'oeil rencontre en haut de la
+    page, ce qui est exactement ce qu'on veut savoir avant de toucher a quoi
+    que ce soit sur une machine qui n'est plus seule."""
+    # L'etat est lu UNE fois et passe a la verification : lire l'etat du
+    # cluster coute un `docker info` plus un `docker node ls`, et sur un
+    # manager qui a perdu son quorum ces appels peuvent durer. Les payer deux
+    # fois par passage, toutes les 30 s, ralentissait le tableau de bord
+    # pendant la panne qu'on cherche justement a diagnostiquer.
+    status = cluster.get_status()
+    return templates.TemplateResponse(
+        "_cluster_badge.html",
+        {
+            "request": request, "status": status,
+            "check": health.check_cluster(status) if status.active else None,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -377,8 +427,77 @@ def pool_detail(request: Request, name: str, username: str = Depends(require_log
             "replacement_state": replacement_state, "step_label": step_label,
             "expansion": poolexpand.get_expansion_status(name),
             "capability": poolexpand.get_capability(name),
+            "members": _pool_member_details(pool),
         },
     )
+
+
+def _pool_member_details(pool) -> dict:
+    """Modele, numero de serie, temperature et etat SMART de chaque disque
+    membre d'un pool (v1.19.0).
+
+    Jusqu'ici cette page n'affichait que `/dev/sda1`. Or c'est precisement
+    ici qu'on regarde quand un pool se degrade - et « sda1 » ne dit ni quel
+    disque ouvrir dans le boitier, ni s'il donnait deja des signes de
+    faiblesse. Le numero de serie, lui, est la seule identite stable d'un
+    disque (lecon de la Phase 12a) : c'est lui qu'on lit sur l'etiquette
+    avant de debrancher.
+
+    Un inventaire est fait UNE fois pour tout le pool, et un rapport SMART
+    par disque physique - jamais un par entree de vdev, sinon un miroir de
+    deux partitions du meme disque le ferait interroger deux fois.
+
+    **L'identite n'est affichee que quand elle est sure.** C'est le point
+    delicat, et il vient tout droit de la Phase 12a : `sdX` n'est pas une
+    identite. Un disque mort disparait au redemarrage suivant, son nom est
+    libre, et un AUTRE disque peut le reprendre. Faire alors confiance a
+    `/dev/sdb1` afficherait, en face d'une ligne FAULTED, le modele et le
+    numero de serie d'un disque parfaitement sain - et l'administrateur
+    debrancherait celui-la. Sur un RAIDZ1 deja degrade, c'est le pool.
+
+    La regle : un peripherique designe par son nom noyau (`/dev/sdb1`) et
+    dont ZFS ne dit PAS qu'il est ONLINE est marque d'identite incertaine ;
+    l'ecran le dit au lieu de montrer un numero de serie. Un chemin stable
+    (`/dev/disk/by-id/...`, `by-partuuid`) ne souffre pas de ce doute, et un
+    membre ONLINE non plus - un disque qui repond est bien celui qu'on
+    croit.
+
+    Ne leve jamais : un disque absent (retire a chaud, justement le cas ou
+    l'on vient voir cette page) rend simplement une entree vide."""
+    devices: list[str] = []
+    for group in (pool.main_disks, pool.special_disks, pool.log_disks, pool.cache_disks):
+        devices.extend(group)
+
+    try:
+        inventory = disks.list_disks()
+    except Exception:  # noqa: BLE001
+        logger.exception("Inventaire des disques impossible pour le pool %s", pool.name)
+        inventory = []
+
+    reports: dict[str, object] = {}
+    details: dict[str, dict] = {}
+    for device in devices:
+        if device in details:
+            continue
+        disk = disks.resolve_device(device, inventory)
+        state = pool.disk_states.get(device, "")
+        stable_path = "/dev/disk/" in device
+        uncertain = disk is not None and state != "ONLINE" and not stable_path
+        report = None
+        if disk is not None and not uncertain:
+            if disk.path not in reports:
+                try:
+                    reports[disk.path] = smart_module.get_smart_report(disk.path)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Lecture SMART impossible pour %s", disk.path)
+                    reports[disk.path] = None
+            report = reports[disk.path]
+        details[device] = {
+            "disk": None if uncertain else disk,
+            "smart": report,
+            "uncertain": uncertain,
+        }
+    return details
 
 
 # ---------------------------------------------------------------------------
@@ -1359,6 +1478,7 @@ def share_create(
 def _render_share_detail(
     request: Request, username: str, name: str,
     error: str | None = None, warnings: list[str] | None = None, status_code: int = 200,
+    notice: str | None = None,
 ):
     share = shares.get_share(name)
     if share is None:
@@ -1374,7 +1494,19 @@ def _render_share_detail(
         {
             "request": request, "username": username, "share": share,
             "available_users": available_users, "available_groups": available_groups,
-            "error": error, "warnings": warnings or [],
+            # v1.19.0 : de quoi afficher ce que NFS fera reellement des
+            # identites du client, et sous quel compte les fichiers seront
+            # ecrits. Un reglage de securite qu'on ne peut pas relire est un
+            # reglage que personne ne verifie.
+            "nfs_modes": shares.NFS_MODES,
+            "nfs_mode_labels": shares.NFS_MODE_LABELS,
+            "nfs_mode_squash": shares.NFS_MODE_SQUASH_ALL,
+            "nfs_mode_uid": shares.NFS_MODE_UID_MATCH,
+            "nfs_mode_root": shares.NFS_MODE_ROOT_ALLOWED,
+            "nfs_share_users": nasusers.list_share_users(),
+            "nfs_effective_identity": shares.resolve_anon_identity(share)[2],
+            "nfs_export_options": shares.nfs_export_options(share),
+            "error": error, "warnings": warnings or [], "notice": notice,
         },
         status_code=status_code,
     )
@@ -1431,14 +1563,34 @@ def share_remove_group(request: Request, name: str, share_groupname: str, userna
 
 @app.post("/shares/{name}/nfs-networks", response_class=HTMLResponse)
 def share_update_nfs_networks(
-    request: Request, name: str, username: str = Depends(require_login), networks: str = Form(...),
+    request: Request, name: str, username: str = Depends(require_login),
+    networks: str = Form(...), confirm_password: str = Form(...),
 ):
     network_list = [n.strip() for n in networks.split(",") if n.strip()]
     try:
-        warnings = shares.update_nfs_networks(name, network_list)
+        warnings = shares.update_nfs_networks(name, network_list, username, confirm_password)
     except shares.ShareError as exc:
         return _render_share_detail(request, username, name, error=str(exc), status_code=400)
     return _render_share_detail(request, username, name, warnings=warnings)
+
+
+@app.post("/shares/{name}/nfs-options", response_class=HTMLResponse)
+def share_update_nfs_options(
+    request: Request, name: str, username: str = Depends(require_login),
+    mode: str = Form(...), anon_user: str = Form(""), access: str = Form("rw"),
+    confirm_password: str = Form(...),
+):
+    """Comment NFS traduit les identites du client (v1.19.0). Le mode est
+    confronte a la liste blanche de app.shares avant toute ecriture dans
+    /etc/exports - l'un des trois donne le root du client sur ces donnees,
+    d'ou le mot de passe de l'admin connecte (regle de la Phase 8b)."""
+    try:
+        summary, warnings = shares.update_nfs_options(
+            name, mode, anon_user, access, username, confirm_password)
+    except shares.ShareError as exc:
+        return _render_share_detail(request, username, name, error=str(exc), status_code=400)
+    return _render_share_detail(request, username, name,
+                                notice=summary, warnings=warnings)
 
 
 @app.get("/shares/{name}/delete", response_class=HTMLResponse)
@@ -1529,6 +1681,16 @@ def _render_docker_storage(
         {
             "request": request, "username": username, "pools": pools,
             "orphans": orphans, "ghosts": ghosts,
+            # v1.19.0 : ou le DEMON range ses images, ce qui n'a rien a voir
+            # avec le pool choisi pour une stack - c'est precisement la
+            # confusion qui remplissait le disque systeme.
+            "engine": dockerstorage.current_layout(),
+            "move_state": dockerstorage.read_state(),
+            "movable_pools": [
+                pool.name for pool in zfs.list_pools()
+                if pool.name not in snapshots_module.system_pool_names()
+            ],
+            "engine_dataset_name": dockerstorage.DATASET_NAME,
             "error": error, "message": message, "format_bytes": sysstats.format_bytes,
         },
         status_code=status_code,
@@ -1538,6 +1700,31 @@ def _render_docker_storage(
 @app.get("/docker/storage", response_class=HTMLResponse)
 def docker_storage(request: Request, username: str = Depends(require_login)):
     return _render_docker_storage(request, username)
+
+
+@app.post("/docker/storage/engine/move", response_class=HTMLResponse)
+def docker_engine_move(request: Request, pool: str = Form(...),
+                       confirm_password: str = Form(""),
+                       username: str = Depends(require_login)):
+    """Deplace le stockage du demon Docker vers un pool ZFS. Toutes les
+    stacks s'arretent pendant l'operation - d'ou le mot de passe."""
+    try:
+        message = dockerstorage.start_move(pool, username, confirm_password)
+    except (dockerstorage.DockerStorageError, zfs.DatasetError) as exc:
+        return _render_docker_storage(request, username, error=str(exc), status_code=400)
+    return _render_docker_storage(request, username, message=message)
+
+
+@app.post("/docker/storage/engine/cleanup", response_class=HTMLResponse)
+def docker_engine_cleanup(request: Request, confirm_password: str = Form(""),
+                          username: str = Depends(require_login)):
+    """Supprime l'ancien emplacement, une fois le nouveau eprouve. C'est
+    l'action qui ferme la porte du retour en arriere."""
+    try:
+        message = dockerstorage.delete_leftovers(username, confirm_password)
+    except dockerstorage.DockerStorageError as exc:
+        return _render_docker_storage(request, username, error=str(exc), status_code=400)
+    return _render_docker_storage(request, username, message=message)
 
 
 @app.get("/docker/storage/{pool}/{name}/delete", response_class=HTMLResponse)
@@ -2777,12 +2964,31 @@ def _relative_label(epoch: float) -> str:
     return f"il y a {seconds // 86400} j"
 
 
+# Age au-dela duquel l'OUVERTURE du panneau meteo relance une verification
+# (v1.19.0). Ouvrir le panneau vaut demande de verification : c'est
+# precisement le moment ou l'on veut savoir. Le garde-fou n'existe que pour
+# qu'un double-clic, un retour en arriere ou deux onglets ouverts ne lancent
+# pas trois `apt-get -s` et trois `git fetch` dans la meme seconde.
+OPEN_REFRESH_MIN_AGE_SECONDS = 20.0
+
+
 @app.post("/notifications/refresh", response_class=HTMLResponse)
-def notifications_refresh(request: Request, username: str = Depends(require_login)):
+def notifications_refresh(request: Request, on_open: str = "",
+                          username: str = Depends(require_login)):
     """Verification explicite. Peut prendre quelques secondes : elle
     interroge apt, GitHub et le registre Docker. Rien n'est telecharge ni
-    installe."""
-    notifications.refresh()
+    installe.
+
+    `on_open=1` est envoye par l'ouverture du panneau meteo : la
+    verification part en TACHE DE FOND et la fenetre s'ouvre tout de suite
+    avec ce qu'on sait deja ; le resultat frais arrive de lui-meme au
+    rafraichissement suivant du fragment, trente secondes plus tard, fenetre
+    ouverte. Sans ce detour, consulter la meteo pourrait durer plusieurs
+    minutes sur un NAS coupe d'Internet."""
+    if _checked(on_open):
+        notifications.refresh_in_background(OPEN_REFRESH_MIN_AGE_SECONDS)
+    else:
+        notifications.refresh()
     # Rend le fragment de SANTE, pas une carte a part : le bouton vit
     # maintenant dans la fenetre (v1.8.0), qui reste ouverte pendant que son
     # contenu se met a jour sous les yeux.
@@ -2813,6 +3019,120 @@ def _system_context(request: Request, username: str, error: str | None = None,
         "fan_floor_percent": fancontrol.PWM_FLOOR_PERCENT,
         "error": error, "notice": notice,
     }
+
+
+# ---------------------------------------------------------------------------
+# Pare-feu et decouverte reseau (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def _firewall_context(request: Request, username: str, error: str | None = None,
+                      notice: str | None = None,
+                      warnings: list[str] | None = None) -> dict:
+    state = firewall.status()
+    return {
+        "request": request, "username": username,
+        "fw": state,
+        "services": firewall.service_states(state),
+        "discovery": discovery.status(),
+        "web_ui_port": firewall.WEB_UI_PORT,
+        "error": error, "notice": notice, "warnings": warnings or [],
+    }
+
+
+def _render_firewall(request: Request, username: str, error: str | None = None,
+                     notice: str | None = None, warnings: list[str] | None = None,
+                     status_code: int = 200):
+    return templates.TemplateResponse(
+        "firewall.html",
+        _firewall_context(request, username, error=error, notice=notice,
+                          warnings=warnings),
+        status_code=status_code,
+    )
+
+
+@app.get("/firewall", response_class=HTMLResponse)
+def firewall_page(request: Request, username: str = Depends(require_login)):
+    return _render_firewall(request, username)
+
+
+@app.post("/firewall/enable")
+def firewall_enable(request: Request, username: str = Depends(require_login)):
+    try:
+        message = firewall.enable(username)
+    except firewall.FirewallError as exc:
+        return _render_firewall(request, username, error=str(exc), status_code=400)
+    return _render_firewall(request, username, notice=message)
+
+
+@app.post("/firewall/disable")
+def firewall_disable(request: Request, confirm_password: str = Form(""),
+                     username: str = Depends(require_login)):
+    try:
+        message = firewall.disable(username, confirm_password)
+    except firewall.FirewallError as exc:
+        return _render_firewall(request, username, error=str(exc), status_code=400)
+    return _render_firewall(request, username, notice=message)
+
+
+@app.post("/firewall/service")
+def firewall_open_service(request: Request, key: str = Form(...),
+                          source: str = Form(""),
+                          username: str = Depends(require_login)):
+    try:
+        message = firewall.open_service(key, username, source)
+    except firewall.FirewallError as exc:
+        return _render_firewall(request, username, error=str(exc), status_code=400)
+    return _render_firewall(request, username, notice=message)
+
+
+@app.post("/firewall/port")
+def firewall_open_port(request: Request, port: str = Form(...),
+                       proto: str = Form("tcp"), comment: str = Form(""),
+                       source: str = Form(""), confirm_password: str = Form(""),
+                       username: str = Depends(require_login)):
+    try:
+        message = firewall.open_port(port, proto, comment, source,
+                                     username, confirm_password)
+    except firewall.FirewallError as exc:
+        return _render_firewall(request, username, error=str(exc), status_code=400)
+    return _render_firewall(request, username, notice=message)
+
+
+@app.post("/firewall/rule/delete")
+def firewall_delete_rule(request: Request, number: str = Form(...),
+                         signature: str = Form(""), confirm_password: str = Form(""),
+                         username: str = Depends(require_login)):
+    """`signature` est ce que la page affichait. Les numeros d'ufw se
+    decalent des qu'une regle disparait : sans cette comparaison, un clic sur
+    « supprimer la regle 3 » retirerait celle qui aura pris sa place."""
+    try:
+        rule_number = int(number)
+    except (TypeError, ValueError):
+        return _render_firewall(request, username,
+                                error="Numero de regle invalide.", status_code=400)
+    try:
+        message = firewall.delete_rule(rule_number, signature, username, confirm_password)
+    except firewall.FirewallError as exc:
+        return _render_firewall(request, username, error=str(exc), status_code=400)
+    return _render_firewall(request, username, notice=message)
+
+
+@app.post("/firewall/discovery/enable")
+def firewall_discovery_enable(request: Request, username: str = Depends(require_login)):
+    try:
+        message, warnings = discovery.enable(username)
+    except discovery.DiscoveryError as exc:
+        return _render_firewall(request, username, error=str(exc), status_code=400)
+    return _render_firewall(request, username, notice=message, warnings=warnings)
+
+
+@app.post("/firewall/discovery/disable")
+def firewall_discovery_disable(request: Request, username: str = Depends(require_login)):
+    try:
+        message, warnings = discovery.disable(username)
+    except discovery.DiscoveryError as exc:
+        return _render_firewall(request, username, error=str(exc), status_code=400)
+    return _render_firewall(request, username, notice=message, warnings=warnings)
 
 
 @app.get("/datetime", response_class=HTMLResponse)
@@ -2957,10 +3277,20 @@ def _cluster_context(request: Request, username: str, error: str | None = None,
     context = {
         "request": request, "username": username,
         "status": status, "error": error, "notice": notice,
-        "candidate_interfaces": [], "join_tokens": None,
+        "networking": None, "dedicated_plan": None, "join_tokens": None,
     }
     if not status.active:
-        context["candidate_interfaces"] = cluster.list_candidate_interfaces()
+        # Depuis la v1.19.0, la page ne montre pas seulement les cartes
+        # utilisables : elle montre TOUTES les cartes, en disant pour
+        # chacune pourquoi elle ne convient pas. Une option absente passe
+        # pour un bug ; une option barree avec sa raison s'explique.
+        net = cluster.networking()
+        context["networking"] = net
+        # L'assistant d'adressage apparait des qu'une carte dediable n'a pas
+        # d'adresse - pas seulement quand le cluster est impossible : une
+        # machine a trois cartes peut vouloir en dedier une seconde.
+        if net.spares:
+            context["dedicated_plan"] = cluster.suggest_dedicated_plan(net.spares[0].name)
     elif status.is_manager:
         try:
             context["join_tokens"] = cluster.get_join_tokens()
@@ -3000,6 +3330,39 @@ def cluster_join_route(request: Request, remote_addr: str = Form(...), token: st
     except cluster.ClusterError as exc:
         return _cluster_response(request, username, error=str(exc), status_code=400)
     return _cluster_response(request, username, notice=message)
+
+
+@app.post("/cluster/network")
+def cluster_network_configure(
+    request: Request, interface: str = Form(...), address: str = Form(...),
+    confirm_password: str = Form(...), username: str = Depends(require_login),
+):
+    """Prepare l'adressage fixe d'une carte dediee au cluster (v1.19.0).
+
+    Cette route n'applique rien elle-meme : elle depose la configuration
+    dans la session et renvoie vers l'ecran d'application du reseau, celui
+    qui passe par `netplan try` et revient tout seul en arriere si personne
+    ne confirme. Reutiliser ce chemin plutot que d'en ouvrir un second est
+    delibere : c'est le seul du projet qui ne peut pas enfermer
+    l'administrateur dehors, et une carte mal adressee est exactement le
+    genre d'erreur qu'on fait ici.
+
+    Aucune passerelle ni serveur DNS n'est pose, jamais - voir app.cluster,
+    section « bonnes pratiques ». Les garde-fous (cluster deja forme, mot de
+    passe, carte principale) vivent dans `cluster.configure_dedicated`, pas
+    ici : une route est atteignable par une requete forgee."""
+    try:
+        normalized = cluster.configure_dedicated(
+            interface, address, username, confirm_password)
+    except cluster.ClusterError as exc:
+        return _cluster_response(request, username, error=str(exc), status_code=400)
+
+    config = netconfig.read_managed_config()
+    config.interfaces[interface.strip()] = netconfig.InterfaceConfig(
+        dhcp4=False, address=normalized, gateway4=None, no_dns=True,
+    )
+    request.session["pending_network_config"] = config.to_dict()
+    return RedirectResponse("/network/apply", status_code=302)
 
 
 @app.post("/cluster/leave")

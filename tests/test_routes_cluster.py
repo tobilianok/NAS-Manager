@@ -25,11 +25,22 @@ def _node(id="n1", hostname="nas-1", role="manager", manager_status="leader",
     )
 
 
+def _networking(*choices):
+    """Etat reseau de la page Cluster. Par defaut : une carte principale
+    (donc ecartee) et une carte dediee adressee (donc utilisable)."""
+    if not choices:
+        choices = (
+            cluster.InterfaceChoice(name="eth0", addresses=["192.168.1.50/24"], is_primary=True),
+            cluster.InterfaceChoice(name="eth1", addresses=["10.10.10.1/24"]),
+        )
+    return cluster.ClusterNetworking(interfaces=list(choices))
+
+
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setattr(auth, "authenticate", lambda u, p: True)
     monkeypatch.setattr(cluster, "get_status", lambda: cluster.ClusterStatus(active=False))
-    monkeypatch.setattr(cluster, "list_candidate_interfaces", lambda: [_interface()])
+    monkeypatch.setattr(cluster, "networking", _networking)
     with TestClient(main.app) as c:
         resp = c.post("/login", data={"username": "louis", "password": "x"}, follow_redirects=False)
         assert resp.status_code == 302
@@ -52,14 +63,90 @@ def test_page_when_not_active_shows_init_and_join_forms(client):
     assert resp.status_code == 200
     assert "Former un nouveau cluster" in resp.text
     assert "Rejoindre un cluster existant" in resp.text
+    # La carte dediee est proposee...
+    assert '<option value="10.10.10.1/24">' in resp.text
+    # ...la carte principale est listee, barree, avec sa raison.
     assert "192.168.1.50/24" in resp.text
+    assert "option disabled" in resp.text
+    assert "carte principale" in resp.text
 
 
-def test_page_when_not_active_without_candidates(client, monkeypatch):
-    monkeypatch.setattr(cluster, "list_candidate_interfaces", lambda: [])
+def test_page_when_a_single_card_makes_the_cluster_impossible(client, monkeypatch):
+    monkeypatch.setattr(cluster, "networking", lambda: _networking(
+        cluster.InterfaceChoice(name="eth0", addresses=["192.168.1.50/24"], is_primary=True),
+    ))
     resp = client.get("/cluster")
     assert resp.status_code == 200
-    assert "Aucune carte reseau avec une adresse IP" in resp.text
+    assert "une seule carte reseau" in resp.text
+    # Aucun formulaire de formation : il n'y a rien a choisir.
+    assert 'action="/cluster/init"' not in resp.text
+
+
+def test_page_offers_to_address_a_spare_card(client, monkeypatch):
+    monkeypatch.setattr(cluster, "networking", lambda: _networking(
+        cluster.InterfaceChoice(name="eth0", addresses=["192.168.1.50/24"], is_primary=True),
+        cluster.InterfaceChoice(name="eth1", addresses=[]),
+    ))
+    resp = client.get("/cluster")
+    assert resp.status_code == 200
+    assert "Configurer la carte dediee" in resp.text
+    assert 'action="/cluster/network"' in resp.text
+    # Les bonnes pratiques sont ecrites a l'ecran, pas seulement appliquees.
+    assert "passerelle" in resp.text
+
+
+def test_dedicated_network_form_prepares_the_apply_screen(client, monkeypatch):
+    from app import netconfig
+    monkeypatch.setattr(cluster, "configure_dedicated",
+                        lambda iface, addr, user, pwd: "10.10.10.1/24")
+    monkeypatch.setattr(netconfig, "read_managed_config",
+                        lambda: netconfig.ManagedNetworkConfig())
+    resp = client.post("/cluster/network",
+                       data={"interface": "eth1", "address": "10.10.10.1/24",
+                             "confirm_password": "secret"},
+                       follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/network/apply"
+
+
+def test_the_dedicated_link_never_receives_dns_servers(client, monkeypatch):
+    """netplan n'a pas de section DNS globale : les resolveurs sont recopies
+    sur chaque carte. Sur un cable entre deux machines, ils n'ont rien a
+    faire - et la page promet justement qu'il n'y en aura aucun."""
+    from app import netconfig
+    saved = {}
+    config = netconfig.ManagedNetworkConfig(dns_servers=["192.168.1.1"])
+    monkeypatch.setattr(cluster, "configure_dedicated",
+                        lambda iface, addr, user, pwd: "10.10.10.1/24")
+    monkeypatch.setattr(netconfig, "read_managed_config", lambda: config)
+    client.post("/cluster/network",
+                data={"interface": "eth1", "address": "10.10.10.1/24",
+                      "confirm_password": "secret"},
+                follow_redirects=False)
+    saved = netconfig.ManagedNetworkConfig.from_dict(config.to_dict())
+    yaml_text = netconfig.build_managed_yaml(saved)
+    assert "10.10.10.1/24" in yaml_text
+    assert "nameservers" not in yaml_text
+    assert "gateway" not in yaml_text
+
+
+def test_dedicated_network_form_reports_a_refusal(client, monkeypatch):
+    def refuse(iface, addr, user, pwd):
+        raise cluster.ClusterError("route par defaut")
+    monkeypatch.setattr(cluster, "configure_dedicated", refuse)
+    resp = client.post("/cluster/network",
+                       data={"interface": "eth0", "address": "10.10.10.1/24",
+                             "confirm_password": "secret"})
+    assert resp.status_code == 400
+    assert "route par defaut" in resp.text
+
+
+def test_dedicated_network_form_requires_the_admin_password(client):
+    """Reconfigurer une carte reseau peut couper l'acces : regle constante
+    depuis la Phase 8b."""
+    resp = client.post("/cluster/network",
+                       data={"interface": "eth1", "address": "10.10.10.1/24"})
+    assert resp.status_code == 422
 
 
 def test_page_when_active_as_worker(client, monkeypatch):
@@ -287,3 +374,54 @@ def test_the_cluster_page_leads_to_the_wizard(client):
     body = client.get("/cluster").text
     assert '/cluster/assistant' in body
     assert "Assistant de redondance" in body
+
+
+# ---------------------------------------------------------------------------
+# Mention du cluster sur le tableau de bord (v1.19.0)
+# ---------------------------------------------------------------------------
+
+def test_no_cluster_means_an_empty_fragment(client, monkeypatch):
+    """Le cas le plus courant : rien ne doit s'afficher, et rien ne doit
+    prendre un pixel."""
+    monkeypatch.setattr(cluster, "get_status", lambda: cluster.ClusterStatus(active=False))
+    resp = client.get("/partials/cluster")
+    assert resp.status_code == 200
+    assert resp.text.strip() == ""
+
+
+def test_a_cluster_node_says_so_on_the_dashboard(client, monkeypatch):
+    from app import health
+    monkeypatch.setattr(cluster, "get_status", lambda: cluster.ClusterStatus(
+        active=True, is_manager=True, advertise_addr="10.10.10.1",
+        nodes=[_node(id="n1", hostname="nas-1"),
+               _node(id="n2", hostname="nas-2", role="worker", manager_status="", is_self=False)],
+    ))
+    monkeypatch.setattr(health, "check_cluster", lambda status=None: health.HealthCheck(
+        "cluster", "Cluster", health.LEVEL_OK, "2 noeud(s) en ligne."))
+    text = client.get("/partials/cluster").text
+    assert "appartient a un cluster" in text
+    assert "manager" in text
+    assert "10.10.10.1" in text
+    assert "cluster-badge-ok" in text
+    assert "2 noeud(s) en ligne." in text
+
+
+def test_the_badge_carries_the_cluster_health(client, monkeypatch):
+    from app import health
+    monkeypatch.setattr(cluster, "get_status",
+                        lambda: cluster.ClusterStatus(active=True, is_manager=True, nodes=[_node()]))
+    monkeypatch.setattr(health, "check_cluster", lambda status=None: health.HealthCheck(
+        "cluster", "Cluster", health.LEVEL_CRITIQUE, "Noeud(s) hors ligne : nas-2."))
+    text = client.get("/partials/cluster").text
+    assert "cluster-badge-critique" in text
+    assert "nas-2" in text
+
+
+def test_the_dashboard_asks_for_the_cluster_fragment(client, monkeypatch):
+    from app import disks as disks_module, netstats, replace_workflow, zfs
+    monkeypatch.setattr(zfs, "list_pools", lambda: [])
+    monkeypatch.setattr(disks_module, "list_disks", lambda: [])
+    monkeypatch.setattr(netstats, "list_interfaces", lambda: [])
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert 'hx-get="/partials/cluster"' in resp.text
